@@ -104,6 +104,8 @@ _TCC_PID_RES = (
     re.compile(r"\bpid=(\d+)"),
     re.compile(r"\btarget_token=\{pid:(\d+)"),
     re.compile(r"\bsender_pid=(\d+)"),
+    # libTCC builds msgID as "<sender pid>.<n>" (macOS 27: msgID=34654.1 with sender_pid=34654).
+    re.compile(r"\bmsgID=(\d+)\.\d+"),
 )
 _PID_RE = re.compile(r"\bpid[\s:=]+(\d+)", re.IGNORECASE)
 _BUNDLE_RE = re.compile(
@@ -203,7 +205,9 @@ def _attribute(
     return pid, bundle
 
 
-def _classify_tcc(message: str) -> tuple[SensorType, str, int | None, str | None] | None:
+def _classify_tcc(
+    message: str, client_pid: int | None
+) -> tuple[SensorType, str, int | None, str | None] | None:
     service_match = _TCC_SERVICE_RE.search(message)
     if not service_match:
         return None
@@ -214,6 +218,9 @@ def _classify_tcc(message: str) -> tuple[SensorType, str, int | None, str | None
     scopes = [accessing.group(1), message] if accessing else [message]
     pid = next((int(p) for s in scopes for r in _TCC_PID_RES if (p := _first(r, s))), None)
     bundle = next((b for s in scopes for r in _TCC_IDENTITY_RES if (b := _first(r, s))), None)
+    # Client-side libTCC lines (e.g. "SEND: ... service=kTCCServiceCamera") are logged by the
+    # requesting app itself, so the entry's own PID identifies it.
+    pid = pid if pid is not None else client_pid
     if pid is None and bundle is None:
         return None
     return sensor, service, pid, bundle
@@ -234,7 +241,8 @@ def parse_entry(entry: Mapping[str, object]) -> Event | None:
     sensor: SensorType
     service: str | None = None
     if subsystem == SUBSYSTEM_TCC:
-        classified = _classify_tcc(message)
+        client_pid = None if process_name in BROKER_PROCESSES else log_pid
+        classified = _classify_tcc(message, client_pid)
         if classified is None:
             return None
         sensor, service, pid, bundle = classified

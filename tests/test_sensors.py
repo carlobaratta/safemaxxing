@@ -343,3 +343,40 @@ def test_wide_discovery_predicate_shape() -> None:
     assert WIDE_DISCOVERY_PREDICATE.count("(") == WIDE_DISCOVERY_PREDICATE.count(")")
     assert 'process == "tccd"' in WIDE_DISCOVERY_PREDICATE
     assert 'AND NOT subsystem BEGINSWITH "com.apple.locationd"' in WIDE_DISCOVERY_PREDICATE
+
+
+def test_tcc_client_side_send_line_uses_msgid_pid() -> None:
+    # Verbatim shape from macOS 27.0.1, logged by the requesting app (Photo Booth).
+    entry = {
+        "timestamp": "2026-10-22 12:50:00.000000+0200",
+        "subsystem": "com.apple.TCC",
+        "category": "access",
+        "processID": 34654,
+        "processImagePath": "/System/Applications/Photo Booth.app/Contents/MacOS/Photo Booth",
+        "eventMessage": "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=34654.1, "
+        "function=TCCAccessRequest, service=kTCCServiceCamera,",
+    }
+    event = parse_entry(entry)
+    assert event is not None
+    assert (event.sensor, event.pid, event.process_name) == (
+        SensorType.CAMERA,
+        34654,
+        "Photo Booth",
+    )
+
+
+def test_tcc_client_side_line_without_msgid_falls_back_to_log_pid() -> None:
+    entry = {
+        "timestamp": "2026-10-22 12:50:00.000000+0200",
+        "subsystem": "com.apple.TCC",
+        "processID": 777,
+        "processImagePath": "/Applications/Spy.app/Contents/MacOS/Spy",
+        "eventMessage": "preflight check service=kTCCServiceMicrophone",
+    }
+    event = parse_entry(entry)
+    assert event is not None and event.pid == 777
+
+
+def test_tccd_line_without_actor_still_dropped() -> None:
+    entry = {**TCC_ATTRIBUTION, "eventMessage": "Refreshing cache for kTCCServiceCamera"}
+    assert parse_entry(entry) is None

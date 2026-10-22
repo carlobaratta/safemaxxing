@@ -219,6 +219,9 @@ class SubsystemStats:
     processes: Counter[str] = field(default_factory=Counter)
     unparsed_examples: list[str] = field(default_factory=list)
     parsed_examples: list[str] = field(default_factory=list)
+    sensors: Counter[str] = field(default_factory=Counter)
+    # messageType of parsed entries: the runtime streams at --level info, so Debug ones are missed.
+    levels: Counter[str] = field(default_factory=Counter)
 
 
 def _family(subsystem: str) -> str:
@@ -257,8 +260,14 @@ def summarize_sample(
                 prefix = f"[{category}] " if isinstance(category, str) and category else ""
                 s.unparsed_examples.append(prefix + message[:240])
             continue
+        level = entry.get("messageType")
+        level = level if isinstance(level, str) else "?"
+        s.sensors[event.sensor.value] += 1
+        s.levels[level] += 1
         if len(s.parsed_examples) < max_examples:
-            s.parsed_examples.append(f"{event.sensor.value} {event.identity} pid={event.pid}")
+            s.parsed_examples.append(
+                f"{event.sensor.value} {event.identity} pid={event.pid} [{level}] {message[:160]}"
+            )
         s.parsed += 1
         s.with_pid += event.pid is not None
         s.with_bundle += event.bundle_id is not None
