@@ -58,7 +58,7 @@ class CorrelationEngine:
         self._events: deque[Event] = deque(maxlen=self.config.buffer_size)
         self._connections: deque[NetworkConnection] = deque(maxlen=self.config.buffer_size)
         self._seen: set[tuple[object, ...]] = set()
-        self._last_alert: dict[tuple[str, SensorType, str], float] = {}
+        self._last_alert: dict[tuple[int, SensorType, str], float] = {}
         self._ids = itertools.count(1)
         self._horizon = 0.0
 
@@ -109,7 +109,9 @@ class CorrelationEngine:
                 continue
             self._seen.add(finding.key)
             ev, conn = finding.event, finding.connection
-            cooldown_key = (ev.identity, ev.sensor, conn.remote_address)
+            # Keyed on the connection's process: one access yields indicator, TCC and cmio events
+            # with different identities (bundle id, pid, name) that all match the same socket.
+            cooldown_key = (conn.pid, ev.sensor, conn.remote_address)
             last = self._last_alert.get(cooldown_key)
             if last is not None and now - last < self.config.alert_cooldown_s:
                 continue

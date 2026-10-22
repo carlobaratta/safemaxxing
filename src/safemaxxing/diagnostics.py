@@ -30,9 +30,9 @@ from safemaxxing.sensors import (
     DISCOVERY_PREDICATE,
     LOG_BINARY,
     REDACTED_RE,
+    SensorEventParser,
     SensorListener,
     log_stream_command,
-    parse_entry,
 )
 
 LSOF = "/usr/sbin/lsof"
@@ -235,6 +235,7 @@ def summarize_sample(
     entries: Iterable[Mapping[str, object]], max_examples: int = 3
 ) -> dict[str, SubsystemStats]:
     stats: dict[str, SubsystemStats] = {}
+    parser = SensorEventParser()
     for entry in entries:
         subsystem = entry.get("subsystem")
         s = stats.setdefault(
@@ -253,8 +254,8 @@ def summarize_sample(
             s.processes[image.rsplit("/", 1)[-1]] += 1
         if not isinstance(entry.get("processID"), int):
             s.missing_pid += 1
-        event = parse_entry(entry)
-        if event is None:
+        events = parser.parse(entry)
+        if not events:
             if len(s.unparsed_examples) < max_examples:
                 category = entry.get("category")
                 prefix = f"[{category}] " if isinstance(category, str) and category else ""
@@ -262,15 +263,17 @@ def summarize_sample(
             continue
         level = entry.get("messageType")
         level = level if isinstance(level, str) else "?"
-        s.sensors[event.sensor.value] += 1
-        s.levels[level] += 1
-        if len(s.parsed_examples) < max_examples:
-            s.parsed_examples.append(
-                f"{event.sensor.value} {event.identity} pid={event.pid} [{level}] {message[:160]}"
-            )
-        s.parsed += 1
-        s.with_pid += event.pid is not None
-        s.with_bundle += event.bundle_id is not None
+        for event in events:
+            s.sensors[event.sensor.value] += 1
+            s.levels[level] += 1
+            if len(s.parsed_examples) < max_examples:
+                s.parsed_examples.append(
+                    f"{event.sensor.value} {event.identity} pid={event.pid} [{level}] "
+                    f"{message[:160]}"
+                )
+            s.parsed += 1
+            s.with_pid += event.pid is not None
+            s.with_bundle += event.bundle_id is not None
     return stats
 
 

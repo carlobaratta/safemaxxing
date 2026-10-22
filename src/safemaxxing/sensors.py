@@ -19,6 +19,9 @@ SUBSYSTEM_TCC = "com.apple.TCC"
 SUBSYSTEM_LOCATION = "com.apple.locationd"
 SUBSYSTEM_AUDIO = "com.apple.coreaudio"
 SUBSYSTEM_CMIO = "com.apple.cmio"
+SUBSYSTEM_CONTROLCENTER = "com.apple.controlcenter"
+INDICATOR_CATEGORY = "sensor-indicators"
+INDICATOR_PREFIX = "Active activity attributions changed to"
 
 # Daemons that log on behalf of clients: their own PID is never the culprit.
 BROKER_PROCESSES = frozenset(
@@ -34,6 +37,7 @@ BROKER_PROCESSES = frozenset(
         "avconferenced",
         "audiomxd",
         "com.apple.cmio.registerassistantservice",
+        "ControlCenter",
     }
 )
 
@@ -65,10 +69,15 @@ def _mentions_any(hints: Sequence[str]) -> str:
 
 
 _TCC_CLAUSE = f'(subsystem == "{SUBSYSTEM_TCC}" AND eventMessage CONTAINS "kTCCService")'
+# The menu-bar privacy indicator's own attribution list (macOS 27: Default level).
+_INDICATOR_CLAUSE = (
+    f'(subsystem == "{SUBSYSTEM_CONTROLCENTER}" AND category == "{INDICATOR_CATEGORY}"'
+    f' AND eventMessage BEGINSWITH "{INDICATOR_PREFIX}")'
+)
 
 # Runtime predicate: `log` drops the bulk of locationd/cmio chatter before it reaches Python.
 PREDICATE = (
-    f"{_TCC_CLAUSE}"
+    f"{_TCC_CLAUSE} OR {_INDICATOR_CLAUSE}"
     f' OR (subsystem BEGINSWITH "{SUBSYSTEM_LOCATION}" AND {_mentions_any(LOCATION_HINTS)})'
     f' OR (subsystem BEGINSWITH "{SUBSYSTEM_AUDIO}" AND {_mentions_any(AUDIO_START_HINTS)})'
     f' OR (subsystem BEGINSWITH "{SUBSYSTEM_CMIO}" AND {_mentions_any(CAMERA_HINTS)})'
@@ -76,7 +85,7 @@ PREDICATE = (
 
 # Everything from the watched subsystems, for `safemaxxing sample` format discovery.
 DISCOVERY_PREDICATE = (
-    f"{_TCC_CLAUSE}"
+    f"{_TCC_CLAUSE} OR {_INDICATOR_CLAUSE}"
     f' OR subsystem BEGINSWITH "{SUBSYSTEM_LOCATION}"'
     f' OR subsystem BEGINSWITH "{SUBSYSTEM_AUDIO}"'
     f' OR subsystem BEGINSWITH "{SUBSYSTEM_CMIO}"'
@@ -221,6 +230,10 @@ def _classify_tcc(
     # Client-side libTCC lines (e.g. "SEND: ... service=kTCCServiceCamera") are logged by the
     # requesting app itself, so the entry's own PID identifies it.
     pid = pid if pid is not None else client_pid
+    # e.g. "identifier=com.apple.audio.coreaudiod ... entitlement for service kTCCServiceMicrophone"
+    # is the daemon's own check on behalf of a client, reported separately via target_token.
+    if bundle is not None and bundle.rsplit(".", 1)[-1] in BROKER_PROCESSES:
+        return None
     if pid is None and bundle is None:
         return None
     return sensor, service, pid, bundle
@@ -296,6 +309,58 @@ async def _drain_tail(stream: asyncio.StreamReader, keep: int = 4096) -> bytes:
     return tail
 
 
+# Only "cam" and "loc" have been observed (macOS 27.0.1); "mic" follows the same scheme.
+INDICATOR_SENSORS: Mapping[str, SensorType] = {
+    "cam": SensorType.CAMERA,
+    "mic": SensorType.MICROPHONE,
+    "loc": SensorType.LOCATION,
+    "scr": SensorType.SCREEN_CAPTURE,
+}
+_ATTRIBUTION_RE = re.compile(r'"(\w+):([^"]+)"')
+
+
+def parse_attributions(message: str) -> frozenset[tuple[str, str]] | None:
+    """`Active activity attributions changed to ["cam:com.apple.PhotoBooth"]` -> {(cam, id)}."""
+    if not message.startswith(INDICATOR_PREFIX):
+        return None
+    return frozenset(_ATTRIBUTION_RE.findall(message[len(INDICATOR_PREFIX) :]))
+
+
+class SensorEventParser:
+    """Stateful wrapper around `parse_entry`: indicator lines carry the full active set, so an
+    event is emitted only for attributions that were not active in the previous update."""
+
+    def __init__(self) -> None:
+        self._active: frozenset[tuple[str, str]] = frozenset()
+
+    def parse(self, entry: Mapping[str, object]) -> list[Event]:
+        if _str(entry, "subsystem") == SUBSYSTEM_CONTROLCENTER:
+            return self._indicator(entry)
+        event = parse_entry(entry)
+        return [] if event is None else [event]
+
+    def _indicator(self, entry: Mapping[str, object]) -> list[Event]:
+        message = _str(entry, "eventMessage")
+        current = parse_attributions(message)
+        if current is None:
+            return []
+        added, self._active = current - self._active, current
+        timestamp = parse_timestamp(_str(entry, "timestamp"))
+        return [
+            Event(
+                timestamp=timestamp,
+                sensor=INDICATOR_SENSORS.get(kind, SensorType.TCC),
+                pid=None,
+                process_name="",
+                bundle_id=bundle,
+                subsystem=SUBSYSTEM_CONTROLCENTER,
+                message=message,
+                service=f"indicator:{kind}",
+            )
+            for kind, bundle in sorted(added)
+        ]
+
+
 class _Cooldown:
     """Collapses the burst of log lines a single access produces into one event."""
 
@@ -350,7 +415,8 @@ class SensorListener:
             stderr_task.cancel()
 
     async def events(self) -> AsyncIterator[Event]:
+        parser = SensorEventParser()
         async for entry in self.entries():
-            event = parse_entry(entry)
-            if event is not None and self._cooldown.accept(event):
-                yield event
+            for event in parser.parse(entry):
+                if self._cooldown.accept(event):
+                    yield event

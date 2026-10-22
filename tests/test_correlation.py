@@ -96,3 +96,12 @@ def test_alert_ids_increment() -> None:
     a = eng.ingest_connection(make_conn())
     b = eng.ingest_connection(make_conn(pid=7, process_name="b"))
     assert [x.id for x in a + b] == [1, 2]
+
+
+def test_one_access_from_three_sources_yields_one_alert() -> None:
+    eng = engine()
+    eng.ingest_event(make_event(pid=None, process_name="", bundle_id="com.example.spy"))
+    eng.ingest_event(make_event(bundle_id=None, process_name=""))
+    eng.ingest_event(make_event(bundle_id=None, process_name="spy"))
+    alerts = eng.ingest_connection(make_conn(bundle_id="com.example.spy"))
+    assert len(alerts) == 1

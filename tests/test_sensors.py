@@ -14,6 +14,7 @@ from safemaxxing.sensors import (
     WIDE_DISCOVERY_PREDICATE,
     JsonStreamDecoder,
     SensorError,
+    SensorEventParser,
     SensorListener,
     log_stream_command,
     parse_entry,
@@ -380,3 +381,118 @@ def test_tcc_client_side_line_without_msgid_falls_back_to_log_pid() -> None:
 def test_tccd_line_without_actor_still_dropped() -> None:
     entry = {**TCC_ATTRIBUTION, "eventMessage": "Refreshing cache for kTCCServiceCamera"}
     assert parse_entry(entry) is None
+
+
+# ---- Verbatim lines from the macOS 27.0.1 wide sample (Photo Booth + Voice Memos) ----
+
+
+def _entry(
+    subsystem: str, process: str, message: str, pid: int = 1, **extra: object
+) -> dict[str, object]:
+    return {
+        "timestamp": "2026-10-22 13:00:00.000000+0200",
+        "subsystem": subsystem,
+        "processID": pid,
+        "processImagePath": f"/usr/libexec/{process}",
+        "eventMessage": message,
+        **extra,
+    }
+
+
+def _indicator(message: str) -> dict[str, object]:
+    return _entry(
+        "com.apple.controlcenter",
+        "ControlCenter",
+        message,
+        pid=500,
+        category="sensor-indicators",
+        messageType="Default",
+    )
+
+
+def test_control_center_indicator_emits_only_new_attributions() -> None:
+    parser = SensorEventParser()
+    (cam,) = parser.parse(
+        _indicator('Active activity attributions changed to ["cam:com.apple.PhotoBooth"]')
+    )
+    assert (cam.sensor, cam.bundle_id, cam.pid) == (SensorType.CAMERA, "com.apple.PhotoBooth", None)
+    assert cam.service == "indicator:cam"
+    both = 'Active activity attributions changed to ["cam:com.apple.PhotoBooth", "loc:com.apple.VoiceMemos"]'
+    (loc,) = parser.parse(_indicator(both))
+    assert (loc.sensor, loc.bundle_id) == (SensorType.LOCATION, "com.apple.VoiceMemos")
+    assert parser.parse(_indicator("Active activity attributions changed to []")) == []
+    (again,) = parser.parse(
+        _indicator('Active activity attributions changed to ["cam:com.apple.PhotoBooth"]')
+    )
+    assert again.sensor is SensorType.CAMERA
+
+
+def test_other_control_center_lines_ignored() -> None:
+    parser = SensorEventParser()
+    for message in (
+        'Recent activity attributions changed to ["cam:com.apple.PhotoBooth"]',
+        "Sorted active attributions from SystemStatus update: [[cam] Photo Booth (com.apple.PhotoBooth)]",
+        "Dependent controller changed: sensor indicators",
+    ):
+        assert parser.parse(_indicator(message)) == []
+
+
+def test_parse_attributions_unknown_kind_maps_to_tcc() -> None:
+    parser = SensorEventParser()
+    (event,) = parser.parse(
+        _indicator('Active activity attributions changed to ["xyz:com.example.app"]')
+    )
+    assert event.sensor is SensorType.TCC
+
+
+def test_broker_tcc_check_on_behalf_of_client_uses_target_token() -> None:
+    send = _entry(
+        "com.apple.TCC",
+        "coreaudiod",
+        "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=567.177, "
+        "function=TCCAccessRequest, service=kTCCServiceMicrophone, target_token={pid:34661, auid:501, euid:",
+        pid=567,
+    )
+    event = parse_entry(send)
+    assert event is not None
+    assert (event.sensor, event.pid, event.process_name) == (SensorType.MICROPHONE, 34661, "")
+    camera = _entry(
+        "com.apple.TCC",
+        "cameracaptured",
+        "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=563.1, "
+        "function=TCCAccessRequest, service=kTCCServiceCamera, target_token={pid:34654, auid:501, euid:501},",
+        pid=563,
+    )
+    event = parse_entry(camera)
+    assert event is not None and (event.sensor, event.pid) == (SensorType.CAMERA, 34654)
+
+
+def test_broker_own_entitlement_check_is_not_attributed_to_broker() -> None:
+    entry = _entry(
+        "com.apple.TCC",
+        "tccd",
+        "<TCCDProcess: identifier=com.apple.audio.coreaudiod, pid=567> has the "
+        "com.apple.private.tcc.manager.check-by-audit-token entitlement for service kTCCServiceMicrophone (co",
+    )
+    assert parse_entry(entry) is None
+
+
+def test_tccd_auth_allowed_line() -> None:
+    entry = _entry(
+        "com.apple.TCC",
+        "tccd",
+        "Auth:Allowed (Entitled) to kTCCServiceMicrophone for TCCDProcess: identifier=com.apple.VoiceMemos, "
+        "pid=34661, auid=501, euid=501, binary_path=/System/Applications/VoiceMe",
+    )
+    event = parse_entry(entry)
+    assert event is not None
+    assert (event.sensor, event.pid, event.bundle_id) == (
+        SensorType.MICROPHONE,
+        34661,
+        "com.apple.VoiceMemos",
+    )
+
+
+def test_runtime_predicate_includes_indicator_clause() -> None:
+    assert 'category == "sensor-indicators"' in PREDICATE
+    assert 'BEGINSWITH "Active activity attributions changed to"' in PREDICATE
