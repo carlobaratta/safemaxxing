@@ -114,6 +114,12 @@ async def test_log_stream_predicate_and_parser_on_real_entries() -> None:
             f"with_bundle={s.with_bundle} private_msg={s.redacted_message} "
             f"no_image={s.redacted_image_path} top={s.processes.most_common(3)}"
         )
+        if s.parsed:
+            print(f"  sensors: {dict(s.sensors)} levels: {dict(s.levels)}")
+        for update in s.indicator_updates:
+            print(f"  indicator: {update}")
+        for example in s.parsed_examples:
+            print(f"  parsed: {example}")
         for example in s.unparsed_examples:
             print(f"  unparsed: {example}")
 

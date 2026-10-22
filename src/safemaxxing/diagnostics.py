@@ -33,6 +33,7 @@ from safemaxxing.sensors import (
     SensorEventParser,
     SensorListener,
     log_stream_command,
+    parse_attributions,
 )
 
 LSOF = "/usr/sbin/lsof"
@@ -260,6 +261,8 @@ class SubsystemStats:
     sensors: Counter[str] = field(default_factory=Counter)
     # messageType of parsed entries: the runtime streams at --level info, so Debug ones are missed.
     levels: Counter[str] = field(default_factory=Counter)
+    # Every Control Center indicator list, in order: the timeline of which app holds which sensor.
+    indicator_updates: list[str] = field(default_factory=list)
 
 
 def _family(subsystem: str) -> str:
@@ -293,6 +296,12 @@ def summarize_sample(
         if not isinstance(entry.get("processID"), int):
             s.missing_pid += 1
         events = parser.parse(entry)
+        if (attributions := parse_attributions(message)) is not None:
+            s.indicator_updates.append(
+                "[" + ", ".join(f"{kind}:{who}" for kind, who in sorted(attributions)) + "]"
+            )
+            if not events:
+                continue  # Handled: the update only removed attributions.
         if not events:
             if len(s.unparsed_examples) < max_examples:
                 category = entry.get("category")
@@ -302,13 +311,14 @@ def summarize_sample(
         level = entry.get("messageType")
         level = level if isinstance(level, str) else "?"
         for event in events:
-            s.sensors[event.sensor.value] += 1
-            s.levels[level] += 1
-            if len(s.parsed_examples) < max_examples:
+            # Keep the first example of every sensor kind, even past max_examples.
+            if len(s.parsed_examples) < max_examples or event.sensor.value not in s.sensors:
                 s.parsed_examples.append(
                     f"{event.sensor.value} {event.identity} pid={event.pid} [{level}] "
                     f"{message[:160]}"
                 )
+            s.sensors[event.sensor.value] += 1
+            s.levels[level] += 1
             s.parsed += 1
             s.with_pid += event.pid is not None
             s.with_bundle += event.bundle_id is not None
