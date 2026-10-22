@@ -93,6 +93,19 @@ def test_socket_visibility() -> None:
     assert check_socket_visibility(own_only, user="carlo").status is Status.WARN
 
 
+def test_socket_visibility_distinguishes_daemons_and_lsof_failure() -> None:
+    argv = ("-nP", "-iTCP", "-iUDP", "-FpL")
+    # lsof exits 1 on partially unreadable fds; what it did print still counts.
+    partial = fixed({argv: CommandResult(1, LSOF_OWNERS, "lsof: WARNING: can't stat()")})
+    check = check_socket_visibility(partial, user="carlo")
+    assert check.status is Status.OK and "_mdnsresponder" in check.detail
+    users_only = fixed({argv: CommandResult(0, "p1\nLalice\np2\nLcarlo\n", "")})
+    assert check_socket_visibility(users_only, user="carlo").status is Status.WARN
+    missing = fixed({argv: CommandResult(127, "", "/usr/sbin/lsof: not found")})
+    check = check_socket_visibility(missing, user="carlo")
+    assert check.status is Status.FAIL and "not found" in check.detail
+
+
 def test_full_disk_access(tmp_path: Path) -> None:
     readable = tmp_path / "TCC.db"
     readable.write_bytes(b"SQLite format 3\x00")

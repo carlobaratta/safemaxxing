@@ -10,6 +10,7 @@ import asyncio
 import os
 import socket
 import sys
+import time
 
 import pytest
 
@@ -23,6 +24,7 @@ from safemaxxing.firewall import (
     run_command,
     table_missing,
 )
+from safemaxxing.network import HostnameResolver
 from safemaxxing.sensors import WIDE_DISCOVERY_PREDICATE, parse_entry
 
 LIVE = sys.platform == "darwin" and os.geteuid() == 0 and os.environ.get("SAFEMAXXING_LIVE") == "1"
@@ -119,3 +121,18 @@ async def test_log_stream_predicate_and_parser_on_real_entries() -> None:
 async def test_wide_discovery_predicate_accepted_by_log() -> None:
     entries = await collect_log_sample(1.0, predicate=WIDE_DISCOVERY_PREDICATE)
     print(f"\nwide predicate: {len(entries)} entries in 1s")
+
+
+async def test_reverse_dns_never_exceeds_timeout_on_real_resolver() -> None:
+    # Unresolvable / slow PTRs included: the call must return within the budget regardless.
+    ips = [TARGET_IP, "8.8.8.8", "9.9.9.9", "192.0.2.1", "203.0.113.7", "17.253.144.10"]
+    resolver = HostnameResolver(timeout_s=0.1)
+    try:
+        for ip in ips:
+            start = time.perf_counter()
+            host = await resolver.resolve(ip)
+            elapsed = time.perf_counter() - start
+            print(f"{ip}: {host!r} in {elapsed * 1000:.0f} ms")
+            assert elapsed < 0.15
+    finally:
+        resolver.close()
