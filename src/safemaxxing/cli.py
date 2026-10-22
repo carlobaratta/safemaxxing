@@ -37,6 +37,12 @@ WindowMs = Annotated[int, typer.Option("--window-ms", help="Correlation window i
 PollMs = Annotated[int, typer.Option("--poll-ms", help="Socket table poll interval in ms.", min=20)]
 Loopback = Annotated[bool, typer.Option("--include-loopback", help="Also track 127.0.0.1/::1.")]
 NoDns = Annotated[bool, typer.Option("--no-dns", help="Disable reverse DNS lookups.")]
+IncludeSystem = Annotated[
+    bool,
+    typer.Option(
+        "--include-system", help="Also correlate sockets of SIP-protected Apple binaries."
+    ),
+]
 Ignore = Annotated[
     list[str] | None,
     typer.Option("--ignore", help="Bundle id or process name to ignore (repeatable)."),
@@ -44,9 +50,16 @@ Ignore = Annotated[
 
 
 def _supervisor(
-    window_ms: int, poll_ms: int, include_loopback: bool, no_dns: bool, ignore: list[str] | None
+    window_ms: int,
+    poll_ms: int,
+    include_loopback: bool,
+    no_dns: bool,
+    ignore: list[str] | None,
+    include_system: bool,
 ) -> Supervisor:
-    config = CorrelationConfig(window_s=window_ms / 1000, ignore=frozenset(ignore or ()))
+    config = CorrelationConfig(
+        window_s=window_ms / 1000, ignore=frozenset(ignore or ()), include_system=include_system
+    )
     return Supervisor.default(
         config=config,
         poll_interval_s=poll_ms / 1000,
@@ -84,12 +97,14 @@ def tui(
     include_loopback: Loopback = False,
     no_dns: NoDns = False,
     ignore: Ignore = None,
+    include_system: IncludeSystem = False,
 ) -> None:
     """Interactive dashboard."""
     from safemaxxing.tui.app import SafemaxxingApp
 
     _warn_if_not_root()
-    SafemaxxingApp(_supervisor(window_ms, poll_ms, include_loopback, no_dns, ignore)).run()
+    supervisor = _supervisor(window_ms, poll_ms, include_loopback, no_dns, ignore, include_system)
+    SafemaxxingApp(supervisor).run()
 
 
 def _alert_json(alert: Alert) -> str:
@@ -106,6 +121,7 @@ def watch(
     include_loopback: Loopback = False,
     no_dns: NoDns = False,
     ignore: Ignore = None,
+    include_system: IncludeSystem = False,
     as_json: Annotated[bool, typer.Option("--json", help="Emit alerts as JSON lines.")] = False,
     show_events: Annotated[
         bool, typer.Option("--events", help="Also print sensor events.")
@@ -127,14 +143,16 @@ def watch(
         raise typer.BadParameter(f"unknown severity {min_severity!r}") from None
     if not as_json:
         _warn_if_not_root()
-    supervisor = _supervisor(window_ms, poll_ms, include_loopback, no_dns, ignore)
+    supervisor = _supervisor(window_ms, poll_ms, include_loopback, no_dns, ignore, include_system)
     firewall, processes = PfFirewall(), ProcessController()
 
     async def loop() -> None:
         async for update in supervisor.stream():
             if isinstance(update, Event) and show_events and not as_json:
+                service = f" ({update.service})" if update.service else ""
                 console.print(
-                    f"[dim]{update.sensor.value:<14}[/] {update.identity} pid={update.pid}"
+                    f"[dim]{update.sensor.value:<14}[/] {escape(update.identity)} "
+                    f"pid={update.pid}[dim]{escape(service)}[/]"
                 )
             if not isinstance(update, Alert):
                 continue

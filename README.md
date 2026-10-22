@@ -28,6 +28,9 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
   `com.apple.locationd`, `com.apple.coreaudio`, `com.apple.cmio`. Classifica Fotocamera,
   Microfono, Posizione, Screen Capture e qualunque altro servizio TCC, attribuendo l'accesso al
   PID / bundle id del *client* (non al daemon broker come `tccd` o `coreaudiod`).
+  Fonte principale: le attribuzioni dell'indicatore di privacy di Control Center
+  (`Active activity attributions changed to ["cam:…", "mic:…", "loc:…"]`), verificate su
+  macOS 27.
 - **Socket mapper** — polling della tabella socket via `psutil` (fallback `lsof -F`), solo
   connessioni *in uscita* (TCP `SYN_SENT`/`ESTABLISHED` non accettate su porte in ascolto, UDP
   connessi), risoluzione del bundle id dall'`Info.plist` dell'app e reverse DNS con cache.
@@ -141,6 +144,14 @@ Tutti i componenti con side effect accettano dipendenze iniettabili (comando `lo
 dei socket, runner di `pfctl`, funzione `kill`), quindi la logica è testabile anche su Linux.
 
 ## Limiti noti
+
+- Per default le connessioni di binari Apple protetti da SIP (`/System`, `/usr` tranne
+  `/usr/local`, `/bin`, `/sbin`) non vengono correlate: servizi come `cloudd` o `apsd` usano la
+  rete di continuo e genererebbero falsi positivi. Usa `--include-system` per includerli.
+- Molte app Apple (FaceTime, Messaggi) delegano la rete a demoni di sistema
+  (`avconferenced`, `identityservicesd`): l'accesso al sensore e la connessione avvengono in
+  processi diversi, quindi non producono alert. La correlazione è pensata per app di terze parti
+  che fanno rete da sé.
 
 - Le euristiche per `cmio` / `coreaudio` / `locationd` dipendono dal formato dei messaggi di
   log, che Apple cambia tra versioni di macOS. Le righe TCC (`kTCCService*`) sono le più stabili.

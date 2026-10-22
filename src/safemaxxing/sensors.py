@@ -105,16 +105,21 @@ WIDE_DISCOVERY_PREDICATE = (
 _TCC_SERVICE_RE = re.compile(r"kTCCService(\w+)")
 _ACCESSING_RE = re.compile(r"accessing=\{([^}]*)\}")
 _TCC_IDENTITY_RES = (
-    re.compile(rf"\bidentifier={_REDACTABLE}"),
     re.compile(rf"\bsubject={_REDACTABLE}"),
     re.compile(rf"Sub:\{{{_REDACTABLE}\}}"),
 )
+# One process description, e.g. "<TCCDProcess: identifier=com.apple.VoiceMemos, pid=34661>".
+# identifier and pid are always read from the same block so they cannot describe two processes.
+# Redaction tokens (<private>, <mask.hash: ...>) are consumed whole so their ">" does not end
+# the block early.
+_TCCD_PROCESS_RE = re.compile(r"TCCDProcess:\s*((?:<[^>]*>|[^}>])*)")
+_BLOCK_IDENTIFIER_RE = re.compile(rf"\bidentifier={_REDACTABLE}")
+_BLOCK_PID_RE = re.compile(r"\bpid=(\d+)")
+# Requests a broker makes on behalf of a client name the client here. (msgID is deliberately
+# not used: its prefix is the *sender*, i.e. the broker for coreaudiod/cameracaptured requests.)
 _TCC_PID_RES = (
-    re.compile(r"\bpid=(\d+)"),
     re.compile(r"\btarget_token=\{pid:(\d+)"),
     re.compile(r"\bsender_pid=(\d+)"),
-    # libTCC builds msgID as "<sender pid>.<n>" (macOS 27: msgID=34654.1 with sender_pid=34654).
-    re.compile(r"\bmsgID=(\d+)\.\d+"),
 )
 _PID_RE = re.compile(r"\bpid[\s:=]+(\d+)", re.IGNORECASE)
 _BUNDLE_RE = re.compile(
@@ -192,6 +197,10 @@ def _location_client(message: str) -> tuple[str | None, str] | None:
     value = unredacted(match.group(1)) if match else None
     if value is None:
         return None
+    # locationd client keys: "i<bundle id>:" or "e<executable path>:".
+    if value.endswith(":") and len(value) > 2 and value[0] in "ie":
+        body = value[1:-1].replace("\\/", "/")
+        return (body, "") if value[0] == "i" else (None, PurePosixPath(body).name)
     if value.startswith(_LOCATION_BUNDLE_PATH_PREFIX):
         path = value.removeprefix(_LOCATION_BUNDLE_PATH_PREFIX).replace("\\/", "/")
         return None, PurePosixPath(path).stem
@@ -214,6 +223,21 @@ def _attribute(
     return pid, bundle
 
 
+def _tcc_actor(message: str, client_pid: int | None) -> tuple[int | None, str | None]:
+    # The `accessing` process is the one using the resource; prefer it over requester/sender.
+    accessing = _ACCESSING_RE.search(message)
+    if block := _TCCD_PROCESS_RE.search(accessing.group(1) if accessing else message):
+        raw_pid = _first(_BLOCK_PID_RE, block.group(1))
+        return (int(raw_pid) if raw_pid else None), _first(_BLOCK_IDENTIFIER_RE, block.group(1))
+    pid = next((int(p) for r in _TCC_PID_RES if (p := _first(r, message))), None)
+    bundle = next((b for r in _TCC_IDENTITY_RES if (b := _first(r, message))), None)
+    if pid is None and bundle is None:
+        # Client-side libTCC lines ("SEND: ... service=kTCCServiceCamera") are logged by the
+        # requesting app itself, so the entry's own PID identifies it.
+        pid = client_pid
+    return pid, bundle
+
+
 def _classify_tcc(
     message: str, client_pid: int | None
 ) -> tuple[SensorType, str, int | None, str | None] | None:
@@ -222,14 +246,7 @@ def _classify_tcc(
         return None
     service = service_match.group(1)
     sensor = TCC_SERVICE_MAP.get(service, SensorType.TCC)
-    # The `accessing` process is the one using the resource; prefer it over requester/sender.
-    accessing = _ACCESSING_RE.search(message)
-    scopes = [accessing.group(1), message] if accessing else [message]
-    pid = next((int(p) for s in scopes for r in _TCC_PID_RES if (p := _first(r, s))), None)
-    bundle = next((b for s in scopes for r in _TCC_IDENTITY_RES if (b := _first(r, s))), None)
-    # Client-side libTCC lines (e.g. "SEND: ... service=kTCCServiceCamera") are logged by the
-    # requesting app itself, so the entry's own PID identifies it.
-    pid = pid if pid is not None else client_pid
+    pid, bundle = _tcc_actor(message, client_pid)
     # e.g. "identifier=com.apple.audio.coreaudiod ... entitlement for service kTCCServiceMicrophone"
     # is the daemon's own check on behalf of a client, reported separately via target_token.
     if bundle is not None and bundle.rsplit(".", 1)[-1] in BROKER_PROCESSES:
@@ -281,7 +298,8 @@ def parse_entry(entry: Mapping[str, object]) -> Event | None:
     else:
         return None
 
-    if process_name in BROKER_PROCESSES:
+    # The logging process is not the actor when the message names a different pid.
+    if process_name in BROKER_PROCESSES or (pid is not None and log_pid not in (None, pid)):
         process_name = ""
     if pid is None and bundle is None and not process_name:
         return None
@@ -366,10 +384,12 @@ class _Cooldown:
 
     def __init__(self, cooldown_s: float) -> None:
         self._cooldown_s = cooldown_s
-        self._last: dict[tuple[SensorType, int | None, str | None], float] = {}
+        self._last: dict[tuple[SensorType, int | str], float] = {}
 
     def accept(self, event: Event) -> bool:
-        key = (event.sensor, event.pid, event.bundle_id)
+        # The pid is the strongest identity; lines of one access disagree on name/bundle.
+        actor = event.pid if event.pid is not None else event.bundle_id or event.process_name
+        key = (event.sensor, actor)
         last = self._last.get(key)
         self._last[key] = event.timestamp
         if len(self._last) > 4096:

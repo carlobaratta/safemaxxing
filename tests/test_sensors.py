@@ -496,3 +496,71 @@ def test_tccd_auth_allowed_line() -> None:
 def test_runtime_predicate_includes_indicator_clause() -> None:
     assert 'category == "sensor-indicators"' in PREDICATE
     assert 'BEGINSWITH "Active activity attributions changed to"' in PREDICATE
+
+
+def test_locationd_client_key_format_i_prefix() -> None:
+    message = '{"msg":"markReceivingLocationInformation", "Client":"icom.apple.VoiceMemos:"}'
+    event = parse_entry(_locationd(message))
+    assert event is not None and event.bundle_id == "com.apple.VoiceMemos"
+
+
+def test_locationd_client_key_format_e_prefix() -> None:
+    message = (
+        '{"msg":"markReceivingLocationInformation", "Client":"e\\\\/usr\\\\/libexec\\\\/airportd:"}'
+    )
+    event = parse_entry(_locationd(message))
+    assert event is not None and (event.bundle_id, event.process_name) == (None, "airportd")
+
+
+def test_tccd_msgid_of_broker_request_is_not_an_actor() -> None:
+    # msgID=567.x is coreaudiod's own request id; the client is only in coreaudiod's SEND line.
+    entry = _entry(
+        "com.apple.TCC",
+        "tccd",
+        "AUTHREQ_CTX: msgID=567.175, function=<private>, service=kTCCServiceScreenCapture, preflight=yes, query=1, client_dict=(null), daemon_dict=<private>",
+    )
+    assert parse_entry(entry) is None
+
+
+def test_logging_process_is_not_the_actor_when_message_names_another_pid() -> None:
+    entry = _entry(
+        "com.apple.TCC",
+        "WindowServer",
+        "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=406.9, function=TCCAccessRequest, service=kTCCServiceScreenCapture, target_token={pid:35078, auid:501, euid:501},",
+        pid=406,
+    )
+    event = parse_entry(entry)
+    assert event is not None
+    assert (event.pid, event.process_name, event.bundle_id) == (35078, "", None)
+
+
+def test_identifier_and_pid_come_from_the_same_process_block() -> None:
+    entry = _entry(
+        "com.apple.TCC",
+        "tccd",
+        "AUTHREQ_ATTRIBUTION: msgID=1.1, attribution={responsible={TCCDProcess: identifier=com.apple.campo, pid=711}, accessing={TCCDProcess: identifier=com.apple.photolibraryd, pid=865}}, service=kTCCServicePhotos",
+    )
+    event = parse_entry(entry)
+    assert event is not None and (event.pid, event.bundle_id) == (865, "com.apple.photolibraryd")
+
+
+async def test_listener_cooldown_keys_on_pid_across_differing_names(tmp_path: Path) -> None:
+    lines = [
+        {
+            **TCC_ATTRIBUTION,
+            "eventMessage": "Auth:Allowed to kTCCServiceMicrophone for TCCDProcess: identifier=com.apple.FaceTime, pid=35075, auid=501",
+        },
+        {
+            "timestamp": "2026-10-22 10:00:00.300000+0000",
+            "subsystem": "com.apple.TCC",
+            "processID": 35075,
+            "processImagePath": "/System/Applications/FaceTime.app/Contents/MacOS/FaceTime",
+            "eventMessage": "SEND: 0/7 synchronous to com.apple.tccd: request: msgID=35075.2, function=TCCAccessRequest, service=kTCCServiceMicrophone,",
+        },
+    ]
+    data = tmp_path / "log.json"
+    data.write_text("[" + ",".join(json.dumps(e) for e in lines) + "]")
+    script = f"import sys; sys.stdout.write(open({str(data)!r}).read())"
+    listener = SensorListener(command=[sys.executable, "-c", script], cooldown_s=1.0)
+    events = [e async for e in listener.events()]
+    assert len(events) == 1 and events[0].pid == 35075
