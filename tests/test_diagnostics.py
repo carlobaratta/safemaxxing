@@ -177,3 +177,17 @@ def test_doctor_cli_renders_every_status(monkeypatch: pytest.MonkeyPatch) -> Non
     result = CliRunner().invoke(cli.app, ["doctor"])
     assert result.exit_code == 1
     assert "[2001:db8::1] looks like markup" in result.output
+
+
+def test_summary_shows_category_and_parsed_examples() -> None:
+    entries: list[dict[str, object]] = [
+        {"subsystem": "com.apple.controlcenter", "category": "sensor", "eventMessage": "Cameras"},
+        {
+            "subsystem": "com.apple.TCC",
+            "processImagePath": "/usr/libexec/tccd",
+            "eventMessage": "sender_pid=42, service=kTCCServiceCamera",
+        },
+    ]
+    stats = summarize_sample(entries)
+    assert stats["com.apple.controlcenter"].unparsed_examples == ["[sensor] Cameras"]
+    assert stats["com.apple.TCC"].parsed_examples == ["camera pid:42 pid=42"]

@@ -82,6 +82,17 @@ DISCOVERY_PREDICATE = (
     f' OR subsystem BEGINSWITH "{SUBSYSTEM_CMIO}"'
 )
 
+# Keyword search across *all* subsystems, to find where a macOS release logs sensor use.
+# locationd is excluded: it is located already and floods the sample (~100 lines/s).
+WIDE_DISCOVERY_PREDICATE = (
+    '(process == "tccd" OR subsystem CONTAINS[c] "tcc" OR subsystem CONTAINS[c] "cmio"'
+    ' OR subsystem CONTAINS[c] "audio" OR subsystem CONTAINS[c] "camera"'
+    ' OR subsystem CONTAINS[c] "avfoundation" OR subsystem CONTAINS[c] "controlcenter"'
+    ' OR process == "ControlCenter" OR eventMessage CONTAINS[c] "kTCCService"'
+    ' OR eventMessage CONTAINS[c] "camera" OR eventMessage CONTAINS[c] "microphone")'
+    f' AND NOT subsystem BEGINSWITH "{SUBSYSTEM_LOCATION}"'
+)
+
 _TCC_SERVICE_RE = re.compile(r"kTCCService(\w+)")
 _ACCESSING_RE = re.compile(r"accessing=\{([^}]*)\}")
 _TCC_IDENTITY_RES = (

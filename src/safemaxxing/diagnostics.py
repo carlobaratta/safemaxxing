@@ -218,6 +218,7 @@ class SubsystemStats:
     with_bundle: int = 0
     processes: Counter[str] = field(default_factory=Counter)
     unparsed_examples: list[str] = field(default_factory=list)
+    parsed_examples: list[str] = field(default_factory=list)
 
 
 def _family(subsystem: str) -> str:
@@ -252,8 +253,12 @@ def summarize_sample(
         event = parse_entry(entry)
         if event is None:
             if len(s.unparsed_examples) < max_examples:
-                s.unparsed_examples.append(message[:240])
+                category = entry.get("category")
+                prefix = f"[{category}] " if isinstance(category, str) and category else ""
+                s.unparsed_examples.append(prefix + message[:240])
             continue
+        if len(s.parsed_examples) < max_examples:
+            s.parsed_examples.append(f"{event.sensor.value} {event.identity} pid={event.pid}")
         s.parsed += 1
         s.with_pid += event.pid is not None
         s.with_bundle += event.bundle_id is not None
@@ -261,11 +266,14 @@ def summarize_sample(
 
 
 async def collect_log_sample(
-    seconds: float, command: Sequence[str] | None = None, level: str = "info"
+    seconds: float,
+    command: Sequence[str] | None = None,
+    level: str = "info",
+    predicate: str = DISCOVERY_PREDICATE,
 ) -> list[dict[str, object]]:
-    """Capture with the broad predicate: the point is to see lines the runtime filter drops."""
+    """Capture with a broad predicate: the point is to see lines the runtime filter drops."""
     entries: list[dict[str, object]] = []
-    listener = SensorListener(command=command or log_stream_command(DISCOVERY_PREDICATE, level))
+    listener = SensorListener(command=command or log_stream_command(predicate, level))
     try:
         async with asyncio.timeout(seconds):
             async for entry in listener.entries():
