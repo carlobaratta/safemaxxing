@@ -137,15 +137,37 @@ def parse_lsof_owners(output: str) -> dict[int, str]:
     return owners
 
 
+def _is_system_login(login: str) -> bool:
+    # Darwin daemons run as root or as underscore accounts (_mdnsresponder, _locationd, ...).
+    return login == "root" or login.startswith("_")
+
+
 def check_socket_visibility(run: SyncRunner = run_sync, user: str | None = None) -> Check:
-    """Can we see sockets owned by other users? (requires root; lsof is the reference)."""
+    """Can we see sockets owned by other users and system daemons? (root; lsof is the reference).
+
+    This is a root matter, not Full Disk Access: FDA does not widen what lsof can see.
+    """
     user = user or pwd.getpwuid(os.geteuid()).pw_name
     res = run([LSOF, "-nP", "-iTCP", "-iUDP", "-FpL"], 15.0)
     owners = parse_lsof_owners(res.stdout)
+    # lsof exits 1 when some descriptors are unreadable; only an empty result is a failure.
+    if not owners and res.returncode != 0:
+        detail = res.stderr.strip() or f"exit {res.returncode}"
+        return Check("foreign sockets", Status.FAIL, f"lsof failed: {detail}")
     foreign = {login for login in owners.values() if login != user}
+    daemons = sorted(login for login in foreign if _is_system_login(login))
+    if daemons:
+        sample = ", ".join(daemons[:4])
+        return Check(
+            "foreign sockets", Status.OK, f"{len(owners)} pids visible incl. daemons {sample}"
+        )
     if foreign:
         sample = ", ".join(sorted(foreign)[:4])
-        return Check("foreign sockets", Status.OK, f"{len(owners)} pids visible incl. {sample}")
+        return Check(
+            "foreign sockets",
+            Status.WARN,
+            f"{len(owners)} pids visible incl. {sample}, but no system-daemon sockets",
+        )
     return Check(
         "foreign sockets",
         Status.WARN,
