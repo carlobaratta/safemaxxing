@@ -6,10 +6,14 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 
 ## Inbox
 
+- [ ] [P1] Process rule: `testlogs/*.log` are committed only from the Mac, never from the container @process #tracking (a container commit made `git pull` fail at 13:50)
+
 - [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design)
 - [ ] [P3] `socket snapshot` without root falls back to lsof: say "needs root" there too @cli #doctor
 
 ## Now (In Progress)
+
+- [ ] [P1] Unblock the pull on the Mac @process #git (`rm testlogs/20261022-1345-macos.log && git pull origin claude/gifted-pascal-tp5iot`, check HEAD ≥ 511c802)
 
 - [ ] [P1] Task 3b: log sample while the camera and mic are really in use @sensors #log (re-run `scripts/macos_validate.sh`, open Photo Booth + Voice Memos at the prompt; also `sudo uv run safemaxxing sample --seconds 10 --wide` and `--debug`; add unparsed lines as verbatim fixtures)
 
@@ -29,6 +33,8 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 - [ ] [P3] CI job on a macOS runner for the non-root parts of the live suite @ci #macos
 
 ## Completed
+
+- [x] [P2] Second Mac run (stale code f58a357): block/unblock, doctor, DNS and live suite 7/7 confirmed again; CoreParsec location client parsed @macos #validation (done: 2026-10-22 @f58a357, Mac run 13:50)
 
 - [x] [P1] Doctor non-root: pf checks say "needs root" instead of "parent anchor missing"; Mac noise fixtures; script fixes; raw log archived @cli #doctor (done: 2026-10-22 @bc5a019)
 - [x] [P1] Task 4: reverse DNS on the real resolver stays within budget: max 100 ms (9.9.9.9 timed out at the cap), live test PASSED @network #dns (done: 2026-10-22 @f58a357, Mac run 13:45)

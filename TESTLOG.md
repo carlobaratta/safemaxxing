@@ -14,6 +14,49 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-22 13:50 +0200] - Second Mac run: STALE code (pull aborted)
+
+- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, uid=501 + sudo. Local branch
+  `claude/amazing-pasteur-hj7ek5` still at **f58a357**.
+- **Goal:** validate bc5a019 (non-root doctor), pf Disabled → auto-enable
+  (`PF_DISABLED_TEST=1`), and the sample with camera and mic active.
+- **Code changes:** none (the pull did not apply).
+- **Commands run:**
+  ```sh
+  git pull origin claude/gifted-pascal-tp5iot
+  PF_DISABLED_TEST=1 scripts/macos_validate.sh
+  ```
+- **Result and raw data:**
+  ```text
+  error: The following untracked working tree files would be overwritten by merge:
+          testlogs/20261022-1345-macos.log
+  Aborting
+  ```
+  The script ran anyway at f58a357, the old version: no pause before the sample, no
+  `PF_DISABLED_TEST`, doctor still says "parent anchor missing" without sudo, and the
+  `.pytest_cache` warning is still there. The results repeat the 13:45 run:
+  - doctor (root) exit 0, 30 pids incl. `_mdnsresponder`, `_netbios`; snapshot 8-9 ms.
+  - Block of 1.1.1.1: `301` → `000` (timeout 3.007 s) → `301`. pf was already Enabled
+    (for 37 min).
+  - Sample 8 s: 111 locationd entries, 33 with `<private>`, 0 without image path or pid.
+    New client parsed correctly: `CoreParsec`
+    (`root:com.apple.locationd.bundle-/System/Library/PrivateFrameworks/CoreParsec.framework`).
+    No camera or mic activity.
+  - DNS: every answer in 1-3 ms (mDNSResponder cache, warm after the previous run;
+    9.9.9.9 now resolves to `dns9.quad9.net`).
+  - Live suite 7/7 PASSED in 12.51 s.
+  - Raw log is on the Mac at `testlogs/20261022-1350-macos.log` (not committed from here).
+- **Problems / regressions:** no code regression. Process problem: committing from the
+  container a log that the script also creates on the Mac makes `git pull` fail. From now on
+  `testlogs/` is committed **only from the Mac**.
+- **Next steps:** on the Mac:
+  ```sh
+  rm testlogs/20261022-1345-macos.log   # identical copy is already in the repo
+  git pull origin claude/gifted-pascal-tp5iot
+  git log --oneline -1                  # must show 511c802 or later
+  PF_DISABLED_TEST=1 scripts/macos_validate.sh
+  ```
+
 ## [2026-10-22 13:50 +0200] - Fixes from the first Mac run (Linux container)
 
 - **Environment:** Linux 6.18.44 x86_64 cloud container, CPython 3.13.16, uid=0. Static
