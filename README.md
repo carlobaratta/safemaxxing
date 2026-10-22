@@ -85,10 +85,38 @@ e inviare segnali a processi altrui. Senza root safemaxxing funziona in modalit�
 | `tab` | Cambia pannello |
 | `q` | Esci |
 
+### Diagnostica
+
+`sudo safemaxxing doctor` verifica: macOS e versione, root, binari (`log`, `pfctl`, `lsof`),
+stato di pf (`pfctl -s info` → Enabled/Disabled), presenza di `anchor "com.apple/*"` nel
+ruleset principale, stato dell'anchor `com.apple/safemaxxing`, visibilità dei socket di altri
+utenti (via `lsof -FpL`), Full Disk Access del terminale (lettura del `TCC.db` di sistema,
+oggi opzionale), latenza di uno snapshot dei socket rispetto all'intervallo di polling e
+validità del predicato di `log stream`.
+
+`sudo safemaxxing sample --seconds 5 --out sample.jsonl` cattura log reali e mostra, per
+sottosistema, quante righe sono oscurate (`<private>` / `<mask.hash: …>`), quante vengono
+classificate e con quale attribuzione (PID / bundle id), più esempi di righe non riconosciute.
+Allegare l'output a una issue è il modo più rapido per migliorare le euristiche.
+
+Se i campi sono oscurati, macOS consente di mostrarli installando un profilo di configurazione
+con il payload `com.apple.system.logging` e `Enable-Private-Data = true` (solo su macchine di
+test: espone dati sensibili nel log di sistema).
+
 ### Note sul firewall
 
 I blocchi persistono dopo l'uscita da safemaxxing (fino a `safemaxxing flush` o al riavvio).
-safemaxxing abilita pf con `pfctl -E` se necessario. Per ispezionare lo stato:
+Al primo blocco safemaxxing:
+
+1. rifiuta di procedere se il ruleset principale non valuta `anchor "com.apple/*"` (le regole
+   dell'anchor sarebbero ignorate) e suggerisce `sudo pfctl -f /etc/pf.conf`;
+2. valida le regole con un dry-run (`pfctl -n -f -`) prima di caricarle, ignorando i warning
+   innocui di Darwin (`No ALTQ support in kernel`);
+3. abilita pf se è disattivato (`pfctl -E`, con fallback `pfctl -e`) e verifica con `-s info`;
+4. dopo `-T add` elimina gli stati esistenti verso l'IP (`pfctl -k 0.0.0.0/0 -k <IP>`), così
+   anche i socket già aperti smettono di funzionare.
+
+Per ispezionare lo stato:
 
 ```bash
 sudo pfctl -a com.apple/safemaxxing -s rules
@@ -116,6 +144,8 @@ dei socket, runner di `pfctl`, funzione `kill`), quindi la logica è testabile a
 
 - Le euristiche per `cmio` / `coreaudio` / `locationd` dipendono dal formato dei messaggi di
   log, che Apple cambia tra versioni di macOS. Le righe TCC (`kTCCService*`) sono le più stabili.
+- Il reverse DNS gira su un pool dedicato con timeout di 100 ms e non blocca mai il polling:
+  il nome host compare appena risolto, ma un alert può mostrare solo l'IP.
 - Il polling dei socket (default 200 ms) può perdere connessioni brevissime; un backend basato
   su Network Extension / Endpoint Security è nella roadmap.
 - **SNI**: oggi il nome host è ottenuto via reverse DNS. L'estrazione dello SNI dal ClientHello
@@ -130,6 +160,20 @@ uv run ruff format . && uv run ruff check .
 uv run mypy
 uv run pytest
 ```
+
+### Test live su Mac
+
+`tests/live/` contiene test contro il kernel Darwin e il log unificato reali, saltati di
+default. Aggiungono e rimuovono sempre un solo IP (default `1.1.1.1`, configurabile con
+`SAFEMAXXING_LIVE_IP`) nella tabella `safemaxxing_block`:
+
+```bash
+sudo SAFEMAXXING_LIVE=1 "$(which uv)" run pytest -m live -v -s
+```
+
+Verificano: `doctor` senza errori, parsing pulito di anchor e tabella, drop effettivo delle
+nuove connessioni e di quelle già aperte, ripristino dopo l'unblock, e un campionamento di
+5 s di `log stream` (`SAFEMAXXING_LIVE_SAMPLE_S`) con report su redazione e parsing.
 
 ## Licenza
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import os
+import re
 import signal
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -61,6 +62,33 @@ def is_root() -> bool:
     return os.geteuid() == 0
 
 
+_STATUS_RE = re.compile(r"^Status:\s+(Enabled|Disabled)", re.MULTILINE)
+# pfctl chatter on Darwin that is not an error.
+_BENIGN_STDERR = (
+    "No ALTQ support in kernel",
+    "ALTQ related functions disabled",
+    "pf enabled",
+    "pf already enabled",
+    "Token :",
+    "rules cleared",
+)
+PARENT_ANCHOR_RULE = 'anchor "com.apple/*"'
+
+
+def parse_pf_status(info: str) -> bool | None:
+    """Parse `pfctl -s info`: True if Enabled, False if Disabled, None if unrecognised."""
+    match = _STATUS_RE.search(info)
+    return None if match is None else match.group(1) == "Enabled"
+
+
+def meaningful_stderr(stderr: str) -> list[str]:
+    return [
+        line.strip()
+        for line in stderr.splitlines()
+        if line.strip() and not any(b in line for b in _BENIGN_STDERR)
+    ]
+
+
 class PfFirewall:
     def __init__(
         self, runner: Runner = run_command, anchor: str = ANCHOR, table: str = TABLE
@@ -73,20 +101,55 @@ class PfFirewall:
     def _table_cmd(self, *args: str) -> list[str]:
         return [PFCTL, "-a", self.anchor, "-t", self.table, "-T", *args]
 
+    async def is_enabled(self) -> bool | None:
+        return parse_pf_status((await self._run([PFCTL, "-s", "info"])).stdout)
+
+    async def anchor_reachable(self) -> bool:
+        """True if the main ruleset evaluates `com.apple/*`, the parent of our anchor."""
+        res = await self._run([PFCTL, "-s", "rules"])
+        return PARENT_ANCHOR_RULE in res.stdout
+
+    async def anchor_loaded(self) -> bool:
+        res = await self._run([PFCTL, "-a", self.anchor, "-s", "rules"])
+        return f"<{self.table}>" in res.stdout
+
+    async def _load_anchor(self) -> None:
+        rules = anchor_rules(self.table)
+        for argv in (
+            [PFCTL, "-a", self.anchor, "-n", "-f", "-"],
+            [PFCTL, "-a", self.anchor, "-f", "-"],
+        ):
+            res = await self._run(argv, stdin=rules)
+            problems = meaningful_stderr(res.stderr)
+            if res.returncode != 0 or problems:
+                detail = "; ".join(problems) or f"exit {res.returncode}"
+                raise FirewallError(f"pfctl rejected anchor rules: {detail}")
+        if not await self.anchor_loaded():
+            raise FirewallError(f"anchor {self.anchor} did not retain its rules after loading")
+
+    async def _enable(self) -> None:
+        if await self.is_enabled():
+            return
+        # -E takes a reference (safe alongside other pf users); -e is the plain fallback.
+        for flag in ("-E", "-e"):
+            await self._run([PFCTL, flag])
+            if await self.is_enabled():
+                return
+        raise FirewallError("pf is still disabled after `pfctl -E` / `pfctl -e`")
+
     async def setup(self) -> None:
         """Load the anchor rules and enable pf. Blocks deliberately outlive this process."""
         if self._ready:
             return
-        current = await self._run([PFCTL, "-a", self.anchor, "-s", "rules"])
-        if f"<{self.table}>" not in current.stdout:
-            loaded = await self._run(
-                [PFCTL, "-a", self.anchor, "-f", "-"], stdin=anchor_rules(self.table)
+        if not await self.anchor_reachable():
+            raise FirewallError(
+                f"the main pf ruleset does not evaluate {PARENT_ANCHOR_RULE}, so rules in "
+                f"{self.anchor} would be ignored; restore the default with: "
+                "sudo pfctl -f /etc/pf.conf"
             )
-            if loaded.returncode != 0:
-                raise FirewallError(f"pfctl could not load anchor: {loaded.stderr.strip()}")
-        enabled = await self._run([PFCTL, "-E"])
-        if enabled.returncode != 0 and "already enabled" not in enabled.stderr:
-            raise FirewallError(f"pfctl could not enable pf: {enabled.stderr.strip()}")
+        if not await self.anchor_loaded():
+            await self._load_anchor()
+        await self._enable()
         self._ready = True
 
     async def _table_op(self, kind: ActionKind, op: str, raw_ip: str) -> ActionResult:
@@ -96,10 +159,15 @@ class PfFirewall:
         except (ValueError, FirewallError) as exc:
             return ActionResult(kind, raw_ip, False, str(exc))
         res = await self._run(self._table_cmd(op, ip))
-        return ActionResult(kind, ip, res.returncode == 0, res.stderr.strip())
+        return ActionResult(kind, ip, res.returncode == 0, "; ".join(meaningful_stderr(res.stderr)))
 
     async def block(self, ip: str) -> ActionResult:
-        return await self._table_op(ActionKind.BLOCK_IP, "add", ip)
+        result = await self._table_op(ActionKind.BLOCK_IP, "add", ip)
+        if result.ok:
+            # Table rules only see new flows; drop existing state so open sockets die too.
+            any_net = "::/0" if ":" in result.target else "0.0.0.0/0"
+            await self._run([PFCTL, "-k", any_net, "-k", result.target])
+        return result
 
     async def unblock(self, ip: str) -> ActionResult:
         return await self._table_op(ActionKind.UNBLOCK_IP, "delete", ip)
@@ -110,7 +178,8 @@ class PfFirewall:
 
     async def flush(self) -> ActionResult:
         res = await self._run(self._table_cmd("flush"))
-        return ActionResult(ActionKind.UNBLOCK_IP, self.table, res.returncode == 0, res.stderr)
+        detail = "; ".join(meaningful_stderr(res.stderr))
+        return ActionResult(ActionKind.UNBLOCK_IP, self.table, res.returncode == 0, detail)
 
 
 _SIGNALS: dict[ActionKind, signal.Signals] = {

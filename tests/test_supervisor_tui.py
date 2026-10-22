@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator
 
 from conftest import T0, make_conn, make_event
+from test_firewall import FakePf
 from textual.widgets import DataTable
 
 from safemaxxing.correlation import CorrelationConfig, CorrelationEngine
-from safemaxxing.firewall import CommandResult, PfFirewall, ProcessController
+from safemaxxing.firewall import PfFirewall, ProcessController
 from safemaxxing.models import Alert, Event, NetworkConnection
 from safemaxxing.supervisor import Supervisor
 from safemaxxing.tui.app import SafemaxxingApp
@@ -53,21 +54,12 @@ async def test_supervisor_propagates_source_errors() -> None:
     raise AssertionError("expected FileNotFoundError")
 
 
-class RecordingRunner:
-    def __init__(self) -> None:
-        self.calls: list[list[str]] = []
-
-    async def __call__(self, argv: Sequence[str], stdin: str | None = None) -> CommandResult:
-        self.calls.append(list(argv))
-        return CommandResult(0, "", "")
-
-
 async def test_tui_shows_alert_and_enforces() -> None:
-    runner = RecordingRunner()
+    pf = FakePf(enabled=True)
     signals: list[tuple[int, int]] = []
     app = SafemaxxingApp(
         supervisor(hold=True),
-        firewall=PfFirewall(runner=runner),
+        firewall=PfFirewall(runner=pf),
         processes=ProcessController(kill=lambda pid, sig: signals.append((pid, sig))),
     )
     async with app.run_test() as pilot:
@@ -80,7 +72,7 @@ async def test_tui_shows_alert_and_enforces() -> None:
         table.focus()
         await pilot.press("b")
         await pilot.pause()
-        assert runner.calls[-1][-2:] == ["add", "203.0.113.9"]
+        assert pf.table == {"203.0.113.9"}
         await pilot.press("s")
         await pilot.press("k")
         await pilot.click("#yes")

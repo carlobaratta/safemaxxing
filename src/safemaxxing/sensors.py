@@ -60,10 +60,22 @@ LOCATION_HINTS = (
     "client authorized",
 )
 
+# Unified logging redacts dynamic strings unless private data is enabled on the host.
+REDACTED_RE = re.compile(r"<private>|<mask\.[^>]*>")
+_REDACTABLE = r"(<private>|<mask\.[^>]*>|[\w.\-]+)"
+
 _TCC_SERVICE_RE = re.compile(r"kTCCService(\w+)")
-_ACCESSING_RE = re.compile(r"accessing=\{[^}]*?identifier=([\w.\-]+),\s*pid=(\d+)")
-_SENDER_PID_RE = re.compile(r"\bsender_pid=(\d+)")
-_IDENTIFIER_RE = re.compile(r"\bidentifier=([\w.\-]+)|Sub:\{([\w.\-]+)\}")
+_ACCESSING_RE = re.compile(r"accessing=\{([^}]*)\}")
+_TCC_IDENTITY_RES = (
+    re.compile(rf"\bidentifier={_REDACTABLE}"),
+    re.compile(rf"\bsubject={_REDACTABLE}"),
+    re.compile(rf"Sub:\{{{_REDACTABLE}\}}"),
+)
+_TCC_PID_RES = (
+    re.compile(r"\bpid=(\d+)"),
+    re.compile(r"\btarget_token=\{pid:(\d+)"),
+    re.compile(r"\bsender_pid=(\d+)"),
+)
 _PID_RE = re.compile(r"\bpid[\s:=]+(\d+)", re.IGNORECASE)
 _BUNDLE_RE = re.compile(
     r"(?:bundle_?id|client(?:key)?)[\"'\s:=]+\"?([A-Za-z0-9][\w\-]*(?:\.[\w\-]+)+)", re.IGNORECASE
@@ -119,6 +131,17 @@ def parse_timestamp(raw: str) -> float:
     return time.time()
 
 
+def unredacted(value: str | None) -> str | None:
+    if not value or value == "(null)" or REDACTED_RE.fullmatch(value):
+        return None
+    return value
+
+
+def _first(pattern: re.Pattern[str], text: str) -> str | None:
+    match = pattern.search(text)
+    return unredacted(match.group(1)) if match else None
+
+
 def _contains_any(text: str, hints: Sequence[str]) -> bool:
     return any(h in text for h in hints)
 
@@ -141,15 +164,11 @@ def _classify_tcc(message: str) -> tuple[SensorType, str, int | None, str | None
         return None
     service = service_match.group(1)
     sensor = TCC_SERVICE_MAP.get(service, SensorType.TCC)
-    pid: int | None = None
-    bundle: str | None = None
-    if accessing := _ACCESSING_RE.search(message):
-        bundle, pid = accessing.group(1), int(accessing.group(2))
-    else:
-        if sender := _SENDER_PID_RE.search(message):
-            pid = int(sender.group(1))
-        if ident := _IDENTIFIER_RE.search(message):
-            bundle = ident.group(1) or ident.group(2)
+    # The `accessing` process is the one using the resource; prefer it over requester/sender.
+    accessing = _ACCESSING_RE.search(message)
+    scopes = [accessing.group(1), message] if accessing else [message]
+    pid = next((int(p) for s in scopes for r in _TCC_PID_RES if (p := _first(r, s))), None)
+    bundle = next((b for s in scopes for r in _TCC_IDENTITY_RES if (b := _first(r, s))), None)
     if pid is None and bundle is None:
         return None
     return sensor, service, pid, bundle
@@ -161,7 +180,7 @@ def parse_entry(entry: Mapping[str, object]) -> Event | None:
     message = _str(entry, "eventMessage")
     if not subsystem or not message:
         return None
-    image_path = _str(entry, "processImagePath")
+    image_path = unredacted(_str(entry, "processImagePath"))
     process_name = PurePosixPath(image_path).name if image_path else ""
     log_pid = _int(entry, "processID")
     timestamp = parse_timestamp(_str(entry, "timestamp"))
@@ -210,6 +229,18 @@ def parse_entry(entry: Mapping[str, object]) -> Event | None:
     )
 
 
+class SensorError(RuntimeError):
+    pass
+
+
+async def _drain_tail(stream: asyncio.StreamReader, keep: int = 4096) -> bytes:
+    """Read a pipe to EOF so the child never blocks on it, keeping only the tail."""
+    tail = b""
+    while chunk := await stream.read(65536):
+        tail = (tail + chunk)[-keep:]
+    return tail
+
+
 class _Cooldown:
     """Collapses the burst of log lines a single access produces into one event."""
 
@@ -238,22 +269,33 @@ class SensorListener:
         self._command = list(command) if command is not None else log_stream_command()
         self._cooldown = _Cooldown(cooldown_s)
 
-    async def events(self) -> AsyncIterator[Event]:
+    async def entries(self) -> AsyncIterator[dict[str, object]]:
+        """Raw unified-log entries; raises `SensorError` if `log` exits with an error."""
         proc = await asyncio.create_subprocess_exec(
             *self._command,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
-        assert proc.stdout is not None
+        assert proc.stdout is not None and proc.stderr is not None
+        stderr_task = asyncio.create_task(_drain_tail(proc.stderr))
         decoder = JsonStreamDecoder()
         utf8 = codecs.getincrementaldecoder("utf-8")(errors="replace")
         try:
             while chunk := await proc.stdout.read(65536):
                 for entry in decoder.feed(utf8.decode(chunk)):
-                    event = parse_entry(entry)
-                    if event is not None and self._cooldown.accept(event):
-                        yield event
+                    yield entry
+            returncode = await proc.wait()
+            if returncode != 0:
+                stderr = (await stderr_task).decode(errors="replace").strip()
+                raise SensorError(f"{self._command[0]} exited with {returncode}: {stderr}")
         finally:
             if proc.returncode is None:
                 proc.terminate()
                 await proc.wait()
+            stderr_task.cancel()
+
+    async def events(self) -> AsyncIterator[Event]:
+        async for entry in self.entries():
+            event = parse_entry(entry)
+            if event is not None and self._cooldown.accept(event):
+                yield event
