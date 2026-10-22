@@ -290,3 +290,49 @@ def test_real_macos_27_locationd_and_cmio_noise_is_not_an_event() -> None:
             "eventMessage": message,
         }
         assert parse_entry(entry) is None, message
+
+
+def _locationd(message: str) -> dict[str, object]:
+    return {
+        "timestamp": "2026-10-22 12:40:00.000000+0200",
+        "subsystem": "com.apple.locationd.Core",
+        "processID": 321,
+        "processImagePath": "/usr/libexec/locationd",
+        "eventMessage": message,
+    }
+
+
+def test_locationd_mark_receiving_with_framework_client() -> None:
+    # Verbatim from macOS 27.0.1 (the inner JSON keeps its escaped slashes).
+    message = (
+        '{"msg":"markReceivingLocationInformation", "Client":"root:com.apple.locationd.bundle-'
+        '\\/System\\/Library\\/PrivateFrameworks\\/CoreParsec.framework"}'
+    )
+    event = parse_entry(_locationd(message))
+    assert event is not None
+    assert event.sensor is SensorType.LOCATION
+    assert (event.pid, event.bundle_id, event.process_name) == (None, None, "CoreParsec")
+
+
+def test_locationd_mark_receiving_with_app_client() -> None:
+    message = '{"msg":"markReceivingLocationInformation", "Client":"carlo:com.apple.Maps"}'
+    event = parse_entry(_locationd(message))
+    assert event is not None
+    assert event.bundle_id == "com.apple.Maps" and event.identity == "com.apple.Maps"
+
+
+def test_locationd_redacted_client_dropped() -> None:
+    message = '{"msg":"markReceivingLocationInformation", "Client":<private>}'
+    assert parse_entry(_locationd(message)) is None
+
+
+def test_locationd_client_name_lookup_is_not_an_access() -> None:
+    message = (
+        '{"msg":"client getting effective client name", "bundleId":"", '
+        '"bundlePath":"\\/System\\/Library\\/PrivateFrameworks\\/CoreParsec.framework"}'
+    )
+    assert parse_entry(_locationd(message)) is None
+
+
+def test_log_stream_command_level() -> None:
+    assert log_stream_command(level="debug")[4:6] == ["--level", "debug"]

@@ -218,10 +218,13 @@ def sample(
     out: Annotated[
         Path | None, typer.Option("--out", help="Write raw entries as JSON lines.")
     ] = None,
+    debug: Annotated[
+        bool, typer.Option("--debug", help="Use `--level debug` (much noisier, finds more).")
+    ] = False,
 ) -> None:
     """Capture real `log stream` output and report redaction / parser coverage."""
     try:
-        entries = asyncio.run(collect_log_sample(seconds))
+        entries = asyncio.run(collect_log_sample(seconds, level="debug" if debug else "info"))
     except (OSError, SensorError) as exc:
         console.print(f"[bold red]log stream failed:[/] {exc}")
         raise typer.Exit(1) from None

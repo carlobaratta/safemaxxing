@@ -23,6 +23,12 @@ from safemaxxing.firewall import (
 from safemaxxing.models import ActionKind
 
 ALTQ = "No ALTQ support in kernel\nALTQ related functions disabled\n"
+# Verbatim from pfctl on macOS 27.0.1 for any `-f`, including `-a <anchor> -f -`.
+F_FLAG_WARNING = (
+    "pfctl: Use of -f option, could result in flushing of rules\n"
+    "present in the main ruleset added by the system at startup.\n"
+    "See /etc/pf.conf for further details.\n"
+)
 DEFAULT_MAIN_RULES = (
     'scrub-anchor "com.apple/*" all fragment reassemble\nanchor "com.apple/*" all\n'
 )
@@ -61,10 +67,10 @@ class FakePf:
             return CommandResult(0, self.anchor_rules if anchored else self.main_rules, ALTQ)
         if rest in (["-n", "-f", "-"], ["-f", "-"]):
             if self.reject_rules:
-                return CommandResult(1, "", ALTQ + "stdin:1: syntax error\n")
+                return CommandResult(1, "", F_FLAG_WARNING + ALTQ + "stdin:1: syntax error\n")
             if rest[0] == "-f":
                 self.anchor_rules = (stdin or "").replace("from any to", "all to")
-            return CommandResult(0, "", ALTQ)
+            return CommandResult(0, "", F_FLAG_WARNING + ALTQ)
         if rest == ["-E"]:
             self.enabled = self.enabled or self.honour_big_e
             return CommandResult(0, "", ALTQ + "pf enabled\nToken : 1234\n")
@@ -216,3 +222,16 @@ async def test_run_command_real_subprocess_decodes_both_streams() -> None:
 def test_anchor_missing_matches_darwin_reply() -> None:
     assert anchor_missing("pfctl: DIOCGETRULES: Invalid argument\n")
     assert not anchor_missing(ALTQ)
+
+
+def test_darwin_f_flag_warning_is_benign() -> None:
+    assert meaningful_stderr(F_FLAG_WARNING + ALTQ) == []
+
+
+async def test_unblock_works_even_when_setup_would_fail() -> None:
+    pf = FakePf(main_rules="")
+    pf.table.add("203.0.113.9")
+    result = await PfFirewall(runner=pf).unblock("203.0.113.9")
+    assert result.ok
+    assert pf.table == set()
+    assert not any("-f" in c or "-E" in c for c in pf.calls)
