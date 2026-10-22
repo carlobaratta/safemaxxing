@@ -3,7 +3,7 @@
 #
 #   scripts/macos_validate.sh            # asks for sudo once; writes testlogs/<stamp>-macos.log
 #
-# Env: SAFEMAXXING_LIVE_IP (default 1.1.1.1), SAMPLE_S (log sample seconds, default 8),
+# Env: SAFEMAXXING_LIVE_IP (default 1.1.1.1), SAMPLE_S (log sample seconds, default 15),
 #      PF_DISABLED_TEST=1 to `pfctl -d` first and check that `block` re-enables pf.
 # The block test adds and always removes one IP in the safemaxxing_block table.
 set -u
@@ -16,11 +16,13 @@ PFCTL=/sbin/pfctl
 ANCHOR=com.apple/safemaxxing
 TABLE=safemaxxing_block
 TARGET_IP="${SAFEMAXXING_LIVE_IP:-1.1.1.1}"
-SAMPLE_S="${SAMPLE_S:-8}"
+SAMPLE_S="${SAMPLE_S:-15}"
 PF_DISABLED_TEST="${PF_DISABLED_TEST:-0}"
 
 mkdir -p testlogs
-OUT="testlogs/$(date +%Y%m%d-%H%M)-macos.log"
+STAMP="$(date +%Y%m%d-%H%M)"
+OUT="testlogs/$STAMP-macos.log"
+SAMPLE_JSONL="testlogs/$STAMP-sample.jsonl"
 
 run() {
     echo
@@ -88,10 +90,13 @@ trap cleanup EXIT INT TERM
         probe
     fi
 
-    echo; echo "## Task 3: log stream sample (${SAMPLE_S}s)"
-    read -r -p ">>> Open Photo Booth (camera), start a Voice Memos recording (mic), then Enter " \
-        _ </dev/tty >/dev/tty 2>&1
-    run sudo "$UV" run safemaxxing sample --seconds "$SAMPLE_S"
+    echo; echo "## Task 3: log stream sample (${SAMPLE_S}s, raw entries in $SAMPLE_JSONL)"
+    # Start events are logged only once, when an app opens a sensor: the apps must be opened
+    # *during* the sample, not before it.
+    read -r -p ">>> Quit Photo Booth and Voice Memos. Press Enter, then within ${SAMPLE_S}s open \
+Photo Booth (camera), record in Voice Memos (mic), and quit both " _ </dev/tty >/dev/tty 2>&1
+    run sudo "$UV" run safemaxxing sample --seconds "$SAMPLE_S" --out "$SAMPLE_JSONL"
+    sudo chown "$(id -un)" "$SAMPLE_JSONL" 2>/dev/null
 
     echo; echo "## Tasks 2-4: live pytest suite"
     run sudo SAFEMAXXING_LIVE=1 SAFEMAXXING_LIVE_IP="$TARGET_IP" "$UV" run pytest -m live -v -s -p no:cacheprovider

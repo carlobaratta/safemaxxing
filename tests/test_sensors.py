@@ -576,3 +576,52 @@ async def test_listener_cooldown_keys_on_pid_across_differing_names(tmp_path: Pa
     listener = SensorListener(command=[sys.executable, "-c", script], cooldown_s=1.0)
     events = [e async for e in listener.events()]
     assert len(events) == 1 and events[0].pid == 35075
+
+
+def test_sandboxd_tcc_checks_on_behalf_of_others_are_not_accesses() -> None:
+    # Verbatim (truncated by `sample`) from macOS 27.0.1 while Photo Booth was open.
+    send = _entry(
+        "com.apple.TCC",
+        "sandboxd",
+        "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=401.411, "
+        "function=TCCAccessRequest, service=kTCCServiceSystemPolicyAllFiles,",
+        pid=401,
+    )
+    manager = _entry(
+        "com.apple.TCC",
+        "tccd",
+        "<TCCDProcess: identifier=com.apple.sandboxd, pid=401> has the "
+        "com.apple.private.tcc.manager.check-by-audit-token entitlement for service kTCCServiceAll (compose",
+        pid=180,
+    )
+    assert parse_entry(send) is None
+    assert parse_entry(manager) is None
+
+
+def test_manager_entitlement_line_dropped_for_any_daemon() -> None:
+    entry = _entry(
+        "com.apple.TCC",
+        "tccd",
+        "<TCCDProcess: identifier=com.example.helperd, pid=777> has the "
+        "com.apple.private.tcc.manager.check-by-audit-token entitlement for service kTCCServiceCamera",
+        pid=180,
+    )
+    assert parse_entry(entry) is None
+
+
+def test_background_session_full_disk_query_still_attributed() -> None:
+    entry = _entry(
+        "com.apple.TCC",
+        "tccd",
+        "Background Session: service kTCCServiceSystemPolicyAllFiles from "
+        "Sub:{com.apple.CoreRoutine.helperservice}Resp:{TCCDProcess: "
+        "identifier=com.apple.CoreRoutine.helperservice, pid=36094}",
+        pid=180,
+    )
+    event = parse_entry(entry)
+    assert event is not None
+    assert (event.sensor, event.pid, event.bundle_id) == (
+        SensorType.TCC,
+        36094,
+        "com.apple.CoreRoutine.helperservice",
+    )

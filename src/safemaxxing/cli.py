@@ -276,6 +276,8 @@ def sample(
         )
     console.print(table)
     for name, s in sorted(stats.items()):
+        for update in s.indicator_updates:
+            console.print(f"[cyan]indicator {name}:[/] {escape(update)}")
         for example in s.unparsed_examples:
             console.print(f"[dim]unparsed {name}:[/] {escape(example)}")
         if s.parsed:

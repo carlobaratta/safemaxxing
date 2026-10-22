@@ -230,3 +230,28 @@ def test_summary_counts_sensors_and_log_levels() -> None:
     s = summarize_sample(entries)["com.apple.cmio"]
     assert s.sensors == {"camera": 1} and s.levels == {"Debug": 1}
     assert "[Debug] CMIODevice startStream" in s.parsed_examples[0]
+
+
+def test_summary_lists_indicator_timeline_and_one_example_per_sensor() -> None:
+    def indicator(attributions: str) -> dict[str, object]:
+        return {
+            "subsystem": "com.apple.controlcenter",
+            "category": "sensor-indicators",
+            "processImagePath": "/System/Library/CoreServices/ControlCenter.app/ControlCenter",
+            "eventMessage": f"Active activity attributions changed to {attributions}",
+        }
+
+    entries = [
+        indicator('["cam:com.apple.PhotoBooth"]'),
+        indicator('["cam:com.apple.PhotoBooth", "mic:com.apple.VoiceMemos"]'),
+        indicator("[]"),  # Seen verbatim on macOS 27.0.1 when the apps were closed.
+    ]
+    s = summarize_sample(entries, max_examples=1)["com.apple.controlcenter"]
+    assert s.indicator_updates == [
+        "[cam:com.apple.PhotoBooth]",
+        "[cam:com.apple.PhotoBooth, mic:com.apple.VoiceMemos]",
+        "[]",
+    ]
+    assert s.unparsed_examples == []
+    assert s.sensors == {"camera": 1, "microphone": 1}
+    assert len(s.parsed_examples) == 2  # max_examples=1, but microphone is a new kind

@@ -38,6 +38,8 @@ BROKER_PROCESSES = frozenset(
         "audiomxd",
         "com.apple.cmio.registerassistantservice",
         "ControlCenter",
+        # Checks TCC for sandboxed processes (seen on macOS 27.0.1 with kTCCServiceSystemPolicy*).
+        "sandboxd",
     }
 )
 
@@ -103,6 +105,9 @@ WIDE_DISCOVERY_PREDICATE = (
 )
 
 _TCC_SERVICE_RE = re.compile(r"kTCCService(\w+)")
+# "<TCCDProcess: identifier=X, pid=N> has the com.apple.private.tcc.manager... entitlement": a
+# daemon (coreaudiod, sandboxd, ...) checking its right to query TCC for others, never an access.
+_TCC_MANAGER_ENTITLEMENT = "com.apple.private.tcc.manager"
 _ACCESSING_RE = re.compile(r"accessing=\{([^}]*)\}")
 _TCC_IDENTITY_RES = (
     re.compile(rf"\bsubject={_REDACTABLE}"),
@@ -242,7 +247,7 @@ def _classify_tcc(
     message: str, client_pid: int | None
 ) -> tuple[SensorType, str, int | None, str | None] | None:
     service_match = _TCC_SERVICE_RE.search(message)
-    if not service_match:
+    if not service_match or _TCC_MANAGER_ENTITLEMENT in message:
         return None
     service = service_match.group(1)
     sensor = TCC_SERVICE_MAP.get(service, SensorType.TCC)
