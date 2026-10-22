@@ -21,11 +21,13 @@ from safemaxxing.firewall import (
     PFCTL,
     TABLE,
     CommandResult,
+    anchor_missing,
     meaningful_stderr,
     parse_pf_status,
 )
 from safemaxxing.network import PsutilSnapshot
 from safemaxxing.sensors import (
+    DISCOVERY_PREDICATE,
     LOG_BINARY,
     REDACTED_RE,
     SensorListener,
@@ -111,7 +113,9 @@ def check_pf_anchor(run: SyncRunner = run_sync) -> list[Check]:
         )
     ours = run([PFCTL, "-a", ANCHOR, "-s", "rules"], 5.0)
     problems = meaningful_stderr(ours.stderr)
-    if ours.returncode != 0 or problems:
+    if anchor_missing(ours.stderr):
+        anchor = Check(f"anchor {ANCHOR}", Status.OK, "not created yet (loads on first block)")
+    elif ours.returncode != 0 or problems:
         detail = "; ".join(problems) or f"exit {ours.returncode}"
         anchor = Check(f"anchor {ANCHOR}", Status.FAIL, detail)
     elif f"<{TABLE}>" in ours.stdout:
@@ -259,8 +263,9 @@ def summarize_sample(
 async def collect_log_sample(
     seconds: float, command: Sequence[str] | None = None
 ) -> list[dict[str, object]]:
+    """Capture with the broad predicate: the point is to see lines the runtime filter drops."""
     entries: list[dict[str, object]] = []
-    listener = SensorListener(command=command)
+    listener = SensorListener(command=command or log_stream_command(DISCOVERY_PREDICATE))
     try:
         async with asyncio.timeout(seconds):
             async for entry in listener.entries():

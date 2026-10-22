@@ -20,13 +20,6 @@ SUBSYSTEM_LOCATION = "com.apple.locationd"
 SUBSYSTEM_AUDIO = "com.apple.coreaudio"
 SUBSYSTEM_CMIO = "com.apple.cmio"
 
-PREDICATE = (
-    f'(subsystem == "{SUBSYSTEM_TCC}" AND eventMessage CONTAINS "kTCCService")'
-    f' OR subsystem BEGINSWITH "{SUBSYSTEM_LOCATION}"'
-    f' OR subsystem BEGINSWITH "{SUBSYSTEM_AUDIO}"'
-    f' OR subsystem BEGINSWITH "{SUBSYSTEM_CMIO}"'
-)
-
 # Daemons that log on behalf of clients: their own PID is never the culprit.
 BROKER_PROCESSES = frozenset(
     {
@@ -40,6 +33,7 @@ BROKER_PROCESSES = frozenset(
         "cameracaptured",
         "avconferenced",
         "audiomxd",
+        "com.apple.cmio.registerassistantservice",
     }
 )
 
@@ -63,6 +57,29 @@ LOCATION_HINTS = (
 # Unified logging redacts dynamic strings unless private data is enabled on the host.
 REDACTED_RE = re.compile(r"<private>|<mask\.[^>]*>")
 _REDACTABLE = r"(<private>|<mask\.[^>]*>|[\w.\-]+)"
+
+
+def _mentions_any(hints: Sequence[str]) -> str:
+    return "(" + " OR ".join(f'eventMessage CONTAINS[c] "{h}"' for h in hints) + ")"
+
+
+_TCC_CLAUSE = f'(subsystem == "{SUBSYSTEM_TCC}" AND eventMessage CONTAINS "kTCCService")'
+
+# Runtime predicate: `log` drops the bulk of locationd/cmio chatter before it reaches Python.
+PREDICATE = (
+    f"{_TCC_CLAUSE}"
+    f' OR (subsystem BEGINSWITH "{SUBSYSTEM_LOCATION}" AND {_mentions_any(LOCATION_HINTS)})'
+    f' OR (subsystem BEGINSWITH "{SUBSYSTEM_AUDIO}" AND {_mentions_any(AUDIO_START_HINTS)})'
+    f' OR (subsystem BEGINSWITH "{SUBSYSTEM_CMIO}" AND {_mentions_any(CAMERA_HINTS)})'
+)
+
+# Everything from the watched subsystems, for `safemaxxing sample` format discovery.
+DISCOVERY_PREDICATE = (
+    f"{_TCC_CLAUSE}"
+    f' OR subsystem BEGINSWITH "{SUBSYSTEM_LOCATION}"'
+    f' OR subsystem BEGINSWITH "{SUBSYSTEM_AUDIO}"'
+    f' OR subsystem BEGINSWITH "{SUBSYSTEM_CMIO}"'
+)
 
 _TCC_SERVICE_RE = re.compile(r"kTCCService(\w+)")
 _ACCESSING_RE = re.compile(r"accessing=\{([^}]*)\}")

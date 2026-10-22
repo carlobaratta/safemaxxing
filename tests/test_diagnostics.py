@@ -66,7 +66,20 @@ def test_pf_anchor_checks() -> None:
     )
     parent, ours = check_pf_anchor(broken)
     assert parent.status is Status.FAIL and "/etc/pf.conf" in parent.detail
-    assert ours.status is Status.FAIL and "does not exist" in ours.detail
+    assert ours.status is Status.OK and "not created yet" in ours.detail
+
+
+def test_pf_anchor_reports_real_errors() -> None:
+    run = fixed(
+        {
+            ("-s", "rules"): CommandResult(0, DEFAULT_MAIN_RULES, ALTQ),
+            ("-a", ANCHOR, "-s", "rules"): CommandResult(
+                1, "", "pfctl: /dev/pf: Permission denied"
+            ),
+        }
+    )
+    _, ours = check_pf_anchor(run)
+    assert ours.status is Status.FAIL and "Permission denied" in ours.detail
 
 
 LSOF_OWNERS = "p1\nLroot\nf5\np222\nL_mdnsresponder\np4242\nLcarlo\n"

@@ -6,6 +6,11 @@ from pathlib import Path
 
 from safemaxxing.models import SensorType
 from safemaxxing.sensors import (
+    AUDIO_START_HINTS,
+    CAMERA_HINTS,
+    DISCOVERY_PREDICATE,
+    LOCATION_HINTS,
+    PREDICATE,
     JsonStreamDecoder,
     SensorError,
     SensorListener,
@@ -235,3 +240,53 @@ async def test_listener_raises_on_log_error() -> None:
         assert "Must be admin" in str(exc) and "64" in str(exc)
         return
     raise AssertionError("expected SensorError")
+
+
+def test_runtime_predicate_filters_chatter_at_source() -> None:
+    assert 'eventMessage CONTAINS[c] "startupdatinglocation"' in PREDICATE
+    assert 'eventMessage CONTAINS[c] "startstream"' in PREDICATE
+    assert PREDICATE.count("(") == PREDICATE.count(")")
+    assert '"' not in "".join(CAMERA_HINTS + AUDIO_START_HINTS + LOCATION_HINTS)
+    assert "CONTAINS[c]" not in DISCOVERY_PREDICATE
+
+
+def test_real_macos_27_locationd_and_cmio_noise_is_not_an_event() -> None:
+    noise = [
+        (
+            "com.apple.locationd.Core",
+            "locationd",
+            '{"msg":"onAvengerAdvertisementDetected: got avenger advertisement", '
+            '"geotaggingEngine":"CLGeotaggingEngine"}',
+        ),
+        (
+            "com.apple.locationd.Core",
+            "locationd",
+            '{"msg":"convertToSPAdvertisement", "address":<private>, '
+            '"data":<private>, "rssi":<private>}',
+        ),
+        (
+            "com.apple.locationd.Motion",
+            "locationd",
+            "Type,<private>,motionStateUpdate:Motion,1,conf,2,isMoving,<private>",
+        ),
+        (
+            "com.apple.locationd.Core",
+            "locationd",
+            '{"msg":"received AOP log", "log":{"flags":1,"seq":5225}}',
+        ),
+        (
+            "com.apple.cmio",
+            "com.apple.cmio.registerassistantservice",
+            "RegisterAssistantService.m:2118:-[RegisterAssistantServer "
+            "addRegisterExtensionConnection:]_block_invoke [<private>] set Preference",
+        ),
+    ]
+    for subsystem, process, message in noise:
+        entry = {
+            "timestamp": "2026-10-22 12:30:00.000000+0200",
+            "subsystem": subsystem,
+            "processID": 321,
+            "processImagePath": f"/usr/libexec/{process}",
+            "eventMessage": message,
+        }
+        assert parse_entry(entry) is None, message
