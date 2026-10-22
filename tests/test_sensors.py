@@ -7,6 +7,7 @@ from pathlib import Path
 from safemaxxing.models import SensorType
 from safemaxxing.sensors import (
     JsonStreamDecoder,
+    SensorError,
     SensorListener,
     log_stream_command,
     parse_entry,
@@ -161,3 +162,76 @@ async def test_listener_streams_and_collapses_bursts(tmp_path: Path) -> None:
     listener = SensorListener(command=[sys.executable, "-c", script], cooldown_s=1.0)
     events = [e async for e in listener.events()]
     assert len(events) == 2
+
+
+def test_tcc_accessing_block_order_independent_and_preferred() -> None:
+    entry = {
+        **TCC_ATTRIBUTION,
+        "eventMessage": (
+            "AUTHREQ_ATTRIBUTION: msgID=1.2, attribution={requesting={TCCDProcess: "
+            "identifier=com.apple.WebKit.GPU, pid=900}, accessing={TCCDProcess: pid=4242, "
+            "auid=501, binary_path=/x, identifier=com.example.spy}}, service=kTCCServiceCamera"
+        ),
+    }
+    event = parse_entry(entry)
+    assert event is not None
+    assert (event.pid, event.bundle_id) == (4242, "com.example.spy")
+
+
+def test_tcc_redacted_identifier_falls_back_to_pid() -> None:
+    entry = {
+        **TCC_ATTRIBUTION,
+        "eventMessage": (
+            "AUTHREQ_ATTRIBUTION: attribution={accessing={TCCDProcess: identifier=<private>, "
+            "pid=4242, auid=501}}, service=kTCCServiceMicrophone"
+        ),
+    }
+    event = parse_entry(entry)
+    assert event is not None
+    assert event.pid == 4242 and event.bundle_id is None
+
+
+def test_tcc_mask_hash_redaction_is_not_a_bundle_id() -> None:
+    entry = {
+        **TCC_ATTRIBUTION,
+        "eventMessage": "AUTHREQ_SUBJECT: subject=<mask.hash: 'AbC=='>, service=kTCCServiceCamera",
+    }
+    assert parse_entry(entry) is None
+
+
+def test_tcc_subject_and_target_token_formats() -> None:
+    entry = {
+        **TCC_ATTRIBUTION,
+        "eventMessage": (
+            "AUTHREQ_CTX: msgID=1.3, function=TCCAccessRequest, service=kTCCServiceCamera, "
+            "subject=com.example.spy, target_token={pid:4242, auid:501, euid:501}"
+        ),
+    }
+    event = parse_entry(entry)
+    assert event is not None
+    assert (event.pid, event.bundle_id) == (4242, "com.example.spy")
+
+
+def test_fully_redacted_entry_dropped_and_private_image_path_ignored() -> None:
+    entry = {
+        "timestamp": "2026-10-22 10:00:00.000000+0000",
+        "subsystem": "com.apple.cmio",
+        "processID": 4242,
+        "processImagePath": "<private>",
+        "eventMessage": "startStream client: <private> pid: <private>",
+    }
+    event = parse_entry(entry)
+    assert event is not None
+    assert event.pid == 4242 and event.process_name == ""
+
+
+async def test_listener_raises_on_log_error() -> None:
+    script = "import sys; sys.stderr.write('log: Must be admin to run stream'); sys.exit(64)"
+    listener = SensorListener(command=[sys.executable, "-c", script])
+    try:
+        async for _ in listener.events():
+            pass
+    except SensorError as exc:
+        assert "Must be admin" in str(exc) and "64" in str(exc)
+        return
+    raise AssertionError("expected SensorError")

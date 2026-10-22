@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import asyncio
 import plistlib
+import threading
+import time
 from pathlib import Path
 
 from conftest import T0, make_conn
 
 from safemaxxing.models import NetworkConnection, Protocol
-from safemaxxing.network import NetworkMonitor, bundle_id_for_exe, outbound_only, parse_lsof
+from safemaxxing.network import (
+    HostnameResolver,
+    NetworkMonitor,
+    bundle_id_for_exe,
+    outbound_only,
+    parse_lsof,
+)
 
 LSOF_OUTPUT = """p4242
 cSpy
@@ -77,3 +86,87 @@ def test_monitor_reports_only_new_connections() -> None:
     assert monitor.poll_once(T0 + 2) == []
     (active,) = monitor.active
     assert active.local_port == 1 and active.first_seen == T0 + 1
+
+
+async def test_resolver_times_out_fast_and_caches_late_answer() -> None:
+    release = threading.Event()
+
+    def slow_lookup(ip: str) -> str | None:
+        release.wait(5)
+        return "late.example"
+
+    resolver = HostnameResolver(timeout_s=0.05, lookup=slow_lookup)
+    start = time.perf_counter()
+    assert await resolver.resolve("8.8.8.8") is None
+    assert time.perf_counter() - start < 0.5
+    release.set()
+    for _ in range(100):
+        if resolver.cached("8.8.8.8"):
+            break
+        await asyncio.sleep(0.01)
+    assert resolver.cached("8.8.8.8") == "late.example"
+    resolver.close()
+
+
+async def test_resolver_skips_private_and_bounds_pending() -> None:
+    calls: list[str] = []
+    block = threading.Event()
+
+    def lookup(ip: str) -> str | None:
+        calls.append(ip)
+        block.wait(5)
+        return None
+
+    resolver = HostnameResolver(timeout_s=0.01, lookup=lookup, max_pending=2, max_workers=1)
+    assert await resolver.resolve("10.0.0.1") is None
+    for ip in ("8.8.8.8", "8.8.4.4", "1.1.1.1"):
+        resolver.prefetch(ip)
+    await asyncio.sleep(0.05)
+    assert "10.0.0.1" not in calls
+    assert len(calls) <= 2
+    block.set()
+    resolver.close()
+
+
+async def test_poller_not_blocked_by_hung_dns() -> None:
+    hang = threading.Event()
+
+    def hung(ip: str) -> str | None:
+        hang.wait(5)
+        return None
+
+    resolver = HostnameResolver(lookup=hung)
+    polls: list[float] = []
+    batches = iter(
+        [
+            [],
+            [make_conn(remote_address="8.8.8.8")],
+            [make_conn(local_port=2, remote_address="8.8.4.4")],
+        ]
+    )
+
+    def snapshot(now: float) -> list[NetworkConnection]:
+        polls.append(now)
+        return next(batches, [])
+
+    monitor = NetworkMonitor(snapshot=snapshot, interval_s=0.02, resolver=resolver)
+    start = time.perf_counter()
+    stream = monitor.connections()
+    got = [await anext(stream), await anext(stream)]
+    assert [c.local_port for c in got] == [51544, 2]
+    assert time.perf_counter() - start < 1.0
+    await stream.aclose()
+    hang.set()
+    resolver.close()
+
+
+async def test_active_picks_up_hostname_once_resolved() -> None:
+    resolver = HostnameResolver(lookup=lambda ip: "dst.example")
+    monitor = NetworkMonitor(
+        snapshot=lambda now: [make_conn(remote_address="8.8.8.8")], resolver=resolver
+    )
+    (fresh,) = monitor.poll_once(T0)
+    assert fresh.hostname is None
+    assert await resolver.resolve("8.8.8.8") == "dst.example"
+    assert monitor.active[0].hostname == "dst.example"
+    resolver.close()

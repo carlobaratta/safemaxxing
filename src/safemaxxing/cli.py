@@ -6,19 +6,20 @@ import asyncio
 import contextlib
 import dataclasses
 import json
-import os
-import platform
-import shutil
+from pathlib import Path
 from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
+from rich.table import Table
 
 from safemaxxing import __version__
 from safemaxxing.correlation import CorrelationConfig
-from safemaxxing.firewall import PFCTL, PfFirewall, ProcessController, is_root
+from safemaxxing.diagnostics import Status, collect_log_sample, run_doctor, summarize_sample
+from safemaxxing.firewall import PfFirewall, ProcessController, is_root
 from safemaxxing.models import ActionResult, Alert, Event, Severity
-from safemaxxing.sensors import LOG_BINARY
+from safemaxxing.sensors import SensorError
 from safemaxxing.supervisor import Supervisor
 
 app = typer.Typer(
@@ -196,20 +197,56 @@ def kill(pid: int) -> None:
     _print_result(ProcessController().kill(pid))
 
 
+_STATUS_STYLE = {Status.OK: "[green]✔", Status.WARN: "[yellow]!", Status.FAIL: "[red]✘"}
+
+
 @app.command()
-def doctor() -> None:
-    """Check platform prerequisites."""
-    checks = [
-        ("macOS (Darwin)", platform.system() == "Darwin"),
-        ("running as root", is_root()),
-        (f"{LOG_BINARY} present", os.access(LOG_BINARY, os.X_OK)),
-        (f"{PFCTL} present", os.access(PFCTL, os.X_OK)),
-        ("lsof available", shutil.which("lsof") is not None),
-    ]
-    for label, ok in checks:
-        console.print(f"{'[green]✔' if ok else '[red]✘'}[/] {label}")
-    if not all(ok for _, ok in checks):
+def doctor(poll_ms: PollMs = 200) -> None:
+    """Check root, pf state/anchor, socket visibility, Full Disk Access and log predicates."""
+    checks = run_doctor(poll_interval_s=poll_ms / 1000)
+    for check in checks:
+        console.print(
+            f"{_STATUS_STYLE[check.status]}[/] {check.name}: [dim]{escape(check.detail)}[/]"
+        )
+    if any(c.status is Status.FAIL for c in checks):
         raise typer.Exit(1)
+
+
+@app.command()
+def sample(
+    seconds: Annotated[float, typer.Option("--seconds", min=0.5)] = 5.0,
+    out: Annotated[
+        Path | None, typer.Option("--out", help="Write raw entries as JSON lines.")
+    ] = None,
+) -> None:
+    """Capture real `log stream` output and report redaction / parser coverage."""
+    try:
+        entries = asyncio.run(collect_log_sample(seconds))
+    except (OSError, SensorError) as exc:
+        console.print(f"[bold red]log stream failed:[/] {exc}")
+        raise typer.Exit(1) from None
+    if out is not None:
+        with out.open("w") as fh:
+            for entry in entries:
+                fh.write(json.dumps(entry) + "\n")
+    table = Table(title=f"log stream sample: {len(entries)} entries in {seconds:g}s")
+    for column in ("subsystem", "entries", "<private> msg", "no image path", "no pid"):
+        table.add_column(column)
+    for column in ("parsed", "w/ pid", "w/ bundle", "top processes"):
+        table.add_column(column)
+    stats = summarize_sample(entries)
+    for name, s in sorted(stats.items()):
+        top = ", ".join(f"{p}×{n}" for p, n in s.processes.most_common(3))
+        table.add_row(
+            name,
+            *map(str, (s.entries, s.redacted_message, s.redacted_image_path, s.missing_pid)),
+            *map(str, (s.parsed, s.with_pid, s.with_bundle)),
+            top,
+        )
+    console.print(table)
+    for name, s in sorted(stats.items()):
+        for example in s.unparsed_examples:
+            console.print(f"[dim]unparsed {name}:[/] {escape(example)}")
 
 
 if __name__ == "__main__":

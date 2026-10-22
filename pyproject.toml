@@ -63,3 +63,4 @@ mypy_path = "tests"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = ["live: needs a real Mac, root and SAFEMAXXING_LIVE=1"]

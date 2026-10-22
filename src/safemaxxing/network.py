@@ -10,7 +10,8 @@ import re
 import socket
 import subprocess
 import time
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncGenerator, Callable, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import PurePosixPath
 
@@ -198,33 +199,86 @@ def outbound_only(
     return out
 
 
-class HostnameResolver:
-    """Reverse-DNS lookups with a bounded positive/negative cache."""
+def _reverse_lookup(ip: str) -> str | None:
+    try:
+        return socket.getnameinfo((ip, 0), socket.NI_NAMEREQD)[0]
+    except OSError:
+        return None
 
-    def __init__(self, timeout_s: float = 0.3, max_entries: int = 4096) -> None:
+
+class HostnameResolver:
+    """Reverse DNS that can never stall the socket poller.
+
+    Lookups run on a dedicated small thread pool (a hung `getnameinfo` cannot be cancelled, so
+    it must not occupy the default executor that the poller uses). Callers either `prefetch`
+    (fire-and-forget) or `resolve` with a hard timeout; late answers still land in the cache.
+    """
+
+    def __init__(
+        self,
+        timeout_s: float = 0.1,
+        max_entries: int = 4096,
+        max_workers: int = 4,
+        max_pending: int = 64,
+        lookup: Callable[[str], str | None] = _reverse_lookup,
+    ) -> None:
         self._timeout_s = timeout_s
         self._max_entries = max_entries
+        self._max_pending = max_pending
+        self._lookup = lookup
+        self._executor = ThreadPoolExecutor(max_workers, thread_name_prefix="safemaxxing-dns")
         self._cache: dict[str, str | None] = {}
+        self._pending: dict[str, asyncio.Future[str | None]] = {}
 
     def cached(self, ip: str) -> str | None:
         return self._cache.get(ip)
 
-    async def resolve(self, ip: str) -> str | None:
-        if ip in self._cache:
-            return self._cache[ip]
-        host: str | None = None
-        try:
-            if not ipaddress.ip_address(ip).is_private:
-                loop = asyncio.get_running_loop()
-                host, _ = await asyncio.wait_for(
-                    loop.getnameinfo((ip, 0), socket.NI_NAMEREQD), self._timeout_s
-                )
-        except (TimeoutError, OSError, ValueError):
-            host = None
+    def _store(self, ip: str, host: str | None) -> None:
         if len(self._cache) >= self._max_entries:
             self._cache.clear()
         self._cache[ip] = host
-        return host
+
+    def _settle(self, ip: str, future: asyncio.Future[str | None]) -> None:
+        self._pending.pop(ip, None)
+        failed = future.cancelled() or future.exception() is not None
+        self._store(ip, None if failed else future.result())
+
+    def _start(self, ip: str) -> asyncio.Future[str | None] | None:
+        if ip in self._cache:
+            return None
+        if (pending := self._pending.get(ip)) is not None:
+            return pending
+        try:
+            routable = ipaddress.ip_address(ip).is_global
+        except ValueError:
+            routable = False
+        if not routable:
+            self._store(ip, None)
+            return None
+        if len(self._pending) >= self._max_pending:
+            return None
+        future = asyncio.get_running_loop().run_in_executor(self._executor, self._lookup, ip)
+        self._pending[ip] = future
+        future.add_done_callback(lambda f: self._settle(ip, f))
+        return future
+
+    def prefetch(self, ip: str) -> None:
+        self._start(ip)
+
+    async def resolve(self, ip: str) -> str | None:
+        future = self._start(ip)
+        if future is None:
+            return self._cache.get(ip)
+        try:
+            await asyncio.wait_for(asyncio.shield(future), self._timeout_s)
+        except TimeoutError:
+            return None
+        # The done-callback may not have run yet; settle now so the cache is never behind.
+        self._settle(ip, future)
+        return self._cache.get(ip)
+
+    def close(self) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 class NetworkMonitor:
@@ -243,9 +297,15 @@ class NetworkMonitor:
         self._resolver = resolver
         self._active: dict[tuple[object, ...], NetworkConnection] = {}
 
+    def _named(self, conn: NetworkConnection) -> NetworkConnection:
+        if conn.hostname is not None or self._resolver is None:
+            return conn
+        host = self._resolver.cached(conn.remote_address)
+        return dataclasses.replace(conn, hostname=host) if host else conn
+
     @property
     def active(self) -> tuple[NetworkConnection, ...]:
-        return tuple(self._active.values())
+        return tuple(self._named(c) for c in self._active.values())
 
     def poll_once(self, now: float | None = None) -> list[NetworkConnection]:
         if self._snapshot is None:
@@ -261,29 +321,30 @@ class NetworkMonitor:
                 continue
             if conn.bundle_id is None and conn.exe_path:
                 conn = dataclasses.replace(conn, bundle_id=bundle_id_for_exe(conn.exe_path))
+            conn = self._named(conn)
             active[conn.key] = conn
             fresh.append(conn)
         self._active = active
         return fresh
 
-    async def _with_hostnames(self, conns: list[NetworkConnection]) -> list[NetworkConnection]:
-        if self._resolver is None or not conns:
-            return conns
-        hosts = await asyncio.gather(*(self._resolver.resolve(c.remote_address) for c in conns))
-        resolved = [
-            dataclasses.replace(c, hostname=h) if h else c
-            for c, h in zip(conns, hosts, strict=True)
-        ]
-        for c in resolved:
-            if c.key in self._active:
-                self._active[c.key] = c
-        return resolved
+    def _prefetch(self, conns: Iterable[NetworkConnection]) -> None:
+        if self._resolver is None:
+            return
+        for conn in conns:
+            if conn.hostname is None:
+                self._resolver.prefetch(conn.remote_address)
 
-    async def connections(self) -> AsyncIterator[NetworkConnection]:
+    async def connections(self) -> AsyncGenerator[NetworkConnection]:
+        """Yield new outbound sockets; DNS is only prefetched, never awaited, here."""
+        loop = asyncio.get_running_loop()
         # Sockets already open at startup cannot be the effect of a future sensor event.
-        await self._with_hostnames(await asyncio.to_thread(self.poll_once))
+        self._prefetch(await asyncio.to_thread(self.poll_once))
+        deadline = loop.time()
         while True:
-            await asyncio.sleep(self._interval_s)
+            deadline += self._interval_s
+            await asyncio.sleep(max(0.0, deadline - loop.time()))
+            deadline = max(deadline, loop.time())
             fresh = await asyncio.to_thread(self.poll_once)
-            for conn in await self._with_hostnames(fresh):
+            self._prefetch(fresh)
+            for conn in fresh:
                 yield conn
