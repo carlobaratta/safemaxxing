@@ -190,4 +190,21 @@ def test_summary_shows_category_and_parsed_examples() -> None:
     ]
     stats = summarize_sample(entries)
     assert stats["com.apple.controlcenter"].unparsed_examples == ["[sensor] Cameras"]
-    assert stats["com.apple.TCC"].parsed_examples == ["camera pid:42 pid=42"]
+    assert stats["com.apple.TCC"].parsed_examples == [
+        "camera pid:42 pid=42 [?] sender_pid=42, service=kTCCServiceCamera"
+    ]
+
+
+def test_summary_counts_sensors_and_log_levels() -> None:
+    entries: list[dict[str, object]] = [
+        {
+            "subsystem": "com.apple.cmio",
+            "messageType": "Debug",
+            "processID": 34654,
+            "processImagePath": "/System/Applications/Photo Booth.app/Contents/MacOS/Photo Booth",
+            "eventMessage": "CMIODevice startStream",
+        }
+    ]
+    s = summarize_sample(entries)["com.apple.cmio"]
+    assert s.sensors == {"camera": 1} and s.levels == {"Debug": 1}
+    assert "[Debug] CMIODevice startStream" in s.parsed_examples[0]

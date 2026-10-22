@@ -260,6 +260,10 @@ def sample(
     for name, s in sorted(stats.items()):
         for example in s.unparsed_examples:
             console.print(f"[dim]unparsed {name}:[/] {escape(example)}")
+        if s.parsed:
+            sensors = ", ".join(f"{k}×{v}" for k, v in s.sensors.most_common())
+            levels = ", ".join(f"{k}×{v}" for k, v in s.levels.most_common())
+            console.print(f"[bold]{name}[/]: {escape(sensors)}  levels: {escape(levels)}")
         for example in s.parsed_examples:
             console.print(f"[green]parsed {name}:[/] {escape(example)}")
 
