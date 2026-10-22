@@ -14,6 +14,83 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-22 13:55 +0200] - Fixes from the third Mac run (Linux container)
+
+- **Environment:** Linux 6.18.44 x86_64 cloud container, CPython 3.13.16, uid=0. Static
+  checks only.
+- **Goal:** act on the 13:51 run.
+- **Code changes:**
+  - `src/safemaxxing/sensors.py`: `sandboxd` added to `BROKER_PROCESSES`; any TCC line with
+    `com.apple.private.tcc.manager` (a daemon's own right to query for others) is dropped.
+  - `src/safemaxxing/diagnostics.py`, `cli.py`: `sample` prints each Control Center
+    indicator update as `indicator <subsystem>: [kind:bundle, ...]`. A `[]` removal is no
+    longer listed as unparsed. Each sensor kind keeps at least one parsed example.
+  - `tests/live/test_live_macos.py`: also prints sensors, levels, indicators, parsed examples.
+  - `scripts/macos_validate.sh`: Enter first, then open the apps within a 15 s sample; raw
+    entries go to `testlogs/<stamp>-sample.jsonl`.
+  - Tests: verbatim sandboxd lines, a generic manager line, CoreRoutine "Background
+    Session" still attributed, indicator timeline.
+- **Commands run:** `uv run ruff check && uv run mypy --strict && uv run pytest -q`
+- **Result and raw data:**
+  ```text
+  All checks passed!
+  Success: no issues found in 20 source files
+  108 passed, 7 skipped in 2.34s
+  ```
+- **Problems / regressions:** none.
+- **Next steps:** `git pull` then `scripts/macos_validate.sh` (PF_DISABLED_TEST not needed).
+
+## [2026-10-22 13:51 +0200] - Third Mac run: pf auto-enable, non-root doctor, sensors in use
+
+- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, uid=501 + sudo, HEAD a534d12
+  (pull OK after removing the colliding testlog). Pasted from "Task 1" onward.
+- **Goal:** validate the non-root doctor fix and pf Disabled → auto-enable; sample with
+  Photo Booth (camera) and Voice Memos (mic).
+- **Code changes:** none (run of a534d12).
+- **Commands run:** `PF_DISABLED_TEST=1 scripts/macos_validate.sh`; raw log on the Mac at
+  `testlogs/20261022-1351-macos.log`.
+- **Result and raw data:**
+  - **Task 1 non-root:** `! pf status / pf parent anchor / anchor com.apple/safemaxxing:
+    needs root (/dev/pf: Permission denied)` → **fix confirmed**. Root: exit 0, 31 pids
+    incl. `_mdnsresponder`, `_netbios`.
+  - **Task 2b:**
+    ```text
+    $ sudo pfctl -d                       -> pf disabled; Status: Disabled for 0 days 00:00:00
+    $ sudo safemaxxing block 1.1.1.1      -> block_ip 1.1.1.1: ok 1/1 addresses added.
+    $ sudo pfctl -s info                  -> Status: Enabled for 0 days 00:00:00
+    curl 301 (0.042s) -> 000 (timeout 3.001s) -> unblock -> 301 (0.044s)
+    ```
+    **Automatic re-enable confirmed.**
+  - **Task 3 `sample` 8 s** (216 entries):
+    - `com.apple.TCC` 65 entries, 9 `<private>`, 41 parsed, all `tcc` (no camera/mic).
+      Mostly `sandboxd` pid 401 checking `kTCCServiceSystemPolicyAllFiles` for others →
+      **false attribution, fixed in 65305d6**. `CoreRoutine.helperservice` pid 36094
+      correctly attributed.
+    - `com.apple.cmio` 8 entries, all from `cameracaptured`, all
+      `CMIOExtensionStream _initWithLocalizedName...<private>`: not start events.
+    - `com.apple.locationd` 143 entries, 8 parsed (client CoreParsec).
+    - **No `com.apple.coreaudio` entries and no indicator lines.** The apps were opened
+      *before* Enter, so their start lines were logged before the stream began (script
+      flaw, fixed in 65305d6).
+  - **Live sample 5 s** (500 entries, apps open):
+    - cmio 344 entries (`registerassistantservice` 207, `Photo Booth` 82,
+      `cameracaptured` 23), 252 with `<private>`, **2 parsed with pid** (sensor not
+      printed by the old test).
+    - TCC 4 entries, 3 parsed (incl. `voicememod`).
+    - controlcenter: `[sensor-indicators] Active activity attributions changed to []`, the
+      apps being closed. Handled correctly (no new attribution), but listed as "unparsed".
+  - **Task 4:** DNS 1-3 ms (warm cache); `17.253.144.10` → `www.brkgls.com` in 90 ms
+    (< 100 ms cap).
+  - Live suite **7/7 PASSED** in 12.75 s.
+- **Redaction (Task 3):** on every subsystem `no image path` = 0 and `no pid` = 0, so PID
+  and processImagePath arrive in clear. `<private>` appears only inside messages: cmio
+  73% (252/344), locationd ~25%, TCC 14% (9/65). Bundle IDs in TCC `TCCDProcess` blocks
+  are in clear.
+- **Problems / regressions vs Linux:** (1) sandboxd false positives (fixed); (2) camera/mic
+  start not captured, a procedure problem (fixed); (3) no coreaudio lines while recording:
+  the mic depends on the `mic:` indicator, still to be observed.
+- **Next steps:** re-run the sample with the apps opened *during* the 15 s.
+
 ## [2026-10-22 13:50 +0200] - Second Mac run: STALE code (pull aborted)
 
 - **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, uid=501 + sudo. Local branch
