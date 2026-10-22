@@ -42,7 +42,16 @@ def test_pf_status_states() -> None:
     assert check_pf_status(enabled).status is Status.OK
     assert check_pf_status(disabled).status is Status.WARN
     result = check_pf_status(denied)
-    assert result.status is Status.WARN and "Permission denied" in result.detail
+    assert result.status is Status.WARN and "needs root" in result.detail
+
+
+def test_pf_anchor_without_root_is_not_reported_as_missing() -> None:
+    # Real macOS 27.0.1 output of `safemaxxing doctor` without sudo.
+    denied = CommandResult(1, "", "pfctl: /dev/pf: Permission denied")
+    run = fixed({("-s", "rules"): denied, ("-a", ANCHOR, "-s", "rules"): denied})
+    checks = check_pf_anchor(run)
+    assert [c.status for c in checks] == [Status.WARN, Status.WARN]
+    assert all("needs root" in c.detail and "/etc/pf.conf" not in c.detail for c in checks)
 
 
 def test_pf_anchor_checks() -> None:

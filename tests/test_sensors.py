@@ -267,6 +267,18 @@ def test_real_macos_27_locationd_and_cmio_noise_is_not_an_event() -> None:
             '"data":<private>, "rssi":<private>}',
         ),
         (
+            "com.apple.locationd.Core",
+            "locationd",
+            '{"msg":"onAvengerAdvertisementDetected: advertisement is near-owner from other '
+            'people and do not process it", "geotaggingEngine":"CLGeotaggingEngine"}',
+        ),
+        (
+            "com.apple.cmio",
+            "com.apple.cmio.registerassistantservice",
+            "RegisterAssistantService.m:2156:-[RegisterAssistantServer "
+            "addRegisterExtensionConnection:]_block_invoke [<private>] setting <private> : <private>",
+        ),
+        (
             "com.apple.locationd.Motion",
             "locationd",
             "Type,<private>,motionStateUpdate:Motion,1,conf,2,isMoving,<private>",
