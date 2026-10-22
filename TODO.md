@@ -7,20 +7,17 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 ## Inbox
 
 - [ ] [P1] Process rule: `testlogs/*.log` are committed only from the Mac, never from the container @process #tracking (a container commit made `git pull` fail at 13:50)
-
+- [ ] [P2] No `com.apple.coreaudio` lines at all while Voice Memos recorded: rely on the `mic:` indicator, or find the new subsystem with `sample --wide --debug` @sensors #mic
+- [ ] [P3] `calaccessd` (7 TCC lines at 13:51) may be another broker: check its lines in the raw JSON @sensors #tcc
 - [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design)
 - [ ] [P3] `socket snapshot` without root falls back to lsof: say "needs root" there too @cli #doctor
 
 ## Now (In Progress)
 
-- [ ] [P1] Unblock the pull on the Mac @process #git (`rm testlogs/20261022-1345-macos.log && git pull origin claude/gifted-pascal-tp5iot`, check HEAD ≥ 511c802)
-
-- [ ] [P1] Task 3b: log sample while the camera and mic are really in use @sensors #log (re-run `scripts/macos_validate.sh`, open Photo Booth + Voice Memos at the prompt; also `sudo uv run safemaxxing sample --seconds 10 --wide` and `--debug`; add unparsed lines as verbatim fixtures)
+- [ ] [P1] Task 3b: log sample with camera and mic opened *during* the sample @sensors #log (`git pull`, `scripts/macos_validate.sh`: Enter first, then open Photo Booth + record in Voice Memos within 15 s; expect `indicator ... [cam:com.apple.PhotoBooth]` and `[mic:com.apple.VoiceMemos]`, camera/microphone events; raw entries in `testlogs/<stamp>-sample.jsonl`)
 
 ## Next Up
 
-- [ ] [P1] Task 2b: pf Disabled → auto-enable on first block, validated live @firewall #pf (`PF_DISABLED_TEST=1 scripts/macos_validate.sh`; expect `Status: Disabled` then `Enabled` after `block`)
-- [ ] [P2] Re-run the non-root `doctor` and confirm pf checks now read "needs root" @cli #doctor (`uv run safemaxxing doctor`)
 - [ ] [P2] Grant Full Disk Access to the terminal and confirm the FDA check turns OK @cli #fda (System Settings → Privacy & Security → Full Disk Access)
 - [ ] [P2] Watch `sudo uv run safemaxxing tui` for freezes for a few minutes of normal browsing @network #dns
 
@@ -33,6 +30,11 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 - [ ] [P3] CI job on a macOS runner for the non-root parts of the live suite @ci #macos
 
 ## Completed
+
+- [x] [P1] sandboxd / TCC-manager self checks no longer reported as accesses; `sample` shows the indicator timeline and one example per sensor; script samples *while* the apps open @sensors #tcc (done: 2026-10-22 @65305d6)
+- [x] [P1] Task 2b: pf Disabled → `safemaxxing block` re-enables it (`Status: Disabled` → `Enabled`), curl 301 → 000 → 301 @firewall #pf (done: 2026-10-22 @a534d12, Mac run 13:51)
+- [x] [P2] Non-root `doctor` now reads "needs root (/dev/pf: Permission denied)" for the 3 pf checks @cli #doctor (done: 2026-10-22 @a534d12, Mac run 13:51)
+- [x] [P1] Unblock the pull on the Mac (removed the colliding testlog) @process #git (done: 2026-10-22, Mac run 13:51 at a534d12)
 
 - [x] [P2] Second Mac run (stale code f58a357): block/unblock, doctor, DNS and live suite 7/7 confirmed again; CoreParsec location client parsed @macos #validation (done: 2026-10-22 @f58a357, Mac run 13:50)
 
