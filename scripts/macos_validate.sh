@@ -3,7 +3,8 @@
 #
 #   scripts/macos_validate.sh            # asks for sudo once; writes testlogs/<stamp>-macos.log
 #
-# Env: SAFEMAXXING_LIVE_IP (default 1.1.1.1), SAMPLE_S (log sample seconds, default 8).
+# Env: SAFEMAXXING_LIVE_IP (default 1.1.1.1), SAMPLE_S (log sample seconds, default 8),
+#      PF_DISABLED_TEST=1 to `pfctl -d` first and check that `block` re-enables pf.
 # The block test adds and always removes one IP in the safemaxxing_block table.
 set -u
 
@@ -16,6 +17,7 @@ ANCHOR=com.apple/safemaxxing
 TABLE=safemaxxing_block
 TARGET_IP="${SAFEMAXXING_LIVE_IP:-1.1.1.1}"
 SAMPLE_S="${SAMPLE_S:-8}"
+PF_DISABLED_TEST="${PF_DISABLED_TEST:-0}"
 
 mkdir -p testlogs
 OUT="testlogs/$(date +%Y%m%d-%H%M)-macos.log"
@@ -32,6 +34,8 @@ probe() {  # curl with a short timeout; prints the HTTP code (000 = no connectio
 }
 
 sudo -v || exit 1
+# Earlier `sudo pytest` runs leave a root-owned cache that breaks the non-root run.
+[[ -d .pytest_cache ]] && sudo chown -R "$(id -un)" .pytest_cache
 was_blocked=0
 sudo "$PFCTL" -a "$ANCHOR" -t "$TABLE" -T show 2>/dev/null | grep -qx "[[:space:]]*$TARGET_IP" \
     && was_blocked=1
@@ -67,6 +71,11 @@ trap cleanup EXIT INT TERM
     else
         echo; echo "## Task 2: live block of $TARGET_IP"
         probe
+        if [[ $PF_DISABLED_TEST == 1 ]]; then
+            echo "# PF_DISABLED_TEST: disabling pf; block must re-enable it"
+            run sudo "$PFCTL" -d
+            sudo "$PFCTL" -s info 2>&1 | grep '^Status'
+        fi
         run sudo "$UV" run safemaxxing block "$TARGET_IP"
         run sudo "$PFCTL" -s info
         run sudo "$PFCTL" -a "$ANCHOR" -s rules
@@ -79,11 +88,13 @@ trap cleanup EXIT INT TERM
         probe
     fi
 
-    echo; echo "## Task 3: log stream sample (${SAMPLE_S}s; use camera/mic/location meanwhile)"
+    echo; echo "## Task 3: log stream sample (${SAMPLE_S}s)"
+    read -r -p ">>> Open Photo Booth (camera), start a Voice Memos recording (mic), then Enter " \
+        _ </dev/tty >/dev/tty 2>&1
     run sudo "$UV" run safemaxxing sample --seconds "$SAMPLE_S"
 
     echo; echo "## Tasks 2-4: live pytest suite"
-    run sudo SAFEMAXXING_LIVE=1 SAFEMAXXING_LIVE_IP="$TARGET_IP" "$UV" run pytest -m live -v -s
+    run sudo SAFEMAXXING_LIVE=1 SAFEMAXXING_LIVE_IP="$TARGET_IP" "$UV" run pytest -m live -v -s -p no:cacheprovider
 } 2>&1 | tee "$OUT"
 
 echo

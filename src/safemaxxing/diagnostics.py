@@ -90,9 +90,19 @@ def check_binaries(paths: Iterable[str] = (LOG_BINARY, PFCTL, LSOF)) -> list[Che
     ]
 
 
+def _pf_denied(stderr: str) -> bool:
+    """`/dev/pf` is root-only: without sudo every pfctl query fails the same way."""
+    return "Permission denied" in stderr
+
+
+_PF_NEEDS_ROOT = "needs root (/dev/pf: Permission denied)"
+
+
 def check_pf_status(run: SyncRunner = run_sync) -> Check:
     res = run([PFCTL, "-s", "info"], 5.0)
     enabled = parse_pf_status(res.stdout)
+    if enabled is None and _pf_denied(res.stderr):
+        return Check("pf status", Status.WARN, _PF_NEEDS_ROOT)
     if enabled is None:
         detail = "; ".join(meaningful_stderr(res.stderr)) or "unrecognised `pfctl -s info` output"
         return Check("pf status", Status.WARN, detail)
@@ -103,6 +113,12 @@ def check_pf_status(run: SyncRunner = run_sync) -> Check:
 
 def check_pf_anchor(run: SyncRunner = run_sync) -> list[Check]:
     main = run([PFCTL, "-s", "rules"], 5.0)
+    if _pf_denied(main.stderr):
+        # Root is already reported as FAIL; don't claim the ruleset is broken.
+        return [
+            Check("pf parent anchor", Status.WARN, _PF_NEEDS_ROOT),
+            Check(f"anchor {ANCHOR}", Status.WARN, _PF_NEEDS_ROOT),
+        ]
     if PARENT_ANCHOR_RULE in main.stdout:
         parent = Check("pf parent anchor", Status.OK, f"main ruleset has {PARENT_ANCHOR_RULE}")
     else:

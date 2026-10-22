@@ -1,0 +1,280 @@
+# safemaxxing macOS validation 2026-10-22 13:45 +0200
+## Environment
+
+$ sw_vers
+ProductName:		macOS
+ProductVersion:		27.0.1
+BuildVersion:		26A434
+[exit 0]
+
+$ uname -m
+arm64
+[exit 0]
+
+$ sysctl -n machdep.cpu.brand_string
+Apple M4
+[exit 0]
+
+$ id
+uid=501(carlo) gid=20(staff) groups=20(staff),12(everyone),61(localaccounts),79(_appserverusr),80(admin),81(_appserveradm),701(com.apple.sharepoint.group.1),33(_appstore),98(_lpadmin),100(_lpoperator),204(_developer),250(_analyticsusers),395(com.apple.access_ftp),398(com.apple.access_screensharing),399(com.apple.access_ssh),400(com.apple.access_remote_ae)
+[exit 0]
+
+$ git rev-parse --abbrev-ref HEAD
+claude/amazing-pasteur-hj7ek5
+[exit 0]
+
+$ git rev-parse --short HEAD
+f58a357
+[exit 0]
+
+## Static checks
+
+$ /opt/homebrew/bin/uv run ruff check
+All checks passed!
+[exit 0]
+
+$ /opt/homebrew/bin/uv run mypy --strict
+Success: no issues found in 20 source files
+[exit 0]
+
+$ /opt/homebrew/bin/uv run pytest -q
+sssssss................................................................. [ 65%]
+......................................                                   [100%]
+=============================== warnings summary ===============================
+.venv/lib/python3.13/site-packages/_pytest/cacheprovider.py:469
+  /Users/carlo/Desktop/oak's projects/safemaxxing/safemaxxing/.venv/lib/python3.13/site-packages/_pytest/cacheprovider.py:469: PytestCacheWarning: cache could not write path /Users/carlo/Desktop/oak's projects/safemaxxing/safemaxxing/.pytest_cache/v/cache/nodeids: [Errno 13] Permission denied: "/Users/carlo/Desktop/oak's projects/safemaxxing/safemaxxing/.pytest_cache/v/cache/nodeids"
+    config.cache.set("cache/nodeids", sorted(self.cached_nodeids))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+103 passed, 7 skipped, 1 warning in 2.44s
+[exit 0]
+
+## Task 1: doctor (non-root, then root)
+
+$ /opt/homebrew/bin/uv run safemaxxing doctor
+✔ macOS: 27.0.1 (arm64)
+✘ root privileges: euid 501: re-run with sudo
+✔ /usr/bin/log: present
+✔ /sbin/pfctl: present
+✔ /usr/sbin/lsof: present
+! pf status: pfctl: /dev/pf: Permission denied
+✘ pf parent anchor: anchor "com.apple/*" missing from main ruleset: sudo pfctl -f /etc/pf.conf
+✘ anchor com.apple/safemaxxing: pfctl: /dev/pf: Permission denied
+! foreign sockets: only carlo's sockets visible (18 pids): run as root
+! Full Disk Access: not granted to this terminal (optional today; needed for TCC.db inspection)
+! socket snapshot: psutil denied: lsof fallback (slow)
+✔ log stream predicate: accepted
+[exit 1]
+
+$ sudo /opt/homebrew/bin/uv run safemaxxing doctor
+✔ macOS: 27.0.1 (arm64)
+✔ root privileges: euid 0
+✔ /usr/bin/log: present
+✔ /sbin/pfctl: present
+✔ /usr/sbin/lsof: present
+✔ pf status: Enabled
+✔ pf parent anchor: main ruleset has anchor "com.apple/*"
+✔ anchor com.apple/safemaxxing: block drop out quick from any to <safemaxxing_block>
+✔ foreign sockets: 32 pids visible incl. daemons _mdnsresponder, _netbios, _trustd
+! Full Disk Access: not granted to this terminal (optional today; needed for TCC.db inspection)
+✔ socket snapshot: 8 ms per poll (interval 200 ms)
+✔ log stream predicate: accepted
+[exit 0]
+
+## Task 2: pf state and anchor before
+
+$ sudo /sbin/pfctl -s info
+No ALTQ support in kernel
+ALTQ related functions disabled
+Status: Enabled for 0 days 00:32:41           Debug: Urgent
+
+State Table                          Total             Rate
+  current entries                        0
+  searches                           89968           45.9/s
+  inserts                                0            0.0/s
+  removals                               0            0.0/s
+Counters
+  match                              77412           39.5/s
+  bad-offset                             0            0.0/s
+  fragment                               0            0.0/s
+  short                                  0            0.0/s
+  normalize                              0            0.0/s
+  memory                                 0            0.0/s
+  bad-timestamp                          0            0.0/s
+  congestion                             0            0.0/s
+  ip-option                              0            0.0/s
+  proto-cksum                            0            0.0/s
+  state-mismatch                         0            0.0/s
+  state-insert                           0            0.0/s
+  state-limit                            0            0.0/s
+  src-limit                              0            0.0/s
+  synproxy                               0            0.0/s
+  dummynet                               0            0.0/s
+  invalid-port                           0            0.0/s
+[exit 0]
+
+$ sudo /sbin/pfctl -a com.apple/safemaxxing -s rules
+No ALTQ support in kernel
+ALTQ related functions disabled
+block drop out quick from any to <safemaxxing_block>
+[exit 0]
+
+$ sudo /sbin/pfctl -a com.apple/safemaxxing -t safemaxxing_block -T show
+No ALTQ support in kernel
+ALTQ related functions disabled
+[exit 0]
+
+## Task 2: live block of 1.1.1.1
+
+$ curl -sS -o /dev/null -w %{http_code} in %{time_total}s\n --max-time 3 https://1.1.1.1/
+301 in 0.056728s
+[exit 0]
+
+$ sudo /opt/homebrew/bin/uv run safemaxxing block 1.1.1.1
+block_ip 1.1.1.1: ok 1/1 addresses added.
+[exit 0]
+
+$ sudo /sbin/pfctl -s info
+No ALTQ support in kernel
+ALTQ related functions disabled
+Status: Enabled for 0 days 00:32:41           Debug: Urgent
+
+State Table                          Total             Rate
+  current entries                        0
+  searches                           89996           45.9/s
+  inserts                                0            0.0/s
+  removals                               0            0.0/s
+Counters
+  match                              77440           39.5/s
+  bad-offset                             0            0.0/s
+  fragment                               0            0.0/s
+  short                                  0            0.0/s
+  normalize                              0            0.0/s
+  memory                                 0            0.0/s
+  bad-timestamp                          0            0.0/s
+  congestion                             0            0.0/s
+  ip-option                              0            0.0/s
+  proto-cksum                            0            0.0/s
+  state-mismatch                         0            0.0/s
+  state-insert                           0            0.0/s
+  state-limit                            0            0.0/s
+  src-limit                              0            0.0/s
+  synproxy                               0            0.0/s
+  dummynet                               0            0.0/s
+  invalid-port                           0            0.0/s
+[exit 0]
+
+$ sudo /sbin/pfctl -a com.apple/safemaxxing -s rules
+No ALTQ support in kernel
+ALTQ related functions disabled
+block drop out quick from any to <safemaxxing_block>
+[exit 0]
+
+$ sudo /sbin/pfctl -a com.apple/safemaxxing -t safemaxxing_block -T show
+No ALTQ support in kernel
+ALTQ related functions disabled
+   1.1.1.1
+[exit 0]
+# expected: 000 (no connection)
+
+$ curl -sS -o /dev/null -w %{http_code} in %{time_total}s\n --max-time 3 https://1.1.1.1/
+curl: (28) Connection timed out after 3006 milliseconds
+000 in 3.006228s
+[exit 28]
+
+$ sudo /opt/homebrew/bin/uv run safemaxxing unblock 1.1.1.1
+unblock_ip 1.1.1.1: ok 1/1 addresses deleted.
+[exit 0]
+
+$ sudo /sbin/pfctl -a com.apple/safemaxxing -t safemaxxing_block -T show
+No ALTQ support in kernel
+ALTQ related functions disabled
+[exit 0]
+# expected: an HTTP status code again
+
+$ curl -sS -o /dev/null -w %{http_code} in %{time_total}s\n --max-time 3 https://1.1.1.1/
+301 in 0.043649s
+[exit 0]
+
+## Task 3: log stream sample (8s; use camera/mic/location meanwhile)
+
+$ sudo /opt/homebrew/bin/uv run safemaxxing sample --seconds 8
+                                          log stream sample: 146 entries in 8s
+┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┓
+┃ subsystem        ┃ entries ┃ <private> msg ┃ no image path ┃ no pid ┃ parsed ┃ w/ pid ┃ w/ bundle ┃ top processes    ┃
+┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━┩
+│ com.apple.cmio   │ 2       │ 2             │ 0             │ 0      │ 0      │ 0      │ 0         │ com.apple.cmio.… │
+│ com.apple.locat… │ 144     │ 44            │ 0             │ 0      │ 2      │ 0      │ 0         │ locationd×140,   │
+│                  │         │               │               │        │        │        │           │ PerfPowerServic… │
+└──────────────────┴─────────┴───────────────┴───────────────┴────────┴────────┴────────┴───────────┴──────────────────┘
+unparsed com.apple.cmio: RegisterAssistantService.m:2118:-[RegisterAssistantServer
+addRegisterExtensionConnection:]_block_invoke [<private>] set Preference
+unparsed com.apple.cmio: RegisterAssistantService.m:2156:-[RegisterAssistantServer
+addRegisterExtensionConnection:]_block_invoke [<private>] setting <private> : <private>
+unparsed com.apple.locationd: [Geotagging] {"msg":"onAvengerAdvertisementDetected: got avenger advertisement",
+"geotaggingEngine":"CLGeotaggingEngine"}
+unparsed com.apple.locationd: [Geotagging] {"msg":"convertToSPAdvertisement", "address":<private>, "data":<private>,
+"date":<private>, "rssi":<private>, "status":<private>, "reserved":<private>, "geotaggingEngine":"CLGeotaggingEngine"}
+unparsed com.apple.locationd: [Geotagging] {"msg":"onAvengerAdvertisementDetected: advertisement is near-owner from
+other people and do not process it", "geotaggingEngine":"CLGeotaggingEngine"}
+com.apple.locationd: location×2  levels: Info×2
+parsed com.apple.locationd: location FindMyDevice pid=None [Info] {"msg":"markReceivingLocationInformation",
+"Client":"root:com.apple.locationd.bundle-\/System\/Library\/PrivateFrameworks\/FindMyDevice.framework"}
+parsed com.apple.locationd: location FindMyDevice pid=None [Info] {"msg":"markReceivingLocationInformation",
+"Client":"root:com.apple.locationd.bundle-\/System\/Library\/PrivateFrameworks\/FindMyDevice.framework"}
+[exit 0]
+
+## Tasks 2-4: live pytest suite
+
+$ sudo SAFEMAXXING_LIVE=1 SAFEMAXXING_LIVE_IP=1.1.1.1 /opt/homebrew/bin/uv run pytest -m live -v -s
+============================= test session starts ==============================
+platform darwin -- Python 3.13.14, pytest-9.1.1, pluggy-1.7.0 -- /Users/carlo/Desktop/oak's projects/safemaxxing/safemaxxing/.venv/bin/python
+cachedir: .pytest_cache
+rootdir: /Users/carlo/Desktop/oak's projects/safemaxxing/safemaxxing
+configfile: pyproject.toml
+testpaths: tests
+plugins: asyncio-1.4.0, platformdirs-4.13.5
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 110 items / 103 deselected / 7 selected
+
+tests/live/test_live_macos.py::test_doctor_has_no_failures [ok] macOS: 27.0.1 (arm64)
+[ok] root privileges: euid 0
+[ok] /usr/bin/log: present
+[ok] /sbin/pfctl: present
+[ok] /usr/sbin/lsof: present
+[ok] pf status: Enabled
+[ok] pf parent anchor: main ruleset has anchor "com.apple/*"
+[ok] anchor com.apple/safemaxxing: block drop out quick from any to <safemaxxing_block>
+[ok] foreign sockets: 32 pids visible incl. daemons _mdnsresponder, _netbios, _trustd
+[warn] Full Disk Access: not granted to this terminal (optional today; needed for TCC.db inspection)
+[ok] socket snapshot: 8 ms per poll (interval 200 ms)
+[ok] log stream predicate: accepted
+PASSED
+tests/live/test_live_macos.py::test_anchor_rules_and_table_parse_cleanly block drop out quick from any to <safemaxxing_block>
+
+PASSED
+tests/live/test_live_macos.py::test_block_drops_new_connections_and_unblock_restores PASSED
+tests/live/test_live_macos.py::test_block_kills_already_open_connection PASSED
+tests/live/test_live_macos.py::test_log_stream_predicate_and_parser_on_real_entries
+67 entries in 5s
+com.apple.cmio: entries=2 parsed=0 with_pid=0 with_bundle=0 private_msg=2 no_image=0 top=[('com.apple.cmio.registerassistantservice', 2)]
+  unparsed: RegisterAssistantService.m:2118:-[RegisterAssistantServer addRegisterExtensionConnection:]_block_invoke [<private>] set Preference
+  unparsed: RegisterAssistantService.m:2156:-[RegisterAssistantServer addRegisterExtensionConnection:]_block_invoke [<private>] setting <private> : <private>
+com.apple.locationd: entries=65 parsed=2 with_pid=0 with_bundle=0 private_msg=17 no_image=0 top=[('locationd', 60), ('PerfPowerServices', 5)]
+  unparsed: [Geotagging] {"msg":"onAvengerAdvertisementDetected: got avenger advertisement", "geotaggingEngine":"CLGeotaggingEngine"}
+  unparsed: [Geotagging] {"msg":"convertToSPAdvertisement", "address":<private>, "data":<private>, "date":<private>, "rssi":<private>, "status":<private>, "reserved":<private>, "geotaggingEngine":"CLGeotaggingEngine"}
+  unparsed: [Geotagging] {"msg":"onAvengerAdvertisementDetected: advertisement is near-owner from other people and do not process it", "geotaggingEngine":"CLGeotaggingEngine"}
+PASSED
+tests/live/test_live_macos.py::test_wide_discovery_predicate_accepted_by_log
+wide predicate: 0 entries in 1s
+PASSED
+tests/live/test_live_macos.py::test_reverse_dns_never_exceeds_timeout_on_real_resolver 1.1.1.1: 'one.one.one.one' in 74 ms
+8.8.8.8: 'dns.google' in 10 ms
+9.9.9.9: None in 100 ms
+192.0.2.1: None in 0 ms
+203.0.113.7: None in 0 ms
+17.253.144.10: 'icloud.com' in 83 ms
+PASSED
+
+====================== 7 passed, 103 deselected in 12.80s ======================
+[exit 0]
