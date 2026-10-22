@@ -29,10 +29,22 @@ class CorrelationConfig:
     alert_cooldown_s: float = 30.0
     buffer_size: int = 2048
     ignore: frozenset[str] = field(default_factory=frozenset)
+    # SIP-protected Apple binaries (cloudd, apsd, FaceTime's helpers...) talk to the network
+    # constantly; by default their sockets are not treated as possible exfiltration.
+    include_system: bool = False
 
     @property
     def retention_s(self) -> float:
         return self.window_s + self.late_arrival_s
+
+
+SYSTEM_PREFIXES = ("/System/", "/usr/", "/bin/", "/sbin/")
+
+
+def is_system_binary(exe_path: str | None) -> bool:
+    if not exe_path or exe_path.startswith("/usr/local/"):
+        return False
+    return exe_path.startswith(SYSTEM_PREFIXES)
 
 
 def _bundle_related(a: str, b: str) -> bool:
@@ -136,6 +148,8 @@ class CorrelationEngine:
 
     def ingest_connection(self, conn: NetworkConnection) -> list[Alert]:
         if self._ignored(conn.bundle_id, conn.process_name):
+            return []
+        if not self.config.include_system and is_system_binary(conn.exe_path):
             return []
         self._advance(conn.first_seen)
         self._connections.append(conn)
