@@ -261,11 +261,11 @@ def summarize_sample(
 
 
 async def collect_log_sample(
-    seconds: float, command: Sequence[str] | None = None
+    seconds: float, command: Sequence[str] | None = None, level: str = "info"
 ) -> list[dict[str, object]]:
     """Capture with the broad predicate: the point is to see lines the runtime filter drops."""
     entries: list[dict[str, object]] = []
-    listener = SensorListener(command=command or log_stream_command(DISCOVERY_PREDICATE))
+    listener = SensorListener(command=command or log_stream_command(DISCOVERY_PREDICATE, level))
     try:
         async with asyncio.timeout(seconds):
             async for entry in listener.entries():

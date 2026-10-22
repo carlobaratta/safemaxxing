@@ -73,6 +73,10 @@ _BENIGN_STDERR = (
     "pf already enabled",
     "Token :",
     "rules cleared",
+    # Printed by Darwin's pfctl on every `-f`, even when scoped to an anchor with `-a`.
+    "Use of -f option, could result in flushing of rules",
+    "present in the main ruleset added by the system at startup",
+    "See /etc/pf.conf for further details",
 )
 PARENT_ANCHOR_RULE = 'anchor "com.apple/*"'
 
@@ -162,10 +166,13 @@ class PfFirewall:
         await self._enable()
         self._ready = True
 
-    async def _table_op(self, kind: ActionKind, op: str, raw_ip: str) -> ActionResult:
+    async def _table_op(
+        self, kind: ActionKind, op: str, raw_ip: str, needs_setup: bool = True
+    ) -> ActionResult:
         try:
             ip = validate_ip(raw_ip)
-            await self.setup()
+            if needs_setup:
+                await self.setup()
         except (ValueError, FirewallError) as exc:
             return ActionResult(kind, raw_ip, False, str(exc))
         res = await self._run(self._table_cmd(op, ip))
@@ -180,7 +187,8 @@ class PfFirewall:
         return result
 
     async def unblock(self, ip: str) -> ActionResult:
-        return await self._table_op(ActionKind.UNBLOCK_IP, "delete", ip)
+        # Removing must never depend on (re)loading rules, or a failed setup could strand a block.
+        return await self._table_op(ActionKind.UNBLOCK_IP, "delete", ip, needs_setup=False)
 
     async def blocked(self) -> list[str]:
         res = await self._run(self._table_cmd("show"))

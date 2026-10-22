@@ -52,6 +52,7 @@ LOCATION_HINTS = (
     "location sent",
     "didupdatelocations",
     "client authorized",
+    "markreceivinglocationinformation",
 )
 
 # Unified logging redacts dynamic strings unless private data is enabled on the host.
@@ -159,6 +160,22 @@ def _first(pattern: re.Pattern[str], text: str) -> str | None:
     return unredacted(match.group(1)) if match else None
 
 
+_LOCATION_CLIENT_RE = re.compile(r'"Client"\s*:\s*"(?:[\w\-]+:)?([^"]+)"')
+_LOCATION_BUNDLE_PATH_PREFIX = "com.apple.locationd.bundle-"
+
+
+def _location_client(message: str) -> tuple[str | None, str] | None:
+    """Parse locationd's `"Client":"<user>:<bundle id | com.apple.locationd.bundle-<path>>"`."""
+    match = _LOCATION_CLIENT_RE.search(message)
+    value = unredacted(match.group(1)) if match else None
+    if value is None:
+        return None
+    if value.startswith(_LOCATION_BUNDLE_PATH_PREFIX):
+        path = value.removeprefix(_LOCATION_BUNDLE_PATH_PREFIX).replace("\\/", "/")
+        return None, PurePosixPath(path).stem
+    return value, ""
+
+
 def _contains_any(text: str, hints: Sequence[str]) -> bool:
     return any(h in text for h in hints)
 
@@ -227,13 +244,15 @@ def parse_entry(entry: Mapping[str, object]) -> Event | None:
             return None
         sensor = SensorType.LOCATION
         pid, bundle = _attribute(message, log_pid, process_name)
+        if client := _location_client(message):
+            bundle, process_name = client
     else:
         return None
 
-    if pid is None and bundle is None:
-        return None
     if process_name in BROKER_PROCESSES:
         process_name = ""
+    if pid is None and bundle is None and not process_name:
+        return None
     return Event(
         timestamp=timestamp,
         sensor=sensor,
@@ -275,8 +294,8 @@ class _Cooldown:
         return last is None or event.timestamp - last >= self._cooldown_s
 
 
-def log_stream_command(predicate: str = PREDICATE) -> list[str]:
-    return [LOG_BINARY, "stream", "--style", "json", "--level", "info", "--predicate", predicate]
+def log_stream_command(predicate: str = PREDICATE, level: str = "info") -> list[str]:
+    return [LOG_BINARY, "stream", "--style", "json", "--level", level, "--predicate", predicate]
 
 
 class SensorListener:
