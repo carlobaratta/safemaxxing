@@ -47,7 +47,9 @@ async def run_command(argv: Sequence[str], stdin: str | None = None) -> CommandR
         stderr=asyncio.subprocess.PIPE,
     )
     out, err = await proc.communicate(stdin.encode() if stdin is not None else None)
-    return CommandResult(proc.returncode or 0, out.decode(errors="replace"), err.decode("replace"))
+    return CommandResult(
+        proc.returncode or 0, out.decode(errors="replace"), err.decode(errors="replace")
+    )
 
 
 def validate_ip(raw: str) -> str:
@@ -73,6 +75,14 @@ _BENIGN_STDERR = (
     "rules cleared",
 )
 PARENT_ANCHOR_RULE = 'anchor "com.apple/*"'
+
+
+# How Darwin's pfctl answers a query for an anchor that has never been created.
+_ANCHOR_MISSING = ("DIOCGETRULES: Invalid argument", "Anchor does not exist")
+
+
+def anchor_missing(stderr: str) -> bool:
+    return any(marker in stderr for marker in _ANCHOR_MISSING)
 
 
 def parse_pf_status(info: str) -> bool | None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import signal
+import sys
 from collections.abc import Sequence
 
 import pytest
@@ -13,8 +14,10 @@ from safemaxxing.firewall import (
     CommandResult,
     PfFirewall,
     ProcessController,
+    anchor_missing,
     meaningful_stderr,
     parse_pf_status,
+    run_command,
     validate_ip,
 )
 from safemaxxing.models import ActionKind
@@ -197,3 +200,19 @@ def test_process_controller_errors() -> None:
 
     assert ProcessController(kill=missing).kill(4242).detail == "no such process"
     assert "permission" in ProcessController(kill=denied).kill(4242).detail
+
+
+async def test_run_command_real_subprocess_decodes_both_streams() -> None:
+    script = (
+        "import sys; d = sys.stdin.read(); print(d.upper()); "
+        "sys.stderr.write('\\xe9rr'); sys.exit(3)"
+    )
+    res = await run_command([sys.executable, "-c", script], stdin="rules")
+    assert res.returncode == 3
+    assert res.stdout.strip() == "RULES"
+    assert res.stderr == "érr"
+
+
+def test_anchor_missing_matches_darwin_reply() -> None:
+    assert anchor_missing("pfctl: DIOCGETRULES: Invalid argument\n")
+    assert not anchor_missing(ALTQ)
