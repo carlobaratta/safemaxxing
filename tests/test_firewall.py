@@ -85,6 +85,11 @@ class FakePf:
         if rest[:4] == ["-t", TABLE, "-T", "delete"]:
             self.table.discard(rest[4])
             return CommandResult(0, "", "1/1 addresses deleted.\n")
+        if rest == ["-t", TABLE, "-T", "flush"]:
+            if not self.table:
+                return CommandResult(255, "", ALTQ + "pfctl: Table does not exist.\n")
+            self.table.clear()
+            return CommandResult(0, "", "1 addresses deleted.\n")
         if rest == ["-t", TABLE, "-T", "show"]:
             return CommandResult(0, "".join(f"   {ip}\n" for ip in sorted(self.table)), ALTQ)
         if rest[0] == "-k":
@@ -235,3 +240,11 @@ async def test_unblock_works_even_when_setup_would_fail() -> None:
     assert result.ok
     assert pf.table == set()
     assert not any("-f" in c or "-E" in c for c in pf.calls)
+
+
+async def test_flush_of_never_created_table_is_ok() -> None:
+    pf = FakePf(enabled=True)
+    result = await PfFirewall(runner=pf).flush()
+    assert result.ok and result.detail == "table already empty"
+    pf.table.add("203.0.113.9")
+    assert (await PfFirewall(runner=pf).flush()).ok and pf.table == set()

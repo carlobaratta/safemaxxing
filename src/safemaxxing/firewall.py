@@ -89,6 +89,11 @@ def anchor_missing(stderr: str) -> bool:
     return any(marker in stderr for marker in _ANCHOR_MISSING)
 
 
+def table_missing(stderr: str) -> bool:
+    """pf creates the table on the first `-T add`; before that, queries report it missing."""
+    return "Table does not exist" in stderr
+
+
 def parse_pf_status(info: str) -> bool | None:
     """Parse `pfctl -s info`: True if Enabled, False if Disabled, None if unrecognised."""
     match = _STATUS_RE.search(info)
@@ -196,6 +201,8 @@ class PfFirewall:
 
     async def flush(self) -> ActionResult:
         res = await self._run(self._table_cmd("flush"))
+        if table_missing(res.stderr):
+            return ActionResult(ActionKind.UNBLOCK_IP, self.table, True, "table already empty")
         detail = "; ".join(meaningful_stderr(res.stderr))
         return ActionResult(ActionKind.UNBLOCK_IP, self.table, res.returncode == 0, detail)
 

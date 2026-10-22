@@ -14,8 +14,16 @@ import sys
 import pytest
 
 from safemaxxing.diagnostics import Status, collect_log_sample, run_doctor, summarize_sample
-from safemaxxing.firewall import ANCHOR, PFCTL, TABLE, PfFirewall, meaningful_stderr, run_command
-from safemaxxing.sensors import parse_entry
+from safemaxxing.firewall import (
+    ANCHOR,
+    PFCTL,
+    TABLE,
+    PfFirewall,
+    meaningful_stderr,
+    run_command,
+    table_missing,
+)
+from safemaxxing.sensors import WIDE_DISCOVERY_PREDICATE, parse_entry
 
 LIVE = sys.platform == "darwin" and os.geteuid() == 0 and os.environ.get("SAFEMAXXING_LIVE") == "1"
 pytestmark = [
@@ -63,6 +71,8 @@ async def test_anchor_rules_and_table_parse_cleanly() -> None:
     assert rules.returncode == 0 and meaningful_stderr(rules.stderr) == []
     assert f"<{TABLE}>" in rules.stdout
     table = await run_command([PFCTL, "-a", ANCHOR, "-t", TABLE, "-T", "show"])
+    if table_missing(table.stderr):
+        return  # Normal until the first `-T add` creates it.
     assert table.returncode == 0 and meaningful_stderr(table.stderr) == []
 
 
@@ -104,3 +114,8 @@ async def test_log_stream_predicate_and_parser_on_real_entries() -> None:
         )
         for example in s.unparsed_examples:
             print(f"  unparsed: {example}")
+
+
+async def test_wide_discovery_predicate_accepted_by_log() -> None:
+    entries = await collect_log_sample(1.0, predicate=WIDE_DISCOVERY_PREDICATE)
+    print(f"\nwide predicate: {len(entries)} entries in 1s")

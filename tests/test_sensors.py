@@ -11,6 +11,7 @@ from safemaxxing.sensors import (
     DISCOVERY_PREDICATE,
     LOCATION_HINTS,
     PREDICATE,
+    WIDE_DISCOVERY_PREDICATE,
     JsonStreamDecoder,
     SensorError,
     SensorListener,
@@ -336,3 +337,9 @@ def test_locationd_client_name_lookup_is_not_an_access() -> None:
 
 def test_log_stream_command_level() -> None:
     assert log_stream_command(level="debug")[4:6] == ["--level", "debug"]
+
+
+def test_wide_discovery_predicate_shape() -> None:
+    assert WIDE_DISCOVERY_PREDICATE.count("(") == WIDE_DISCOVERY_PREDICATE.count(")")
+    assert 'process == "tccd"' in WIDE_DISCOVERY_PREDICATE
+    assert 'AND NOT subsystem BEGINSWITH "com.apple.locationd"' in WIDE_DISCOVERY_PREDICATE

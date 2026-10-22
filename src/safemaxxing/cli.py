@@ -19,7 +19,11 @@ from safemaxxing.correlation import CorrelationConfig
 from safemaxxing.diagnostics import Status, collect_log_sample, run_doctor, summarize_sample
 from safemaxxing.firewall import PfFirewall, ProcessController, is_root
 from safemaxxing.models import ActionResult, Alert, Event, Severity
-from safemaxxing.sensors import SensorError
+from safemaxxing.sensors import (
+    DISCOVERY_PREDICATE,
+    WIDE_DISCOVERY_PREDICATE,
+    SensorError,
+)
 from safemaxxing.supervisor import Supervisor
 
 app = typer.Typer(
@@ -221,10 +225,16 @@ def sample(
     debug: Annotated[
         bool, typer.Option("--debug", help="Use `--level debug` (much noisier, finds more).")
     ] = False,
+    wide: Annotated[
+        bool,
+        typer.Option("--wide", help="Search every subsystem by keyword (camera, mic, TCC)."),
+    ] = False,
 ) -> None:
     """Capture real `log stream` output and report redaction / parser coverage."""
+    predicate = WIDE_DISCOVERY_PREDICATE if wide else DISCOVERY_PREDICATE
+    level = "debug" if debug else "info"
     try:
-        entries = asyncio.run(collect_log_sample(seconds, level="debug" if debug else "info"))
+        entries = asyncio.run(collect_log_sample(seconds, level=level, predicate=predicate))
     except (OSError, SensorError) as exc:
         console.print(f"[bold red]log stream failed:[/] {exc}")
         raise typer.Exit(1) from None
@@ -250,6 +260,8 @@ def sample(
     for name, s in sorted(stats.items()):
         for example in s.unparsed_examples:
             console.print(f"[dim]unparsed {name}:[/] {escape(example)}")
+        for example in s.parsed_examples:
+            console.print(f"[green]parsed {name}:[/] {escape(example)}")
 
 
 if __name__ == "__main__":
