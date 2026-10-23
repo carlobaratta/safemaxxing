@@ -20,6 +20,8 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 
 ## Next Up
 
+- [ ] [P2] Indicator events (`cam:`/`mic:`/`scr:` for Apple bundles) are created with `system=False`: they show up even without `--include-system` @sensors #system (derive `system` from the bundle id, e.g. its `.app` path via LaunchServices, or from `com.apple.` + a SIP path)
+
 - [ ] [P2] Screen sharing from a third-party app via ScreenCaptureKit (e.g. Meet in Brave): does replayd send with `target_token={pid:app}`? The logging-pid rule would drop it; then only `scr:<bundle>` would catch it @sensors #tcc
 
 - [ ] [P1] Blocks do not survive a reboot: after the restart on 2026-10-23 pf was `Disabled`, the anchor was empty and the table missing @firewall #pf (persist the list and reapply it at boot via a launchd daemon, or document it)
