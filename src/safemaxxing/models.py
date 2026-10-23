@@ -3,8 +3,17 @@
 from __future__ import annotations
 
 import ipaddress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
+
+# SIP-protected locations: binaries here can only come from Apple.
+SYSTEM_PREFIXES = ("/System/", "/usr/", "/bin/", "/sbin/")
+
+
+def is_system_path(path: str | None) -> bool:
+    if not path or path.startswith("/usr/local/"):
+        return False
+    return path.startswith(SYSTEM_PREFIXES)
 
 
 class SensorType(StrEnum):
@@ -51,6 +60,9 @@ class Event:
     subsystem: str
     message: str
     service: str | None = None
+    # Set only from paths (log metadata, tccd's binary_path), never from bundle ids, which an
+    # app can choose freely.
+    system: bool = False
 
     @property
     def identity(self) -> str:
@@ -113,17 +125,26 @@ class Finding:
 
 @dataclass(frozen=True, slots=True)
 class Alert:
+    """One alert per outbound connection; re-emitted with the same id when more sensors match."""
+
     id: int
     finding: Finding
     severity: Severity
     created_at: float
+    sensors: frozenset[SensorType] = field(default_factory=frozenset)
+    updated: bool = False
+
+    @property
+    def sensor_label(self) -> str:
+        names = sorted(s.value for s in self.sensors) or [self.finding.event.sensor.value]
+        return "+".join(names)
 
     @property
     def summary(self) -> str:
         ev, conn = self.finding.event, self.finding.connection
         destination = conn.hostname or conn.remote
         return (
-            f"{ev.identity} used {ev.sensor.value} then connected to {destination} "
+            f"{ev.identity} used {self.sensor_label} then connected to {destination} "
             f"after {self.finding.delta_s * 1000:.0f} ms"
         )
 

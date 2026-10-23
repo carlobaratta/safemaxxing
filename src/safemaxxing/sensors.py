@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import dataclasses
 import json
 import re
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import PurePosixPath
 
-from safemaxxing.models import Event, SensorType
+import psutil
+
+from safemaxxing.models import Event, SensorType, is_system_path
+from safemaxxing.network import bundle_id_for_exe
+
+ProcessInfo = Callable[[int], tuple[str, str | None] | None]
 
 LOG_BINARY = "/usr/bin/log"
 
@@ -120,6 +126,7 @@ _TCC_IDENTITY_RES = (
 _TCCD_PROCESS_RE = re.compile(r"TCCDProcess:\s*((?:<[^>]*>|[^}>])*)")
 _BLOCK_IDENTIFIER_RE = re.compile(rf"\bidentifier={_REDACTABLE}")
 _BLOCK_PID_RE = re.compile(r"\bpid=(\d+)")
+_BLOCK_BINARY_RE = re.compile(r"\bbinary_path=([^,}>]+)")
 # Requests a broker makes on behalf of a client name the client here. (msgID is deliberately
 # not used: its prefix is the *sender*, i.e. the broker for coreaudiod/cameracaptured requests.)
 _TCC_PID_RES = (
@@ -196,20 +203,26 @@ _LOCATION_CLIENT_RE = re.compile(r'"Client"\s*:\s*"(?:[\w\-]+:)?([^"]+)"')
 _LOCATION_BUNDLE_PATH_PREFIX = "com.apple.locationd.bundle-"
 
 
-def _location_client(message: str) -> tuple[str | None, str] | None:
-    """Parse locationd's `"Client":"<user>:<bundle id | com.apple.locationd.bundle-<path>>"`."""
+def _location_client(message: str) -> tuple[str | None, str, bool] | None:
+    """Parse locationd's `"Client"` into (bundle id, name, is system).
+
+    Seen on macOS 27: "<user>:<bundle id>", "i<bundle id>:", "e<executable>:",
+    "p<plugin path>[:p<path>...]" and "<user>:com.apple.locationd.bundle-<path>".
+    """
     match = _LOCATION_CLIENT_RE.search(message)
     value = unredacted(match.group(1)) if match else None
     if value is None:
         return None
-    # locationd client keys: "i<bundle id>:" or "e<executable path>:".
-    if value.endswith(":") and len(value) > 2 and value[0] in "ie":
-        body = value[1:-1].replace("\\/", "/")
-        return (body, "") if value[0] == "i" else (None, PurePosixPath(body).name)
+    value = value.replace("\\/", "/")
     if value.startswith(_LOCATION_BUNDLE_PATH_PREFIX):
-        path = value.removeprefix(_LOCATION_BUNDLE_PATH_PREFIX).replace("\\/", "/")
-        return None, PurePosixPath(path).stem
-    return value, ""
+        path = value.removeprefix(_LOCATION_BUNDLE_PATH_PREFIX)
+    elif value[0] in "ep" and value[1:2] == "/":
+        path = value[1:].split(":", 1)[0]
+    elif value[0] == "i" and value.endswith(":") and len(value) > 2:
+        return value[1:-1], "", False
+    else:
+        return value, "", False
+    return None, PurePosixPath(path).stem, is_system_path(path)
 
 
 def _contains_any(text: str, hints: Sequence[str]) -> bool:
@@ -228,37 +241,40 @@ def _attribute(
     return pid, bundle
 
 
-def _tcc_actor(message: str, client_pid: int | None) -> tuple[int | None, str | None]:
+def _tcc_actor(message: str, client_pid: int | None) -> tuple[int | None, str | None, str | None]:
+    """Return (pid, bundle id, binary path) of the process using the resource."""
     # The `accessing` process is the one using the resource; prefer it over requester/sender.
     accessing = _ACCESSING_RE.search(message)
     if block := _TCCD_PROCESS_RE.search(accessing.group(1) if accessing else message):
-        raw_pid = _first(_BLOCK_PID_RE, block.group(1))
-        return (int(raw_pid) if raw_pid else None), _first(_BLOCK_IDENTIFIER_RE, block.group(1))
+        text = block.group(1)
+        raw_pid = _first(_BLOCK_PID_RE, text)
+        binary = _first(_BLOCK_BINARY_RE, text)
+        return (int(raw_pid) if raw_pid else None), _first(_BLOCK_IDENTIFIER_RE, text), binary
     pid = next((int(p) for r in _TCC_PID_RES if (p := _first(r, message))), None)
     bundle = next((b for r in _TCC_IDENTITY_RES if (b := _first(r, message))), None)
     if pid is None and bundle is None:
         # Client-side libTCC lines ("SEND: ... service=kTCCServiceCamera") are logged by the
         # requesting app itself, so the entry's own PID identifies it.
         pid = client_pid
-    return pid, bundle
+    return pid, bundle, None
 
 
 def _classify_tcc(
     message: str, client_pid: int | None
-) -> tuple[SensorType, str, int | None, str | None] | None:
+) -> tuple[SensorType, str, int | None, str | None, bool] | None:
     service_match = _TCC_SERVICE_RE.search(message)
     if not service_match or _TCC_MANAGER_ENTITLEMENT in message:
         return None
     service = service_match.group(1)
     sensor = TCC_SERVICE_MAP.get(service, SensorType.TCC)
-    pid, bundle = _tcc_actor(message, client_pid)
+    pid, bundle, binary = _tcc_actor(message, client_pid)
     # e.g. "identifier=com.apple.audio.coreaudiod ... entitlement for service kTCCServiceMicrophone"
     # is the daemon's own check on behalf of a client, reported separately via target_token.
     if bundle is not None and bundle.rsplit(".", 1)[-1] in BROKER_PROCESSES:
         return None
     if pid is None and bundle is None:
         return None
-    return sensor, service, pid, bundle
+    return sensor, service, pid, bundle, is_system_path(binary)
 
 
 def parse_entry(entry: Mapping[str, object]) -> Event | None:
@@ -275,12 +291,13 @@ def parse_entry(entry: Mapping[str, object]) -> Event | None:
 
     sensor: SensorType
     service: str | None = None
+    system = False
     if subsystem == SUBSYSTEM_TCC:
         client_pid = None if process_name in BROKER_PROCESSES else log_pid
         classified = _classify_tcc(message, client_pid)
         if classified is None:
             return None
-        sensor, service, pid, bundle = classified
+        sensor, service, pid, bundle, system = classified
     elif subsystem.startswith(SUBSYSTEM_CMIO):
         if not _contains_any(lowered, CAMERA_HINTS):
             return None
@@ -299,10 +316,12 @@ def parse_entry(entry: Mapping[str, object]) -> Event | None:
         sensor = SensorType.LOCATION
         pid, bundle = _attribute(message, log_pid, process_name)
         if client := _location_client(message):
-            bundle, process_name = client
+            bundle, process_name, system = client
     else:
         return None
 
+    if pid is not None and pid == log_pid and is_system_path(image_path):
+        system = True
     # The logging process is not the actor when the message names a different pid.
     if process_name in BROKER_PROCESSES or (pid is not None and log_pid not in (None, pid)):
         process_name = ""
@@ -317,6 +336,7 @@ def parse_entry(entry: Mapping[str, object]) -> Event | None:
         subsystem=subsystem,
         message=message,
         service=service,
+        system=system,
     )
 
 
@@ -407,12 +427,61 @@ def log_stream_command(predicate: str = PREDICATE, level: str = "info") -> list[
     return [LOG_BINARY, "stream", "--style", "json", "--level", level, "--predicate", predicate]
 
 
+def process_info(pid: int) -> tuple[str, str | None] | None:
+    """(name, executable path) of a live process, or None if it is gone or inaccessible."""
+    try:
+        proc = psutil.Process(pid)
+        name = proc.name()
+        try:
+            exe: str | None = proc.exe() or None
+        except (psutil.AccessDenied, psutil.ZombieProcess):
+            exe = None
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return None
+    return name, exe
+
+
+class _ProcessEnricher:
+    """Fills name / bundle id / system flag of events that only carry a pid (e.g. TCC lines
+    naming a client via target_token), so they display and correlate like the others."""
+
+    def __init__(self, lookup: ProcessInfo, max_entries: int = 2048) -> None:
+        self._lookup = lookup
+        self._max_entries = max_entries
+        self._cache: dict[int, tuple[str, str | None]] = {}
+
+    def __call__(self, event: Event) -> Event:
+        if event.pid is None or (event.process_name and event.bundle_id):
+            return event
+        info = self._cache.get(event.pid)
+        if info is None:
+            info = self._lookup(event.pid)
+            if info is None:
+                return event
+            if len(self._cache) >= self._max_entries:
+                self._cache.clear()
+            self._cache[event.pid] = info
+        name, exe = info
+        return dataclasses.replace(
+            event,
+            process_name=event.process_name or name,
+            bundle_id=event.bundle_id or (bundle_id_for_exe(exe) if exe else None),
+            system=event.system or is_system_path(exe),
+        )
+
+
 class SensorListener:
     """Async wrapper around `log stream` yielding classified sensor events."""
 
-    def __init__(self, command: Sequence[str] | None = None, cooldown_s: float = 1.0) -> None:
+    def __init__(
+        self,
+        command: Sequence[str] | None = None,
+        cooldown_s: float = 1.0,
+        process_lookup: ProcessInfo = process_info,
+    ) -> None:
         self._command = list(command) if command is not None else log_stream_command()
         self._cooldown = _Cooldown(cooldown_s)
+        self._enrich = _ProcessEnricher(process_lookup)
 
     async def entries(self) -> AsyncIterator[dict[str, object]]:
         """Raw unified-log entries; raises `SensorError` if `log` exits with an error."""
@@ -444,4 +513,4 @@ class SensorListener:
         async for entry in self.entries():
             for event in parser.parse(entry):
                 if self._cooldown.accept(event):
-                    yield event
+                    yield self._enrich(event)

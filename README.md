@@ -3,7 +3,7 @@
 **Privacy supervisor ed egress firewall headless per macOS, basato su correlazione di eventi.**
 
 LuLu e Little Snitch ti chiedono *"questa app può connettersi a X?"*. safemaxxing risponde a
-una domanda diversa: **"questa app ha appena acceso la fotocamera e, nei 500 ms successivi,
+una domanda diversa: **"questa app ha appena acceso la fotocamera e, nei 2 secondi successivi,
 ha aperto un socket verso Internet?"**
 
 Rileva la catena causa → effetto tipica dell'esfiltrazione:
@@ -11,7 +11,7 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
 ```
  [Sensore]  kTCCServiceCamera  pid=4242 com.example.spy      t = 0 ms
      │
-     ▼  finestra di correlazione (default 500 ms)
+     ▼  finestra di correlazione (default 2000 ms)
  [Egress]   tcp 10.0.0.5:51544 -> 203.0.113.9:443 pid=4242   t = 87 ms
      │
      ▼
@@ -144,6 +144,11 @@ Tutti i componenti con side effect accettano dipendenze iniettabili (comando `lo
 dei socket, runner di `pfctl`, funzione `kill`), quindi la logica è testabile anche su Linux.
 
 ## Limiti noti
+
+- safemaxxing vede i socket *nuovi*. Un'app che riusa una connessione già aperta (i browser lo
+  fanno di continuo) non produce un nuovo egress da correlare. Le risoluzioni DNS (porte 53,
+  853, 5353) sono escluse per default perché precedono la connessione vera; `--include-dns` le
+  include. Gli eventi e i socket di binari di sistema sono nascosti a meno di `--include-system`.
 
 - Per default le connessioni di binari Apple protetti da SIP (`/System`, `/usr` tranne
   `/usr/local`, `/bin`, `/sbin`) non vengono correlate: servizi come `cloudd` o `apsd` usano la

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import plistlib
 import sys
 from pathlib import Path
 
@@ -517,9 +518,7 @@ def test_locationd_client_key_format_i_prefix() -> None:
 
 
 def test_locationd_client_key_format_e_prefix() -> None:
-    message = (
-        '{"msg":"markReceivingLocationInformation", "Client":"e\\\\/usr\\\\/libexec\\\\/airportd:"}'
-    )
+    message = '{"msg":"markReceivingLocationInformation", "Client":"e\\/usr\\/libexec\\/airportd:"}'
     event = parse_entry(_locationd(message))
     assert event is not None and (event.bundle_id, event.process_name) == (None, "airportd")
 
@@ -625,3 +624,101 @@ def test_background_session_full_disk_query_still_attributed() -> None:
         36094,
         "com.apple.CoreRoutine.helperservice",
     )
+
+
+def test_locationd_system_clients_are_flagged_system() -> None:
+    # Verbatim client keys from the macOS 27.0.1 `watch --events` run.
+    for client in (
+        "root:com.apple.locationd.bundle-\\/System\\/Library\\/LocationBundles\\/FindMyDevice.bundle",
+        "p\\/System\\/Library\\/LocationBundles\\/TimeZone.bundle:",
+        "p\\/System\\/Library\\/PrivateFrameworks\\/WirelessDiagnostics.framework:p\\/System\\/Library\\/Frameworks\\/CoreWLAN.framework",
+    ):
+        message = '{"msg":"markReceivingLocationInformation", "Client":"' + client + '"}'
+        event = parse_entry(_locationd(message))
+        assert event is not None and event.system, client
+        assert "\\" not in event.identity and "/" not in event.identity
+    app = parse_entry(
+        _locationd('{"msg":"markReceivingLocationInformation", "Client":"icom.apple.VoiceMemos:"}')
+    )
+    assert app is not None and not app.system
+
+
+def test_tcc_binary_path_marks_system() -> None:
+    system = parse_entry(
+        _entry(
+            "com.apple.TCC",
+            "tccd",
+            "Auth:Allowed (Entitled) to kTCCServiceMicrophone for TCCDProcess: identifier=com.apple.VoiceMemos, pid=34661, auid=501, euid=501, binary_path=/System/Applications/VoiceMemos.app/Contents/MacOS/VoiceMemos}",
+        )
+    )
+    assert system is not None and system.system
+    third_party = parse_entry(
+        _entry(
+            "com.apple.TCC",
+            "tccd",
+            "Auth:Allowed to kTCCServiceMicrophone for TCCDProcess: identifier=com.brave.Browser, pid=2051, auid=501, euid=501, binary_path=/Applications/Brave Browser.app/Contents/MacOS/Brave Browser}",
+        )
+    )
+    assert third_party is not None and not third_party.system
+    assert third_party.bundle_id == "com.brave.Browser"
+
+
+def test_in_process_line_from_system_binary_is_system() -> None:
+    entry = _locationd('{"msg":"startUpdatingLocation"}')
+    entry["processImagePath"] = "/usr/libexec/airportd"
+    event = parse_entry(entry)
+    assert event is not None and event.system
+
+
+async def test_listener_names_pid_only_events_from_the_live_process(tmp_path: Path) -> None:
+    app = tmp_path / "Brave Browser.app"
+    (app / "Contents").mkdir(parents=True)
+    with open(app / "Contents" / "Info.plist", "wb") as fh:
+        plistlib.dump({"CFBundleIdentifier": "com.brave.Browser"}, fh)
+    helper = str(
+        app / "Contents/Frameworks/Brave Browser Helper.app/Contents/MacOS/Brave Browser Helper"
+    )
+    line = {
+        "timestamp": "2026-10-23 10:00:00.000000+0200",
+        "subsystem": "com.apple.TCC",
+        "processID": 567,
+        "processImagePath": "/usr/sbin/coreaudiod",
+        "eventMessage": "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=567.177, function=TCCAccessRequest, service=kTCCServiceMicrophone, target_token={pid:2597, auid:501, euid:501},",
+    }
+    data = tmp_path / "log.json"
+    data.write_text("[" + json.dumps(line) + "]")
+    script = f"import sys; sys.stdout.write(open({str(data)!r}).read())"
+    lookups: list[int] = []
+
+    def lookup(pid: int) -> tuple[str, str | None] | None:
+        lookups.append(pid)
+        return "Brave Browser Helper", helper
+
+    listener = SensorListener(command=[sys.executable, "-c", script], process_lookup=lookup)
+    (event,) = [e async for e in listener.events()]
+    assert lookups == [2597]
+    assert (event.pid, event.process_name, event.bundle_id) == (
+        2597,
+        "Brave Browser Helper",
+        "com.brave.Browser",
+    )
+    assert not event.system
+
+
+async def test_listener_marks_enriched_system_binaries(tmp_path: Path) -> None:
+    line = {
+        **TCC_ATTRIBUTION,
+        "eventMessage": "REQUEST: sender_pid=740, function=TCCAccessRequest, service=kTCCServiceAddressBook",
+    }
+    data = tmp_path / "log.json"
+    data.write_text("[" + json.dumps(line) + "]")
+    script = f"import sys; sys.stdout.write(open({str(data)!r}).read())"
+    listener = SensorListener(
+        command=[sys.executable, "-c", script],
+        process_lookup=lambda pid: (
+            "cloudd",
+            "/System/Library/PrivateFrameworks/CloudKitDaemon.framework/Support/cloudd",
+        ),
+    )
+    (event,) = [e async for e in listener.events()]
+    assert event.process_name == "cloudd" and event.system
