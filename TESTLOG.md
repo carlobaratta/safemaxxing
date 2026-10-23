@@ -14,6 +14,36 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-23 14:50 +0200] - pid 525 identified: coreaudiod (Mac + Linux container)
+
+- **Environment:** Mac (macOS 27.0.1, arm64, uid 501) for the lookup; Linux container for
+  the fix and the static checks.
+- **Goal:** explain the 20 `screen_capture` events for Photo Booth (pid 34389) in the 14:24 run.
+- **Commands run (Mac):**
+  ```sh
+  python3 -I -c '
+  import json, sys
+  for line in open(sys.argv[1]):
+      e = json.loads(line)
+      if e.get("processID") == 525:
+          print("pid 525 =", e.get("processImagePath")); break
+  ' testlogs/20261023-1424-sample.jsonl
+  ```
+- **Result and raw data:** `pid 525 = /usr/sbin/coreaudiod`. coreaudiod is a broker: its
+  `SEND ... service=kTCCServiceScreenCapture, target_token={pid:34389}` asks on behalf of
+  Photo Booth, which only used camera and mic. These are not screen captures.
+- **Code changes:** `src/safemaxxing/sensors.py`: TCC lines logged by `coreaudiod` with
+  service ScreenCapture are dropped. `tests/test_sensors.py`: verbatim fixture (the
+  ScreenCapture line) plus a constructed mic counter-example, which is still attributed to
+  the client.
+- **Commands run (container):** `uv run ruff check && uv run mypy --strict && uv run pytest -q`
+  → `All checks passed!` · `Success: no issues found in 20 source files` ·
+  `122 passed, 7 skipped in 3.06s`
+- **Problems / regressions:** only the lines logged by coreaudiod are covered. If tccd logs
+  its own lines for the same `msgID=525.x`, they can still become `screen_capture`
+  (not verified).
+- **Next steps:** dump every ScreenCapture line from the JSON sample.
+
 ## [2026-10-23 14:40 +0200] - Indicator test from the 14:24 run (Linux container)
 
 - **Environment:** Linux x86_64 cloud container, CPython 3.13.16, uid=0. Static checks only.
