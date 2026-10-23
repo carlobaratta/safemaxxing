@@ -126,6 +126,8 @@ class SafemaxxingApp(App[None]):
         self.query_one("#events", RichLog).write(text)
 
     def log_event(self, event: Event) -> None:
+        if event.system and not self.supervisor.engine.config.include_system:
+            return
         line = Text.assemble(
             (_clock(event.timestamp), "dim"),
             " ",
@@ -140,20 +142,26 @@ class SafemaxxingApp(App[None]):
         ev, conn = alert.finding.event, alert.finding.connection
         style = SEVERITY_STYLE[alert.severity]
         destination = conn.hostname or conn.remote
+        table = self.query_one("#alerts", DataTable)
+        previous = self.alerts.get(str(alert.id))
+        if previous is not None:
+            table.remove_row(str(alert.id))
         self.alerts[str(alert.id)] = alert
-        self.query_one("#alerts", DataTable).add_row(
+        table.add_row(
             str(alert.id),
             _clock(ev.timestamp),
             Text(alert.severity.label, style=style),
-            ev.sensor.value,
+            alert.sensor_label,
             ev.identity,
             str(conn.pid),
             destination,
             f"{alert.finding.delta_s * 1000:.0f}",
             key=str(alert.id),
         )
-        self.log_line(Text(f"ALERT #{alert.id}: {alert.summary}", style=style))
-        if alert.severity >= Severity.HIGH:
+        verb = "updated" if previous is not None else ""
+        self.log_line(Text(f"ALERT #{alert.id} {verb}: {alert.summary}", style=style))
+        escalated = previous is None or alert.severity > previous.severity
+        if alert.severity >= Severity.HIGH and escalated:
             self.bell()
             self.notify(alert.summary, title="Exfiltration pattern", severity="warning")
 

@@ -6,6 +6,8 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 
 ## Inbox
 
+- [ ] [P1] Use a single branch: `claude/amazing-pasteur-hj7ek5` (another session) and `claude/gifted-pascal-tp5iot` (this one) diverged on 2026-10-23 @process #git (merged in @2d6586d; on the Mac: `git pull --ff-only origin claude/gifted-pascal-tp5iot`)
+
 - [ ] [P1] Process rule: `testlogs/*.log` are committed only from the Mac, never from the container @process #tracking (a container commit made `git pull` fail at 13:50)
 - [ ] [P2] No `com.apple.coreaudio` lines at all while Voice Memos recorded: rely on the `mic:` indicator, or find the new subsystem with `sample --wide --debug` @sensors #mic
 - [ ] [P3] `calaccessd` (7 TCC lines at 13:51) may be another broker: check its lines in the raw JSON @sensors #tcc
@@ -30,6 +32,10 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 - [ ] [P3] CI job on a macOS runner for the non-root parts of the live suite @ci #macos
 
 ## Completed
+
+- [x] [P1] Merge `claude/amazing-pasteur-hj7ek5` into this branch: 1 conflict (tests appended on both sides), ruff/mypy 0, 120 passed @process #git (done: 2026-10-23 @2d6586d)
+- [x] [P1] (other session) Hide system-binary events, skip DNS egress (53/853/5353), fix swallowed `[high]` markup: first real alert, Brave mic → UDP :53 after 267 ms @correlation #macos (done: 2026-10-23 @071bdce)
+- [x] [P1] (other session) One alert per connection, 2 s default window, name pid-only events via psutil: Brave + Google Meet run @correlation #macos (done: 2026-10-23 @61a6547)
 
 - [x] [P1] sandboxd / TCC-manager self checks no longer reported as accesses; `sample` shows the indicator timeline and one example per sensor; script samples *while* the apps open @sensors #tcc (done: 2026-10-22 @65305d6)
 - [x] [P1] Task 2b: pf Disabled → `safemaxxing block` re-enables it (`Status: Disabled` → `Enabled`), curl 301 → 000 → 301 @firewall #pf (done: 2026-10-22 @a534d12, Mac run 13:51)

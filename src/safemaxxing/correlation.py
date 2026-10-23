@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from safemaxxing.models import Alert, Event, Finding, NetworkConnection, SensorType, Severity
+from safemaxxing.models import (
+    Alert,
+    Event,
+    Finding,
+    NetworkConnection,
+    SensorType,
+    Severity,
+    is_system_path,
+)
 
 BASE_SEVERITY: dict[SensorType, Severity] = {
     SensorType.CAMERA: Severity.HIGH,
@@ -21,7 +30,9 @@ BASE_SEVERITY: dict[SensorType, Severity] = {
 
 @dataclass(frozen=True, slots=True)
 class CorrelationConfig:
-    window_s: float = 0.5
+    # Measured on macOS 27: Google Meet in Brave opened its media socket 1.1 s after the
+    # microphone permission check, so 0.5 s missed it.
+    window_s: float = 2.0
     # The socket can be observed slightly before the log line's timestamp (clock/poll jitter).
     clock_skew_s: float = 0.05
     # `log stream` may deliver entries late; keep items long enough to match out-of-order input.
@@ -32,19 +43,15 @@ class CorrelationConfig:
     # SIP-protected Apple binaries (cloudd, apsd, FaceTime's helpers...) talk to the network
     # constantly; by default their sockets are not treated as possible exfiltration.
     include_system: bool = False
+    include_dns: bool = False
 
     @property
     def retention_s(self) -> float:
         return self.window_s + self.late_arrival_s
 
 
-SYSTEM_PREFIXES = ("/System/", "/usr/", "/bin/", "/sbin/")
-
-
-def is_system_binary(exe_path: str | None) -> bool:
-    if not exe_path or exe_path.startswith("/usr/local/"):
-        return False
-    return exe_path.startswith(SYSTEM_PREFIXES)
+# A DNS lookup is the prelude to a connection, not the exfiltration itself.
+DNS_PORTS = frozenset({53, 853, 5353})
 
 
 def _bundle_related(a: str, b: str) -> bool:
@@ -71,6 +78,7 @@ class CorrelationEngine:
         self._connections: deque[NetworkConnection] = deque(maxlen=self.config.buffer_size)
         self._seen: set[tuple[object, ...]] = set()
         self._last_alert: dict[tuple[int, SensorType, str], float] = {}
+        self._alerted: dict[tuple[object, ...], Alert] = {}
         self._ids = itertools.count(1)
         self._horizon = 0.0
 
@@ -92,6 +100,10 @@ class CorrelationEngine:
             self._connections.popleft()
         if len(self._seen) > self.config.buffer_size * 8:
             self._seen.clear()
+        if len(self._alerted) > 256:
+            self._alerted = {
+                k: a for k, a in self._alerted.items() if a.finding.connection.first_seen >= cutoff
+            }
 
     def _matches(self, event: Event, conn: NetworkConnection) -> Finding | None:
         delta = conn.first_seen - event.timestamp
@@ -101,14 +113,13 @@ class CorrelationEngine:
             return None
         return Finding(event=event, connection=conn, delta_s=max(delta, 0.0))
 
-    def _severity(self, finding: Finding) -> Severity:
-        severity = BASE_SEVERITY[finding.event.sensor]
-        conn = finding.connection
-        sensors = {
-            e.sensor
-            for e in self._events
-            if same_actor(e, conn) and 0 <= conn.first_seen - e.timestamp <= self.config.retention_s
-        }
+    def _sensors_for(self, conn: NetworkConnection) -> frozenset[SensorType]:
+        # Same bounds as `_matches`: an event a few ms after the socket (clock skew) counts.
+        return frozenset(e.sensor for e in self._events if self._matches(e, conn) is not None)
+
+    @staticmethod
+    def _severity(sensors: frozenset[SensorType]) -> Severity:
+        severity = max(BASE_SEVERITY[s] for s in sensors)
         if len(sensors) > 1:
             severity = Severity(min(severity + 1, Severity.CRITICAL))
         return severity
@@ -121,25 +132,41 @@ class CorrelationEngine:
                 continue
             self._seen.add(finding.key)
             ev, conn = finding.event, finding.connection
-            # Keyed on the connection's process: one access yields indicator, TCC and cmio events
-            # with different identities (bundle id, pid, name) that all match the same socket.
-            cooldown_key = (conn.pid, ev.sensor, conn.remote_address)
-            last = self._last_alert.get(cooldown_key)
-            if last is not None and now - last < self.config.alert_cooldown_s:
-                continue
-            self._last_alert[cooldown_key] = now
-            alerts.append(
-                Alert(
+            existing = self._alerted.get(conn.key)
+            if existing is not None:
+                if ev.sensor in existing.sensors:
+                    continue
+                sensors = existing.sensors | {ev.sensor}
+                alert = dataclasses.replace(
+                    existing,
+                    sensors=sensors,
+                    severity=max(existing.severity, self._severity(sensors)),
+                    updated=True,
+                )
+            else:
+                # Keyed on the connection's process: one access yields indicator, TCC and cmio
+                # events with different identities (bundle id, pid, name) for the same socket.
+                last = self._last_alert.get((conn.pid, ev.sensor, conn.remote_address))
+                if last is not None and now - last < self.config.alert_cooldown_s:
+                    continue
+                sensors = self._sensors_for(conn) | {ev.sensor}
+                alert = Alert(
                     id=next(self._ids),
                     finding=finding,
-                    severity=self._severity(finding),
+                    severity=self._severity(sensors),
                     created_at=now,
+                    sensors=sensors,
                 )
-            )
+            for sensor in alert.sensors:
+                self._last_alert[(conn.pid, sensor, conn.remote_address)] = now
+            self._alerted[conn.key] = alert
+            alerts.append(alert)
         return alerts
 
     def ingest_event(self, event: Event) -> list[Alert]:
         if self._ignored(event.bundle_id, event.process_name):
+            return []
+        if event.system and not self.config.include_system:
             return []
         self._advance(event.timestamp)
         self._events.append(event)
@@ -149,7 +176,9 @@ class CorrelationEngine:
     def ingest_connection(self, conn: NetworkConnection) -> list[Alert]:
         if self._ignored(conn.bundle_id, conn.process_name):
             return []
-        if not self.config.include_system and is_system_binary(conn.exe_path):
+        if not self.config.include_system and is_system_path(conn.exe_path):
+            return []
+        if not self.config.include_dns and conn.remote_port in DNS_PORTS:
             return []
         self._advance(conn.first_seen)
         self._connections.append(conn)

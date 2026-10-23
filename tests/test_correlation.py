@@ -3,7 +3,7 @@ from __future__ import annotations
 from conftest import T0, make_conn, make_event
 
 from safemaxxing.correlation import CorrelationConfig, CorrelationEngine
-from safemaxxing.models import SensorType, Severity
+from safemaxxing.models import Protocol, SensorType, Severity
 
 
 def engine(**config: object) -> CorrelationEngine:
@@ -108,15 +108,15 @@ def test_one_access_from_three_sources_yields_one_alert() -> None:
 
 
 def test_system_binaries_ignored_by_default() -> None:
-    from safemaxxing.correlation import is_system_binary
+    from safemaxxing.models import is_system_path
 
-    assert is_system_binary(
+    assert is_system_path(
         "/System/Library/PrivateFrameworks/CloudKitDaemon.framework/Support/cloudd"
     )
-    assert is_system_binary("/usr/libexec/apsd")
-    assert not is_system_binary("/usr/local/bin/spy")
-    assert not is_system_binary("/Applications/Spy.app/Contents/MacOS/Spy")
-    assert not is_system_binary(None)
+    assert is_system_path("/usr/libexec/apsd")
+    assert not is_system_path("/usr/local/bin/spy")
+    assert not is_system_path("/Applications/Spy.app/Contents/MacOS/Spy")
+    assert not is_system_path(None)
 
     eng = engine()
     eng.ingest_event(make_event())
@@ -135,3 +135,64 @@ def test_include_system_opt_in() -> None:
     eng = engine(include_system=True)
     eng.ingest_event(make_event())
     assert len(eng.ingest_connection(make_conn(exe_path="/usr/libexec/apsd"))) == 1
+
+
+def test_dns_lookups_do_not_alert_by_default() -> None:
+    eng = engine()
+    eng.ingest_event(make_event())
+    assert eng.ingest_connection(make_conn(remote_address="10.128.132.57", remote_port=53)) == []
+    assert len(eng.ingest_connection(make_conn(local_port=2, remote_port=443))) == 1
+    eng = engine(include_dns=True)
+    eng.ingest_event(make_event())
+    assert len(eng.ingest_connection(make_conn(remote_port=53))) == 1
+
+
+def test_system_events_not_correlated_by_default() -> None:
+    eng = engine()
+    eng.ingest_event(make_event(system=True))
+    assert eng.ingest_connection(make_conn()) == []
+    eng = engine(include_system=True)
+    eng.ingest_event(make_event(system=True))
+    assert len(eng.ingest_connection(make_conn())) == 1
+
+
+def test_brave_meet_timeline_merges_into_one_critical_alert() -> None:
+    # macOS 27.0.1: mic permission check, media socket 1119 ms later, camera line ~0 ms after it.
+    eng = CorrelationEngine(clock=lambda: T0)  # default window
+    brave = {"pid": None, "process_name": "", "bundle_id": "com.brave.Browser"}
+    conn = make_conn(
+        pid=3293,
+        bundle_id="com.brave.Browser",
+        remote_address="74.125.250.135",
+        remote_port=19305,
+        protocol=Protocol.UDP,
+        first_seen=T0 + 1.119,
+    )
+    assert eng.ingest_event(make_event(sensor=SensorType.MICROPHONE, **brave)) == []
+    (first,) = eng.ingest_connection(conn)
+    assert first.sensors == {SensorType.MICROPHONE} and first.severity is Severity.HIGH
+    assert not first.updated
+    (merged,) = eng.ingest_event(
+        make_event(sensor=SensorType.CAMERA, timestamp=T0 + 1.139, **brave)
+    )
+    assert merged.id == first.id and merged.updated
+    assert merged.sensors == {SensorType.MICROPHONE, SensorType.CAMERA}
+    assert merged.severity is Severity.CRITICAL
+    assert "used camera+microphone" in merged.summary
+    assert eng.ingest_event(make_event(sensor=SensorType.CAMERA, timestamp=T0 + 1.2, **brave)) == []
+
+
+def test_sensor_logged_just_after_socket_counts_for_severity() -> None:
+    eng = engine()
+    eng.ingest_event(make_event(sensor=SensorType.MICROPHONE))
+    eng.ingest_event(make_event(timestamp=T0 + 0.12))  # camera, 20 ms after the socket
+    (alert,) = eng.ingest_connection(make_conn(first_seen=T0 + 0.1))
+    assert alert.severity is Severity.CRITICAL
+
+
+def test_merged_alert_sensors_all_enter_cooldown() -> None:
+    eng = engine()
+    eng.ingest_event(make_event(sensor=SensorType.MICROPHONE))
+    eng.ingest_event(make_event())
+    assert len(eng.ingest_connection(make_conn())) == 1
+    assert eng.ingest_connection(make_conn(local_port=9)) == []

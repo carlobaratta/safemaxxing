@@ -14,6 +14,35 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-23 14:30 +0200] - Diverged branches merged (Linux container)
+
+- **Environment:** Linux x86_64 cloud container, CPython 3.13.16, uid=0. Static checks only.
+- **Goal:** unblock the Mac. `git pull origin claude/gifted-pascal-tp5iot` failed with
+  "divergent branches". The plain `git pull` fast-forwarded the local branch to
+  `origin/claude/amazing-pasteur-hj7ek5` (61a6547), which has no `scripts/` folder:
+  `zsh: no such file or directory: scripts/macos_validate.sh`.
+- **Cause:** after 66596f3 another session pushed 071bdce and 61a6547 to
+  `claude/amazing-pasteur-hj7ek5`, while this session pushed 7 commits to
+  `claude/gifted-pascal-tp5iot`. The two lines had no commit in common after 66596f3.
+- **Code changes:** merge 2d6586d. The only conflict was `tests/test_sensors.py` (both sides
+  appended tests), resolved by keeping both. `sensors.py` merged automatically: sandboxd /
+  TCC-manager filter plus the other session's `system` flag and 5-tuple `_classify_tcc`.
+- **Commands run:**
+  ```sh
+  git merge --no-ff origin/claude/amazing-pasteur-hj7ek5
+  uv run ruff check && uv run mypy --strict && uv run pytest -q
+  ```
+- **Result and raw data:**
+  ```text
+  All checks passed!
+  Success: no issues found in 20 source files
+  120 passed, 7 skipped in 2.94s
+  ```
+- **Problems / regressions:** none in the tests. Note: the new default correlation window is
+  2 s (was 0.5 s), and system-binary events are now hidden unless `--include-system`.
+- **Next steps:** on the Mac,
+  `git pull --ff-only origin claude/gifted-pascal-tp5iot && scripts/macos_validate.sh`.
+
 ## [2026-10-22 13:55 +0200] - Fixes from the third Mac run (Linux container)
 
 - **Environment:** Linux 6.18.44 x86_64 cloud container, CPython 3.13.16, uid=0. Static
