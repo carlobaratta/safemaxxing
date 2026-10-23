@@ -44,9 +44,9 @@ The script reads only three variables: `SAFEMAXXING_LIVE_IP`, `SAMPLE_S` (defaul
 
 ## Branches
 
-`main` is the default branch and the target of pull requests. Until the TODO item "Move
-day-to-day work onto `main`" is done, some sessions still push to `claude/gifted-pascal-tp5iot`;
-keep `main` a fast-forward of it.
+All work lands on `main`, the default branch and the target of pull requests. The
+`claude/amazing-pasteur-hj7ek5` and `claude/gifted-pascal-tp5iot` branches are kept for
+history only; do not push to them.
 
 ## Tracking work
 

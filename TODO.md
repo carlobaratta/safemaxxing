@@ -6,7 +6,7 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 
 ## Inbox
 
-- [ ] [P1] Move day-to-day work onto `main`: sessions still push to `claude/gifted-pascal-tp5iot`; fast-forward `main` to it (`git push origin claude/gifted-pascal-tp5iot:main`), then switch the sessions to `main` and retire the `claude/*` branches; tag `v0.1.0` @process #git
+- [ ] [P2] Tag `v0.1.0` on `main` once the screen-recording check in **Now** is done; the `claude/*` branches stay as history (frozen at 40ed2b8) @process #release
 
 - [ ] [P1] Process rule: `testlogs/*.log` are committed only from the Mac, never from the container @process #tracking (a container commit made `git pull` fail at 13:50)
 - [ ] [P3] coreaudio: 389 lines while recording but 0 parsed (mic is already covered by TCC + `mic:` indicator); look for an IO-start line in `testlogs/20261023-1424-sample.jsonl` before adding hints @sensors #mic
@@ -41,6 +41,7 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 
 ## Completed
 
+- [x] [P1] Day-to-day work moved onto `main`, cloud session included; `claude/*` branches frozen @process #git (done: 2026-10-23 @40ed2b8)
 - [x] [P1] `main` created from 25744dc and set as GitHub's default branch; `claude/*` branches kept, all three at the same commit @process #git (done: 2026-10-23 @25744dc)
 - [x] [P2] Docstrings for every public API outside `sensors.py`, `--help` for every argument, CI actions bumped to checkout@v7 / setup-uv@v7, TESTLOG entries back in newest-first order @docs #github (done: 2026-10-23 @2857704)
 - [x] [P1] GitHub documentation pass: README checked claim by claim against the code (Italian, all options documented), SECURITY/CONTRIBUTING/CHANGELOG, issue and PR templates, Dependabot, CI permissions/concurrency, raw `testlogs/*.jsonl` git-ignored; 14:24 raw log committed from the Mac @docs #github (done: 2026-10-23 @57fdd2d, @313920e)
