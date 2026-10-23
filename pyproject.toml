@@ -11,10 +11,16 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: End Users/Desktop",
+    "Intended Audience :: System Administrators",
     "License :: OSI Approved :: MIT License",
     "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Security",
+    "Topic :: System :: Monitoring",
+    "Topic :: System :: Networking :: Firewalls",
+    "Typing :: Typed",
 ]
 dependencies = [
     "textual>=0.58.0",
@@ -28,6 +34,10 @@ safemaxxing = "safemaxxing.cli:app"
 
 [project.urls]
 Homepage = "https://github.com/carlobaratta/safemaxxing"
+Source = "https://github.com/carlobaratta/safemaxxing"
+Issues = "https://github.com/carlobaratta/safemaxxing/issues"
+Changelog = "https://github.com/carlobaratta/safemaxxing/blob/HEAD/CHANGELOG.md"
+Security = "https://github.com/carlobaratta/safemaxxing/security/policy"
 
 [build-system]
 requires = ["hatchling"]
