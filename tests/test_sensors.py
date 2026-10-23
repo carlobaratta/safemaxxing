@@ -560,10 +560,11 @@ def test_tccd_msgid_of_broker_request_is_not_an_actor() -> None:
 
 
 def test_logging_process_is_not_the_actor_when_message_names_another_pid() -> None:
+    # Same shape as the verbatim WindowServer line, with a service that is not filtered.
     entry = _entry(
         "com.apple.TCC",
         "WindowServer",
-        "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=406.9, function=TCCAccessRequest, service=kTCCServiceScreenCapture, target_token={pid:35078, auid:501, euid:501},",
+        "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=406.9, function=TCCAccessRequest, service=kTCCServiceCamera, target_token={pid:35078, auid:501, euid:501},",
         pid=406,
     )
     event = parse_entry(entry)
@@ -750,18 +751,78 @@ async def test_listener_marks_enriched_system_binaries(tmp_path: Path) -> None:
     assert event.process_name == "cloudd" and event.system
 
 
-def test_coreaudiod_screen_capture_check_for_audio_client_is_not_screen_capture() -> None:
-    # Verbatim (truncated by `sample`) from macOS 27.0.1, 2026-10-23 14:24; pid 525 was
-    # /usr/sbin/coreaudiod and 34389 Photo Booth, which used only the camera and microphone.
-    screen = _entry(
+def test_screen_capture_preflights_for_other_apps_are_not_captures() -> None:
+    # One of each ScreenCapture line kind from macOS 27.0.1, 2026-10-23 14:24, truncated at 220
+    # chars (REQUEST_MSG newlines were flattened by the dump): WindowServer (406) and coreaudiod
+    # (525) preflight Photo Booth (34389), the ring light helper (34393) and Voice Memos
+    # (34399); tccd (407) logs each request again. msgID=406.9 is an earlier WindowServer line.
+    lines = [
+        (
+            "WindowServer",
+            406,
+            "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=406.215, function=TCCAccessRequest, service=kTCCServiceScreenCapture, target_token={pid:34389, auid:501, euid:501},",
+        ),
+        (
+            "WindowServer",
+            406,
+            "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=406.9, function=TCCAccessRequest, service=kTCCServiceScreenCapture, target_token={pid:35078, auid:501, euid:501},",
+        ),
+        (
+            "coreaudiod",
+            525,
+            "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=525.369, function=TCCAccessRequest, service=kTCCServiceScreenCapture, target_token={pid:34389, auid:501, euid:501},",
+        ),
+        (
+            "tccd",
+            407,
+            'REQUEST_MSG: msgID=525.374, msg={ \trequire_purpose=<xpc_null> \tservice="kTCCServiceScreenCapture" \tfunction="TCCAccessRequest" \tpreflight=true \ttarget_token={pid:34399, auid:501, euid:501} \tTCCD_MSG_ID="525.374" \tbackgro',
+        ),
+        (
+            "tccd",
+            407,
+            "AUTHREQ_CTX: msgID=406.215, function=<private>, service=kTCCServiceScreenCapture, preflight=yes, query=1, client_dict=(null), daemon_dict=<private>",
+        ),
+        (
+            "tccd",
+            407,
+            "Handling access request to kTCCServiceScreenCapture, from Sub:{com.apple.PhotoBooth}Resp:{TCCDProcess: identifier=com.apple.PhotoBooth, pid=34389, auid=501, euid=501, binary_path=/System/Applications/Photo Booth.app/Cont",
+        ),
+        (
+            "tccd",
+            407,
+            "Auth:Allowed (Entitled) to kTCCServiceScreenCapture because accessing process TCCDProcess: identifier=com.apple.controlcenter.ringlighthelper, pid=34393, auid=501, euid=501, binary_path=/System/Library/CoreServices/Contr",
+        ),
+        (
+            "tccd",
+            407,
+            "<TCCDProcess: identifier=com.apple.controlcenter, pid=689> has the com.apple.private.tcc.allow entitlement for service kTCCServiceScreenCapture (composed to parent: (null))",
+        ),
+        (
+            "tccd",
+            407,
+            "<TCCDProcess: identifier=com.apple.WindowServer, pid=406> has the com.apple.private.tcc.manager.check-by-audit-token entitlement for service kTCCServiceScreenCapture (composed to parent: (null))",
+        ),
+        ("tccd", 407, "system tccd handled entitlements check for: kTCCServiceScreenCapture"),
+    ]
+    for process, pid, message in lines:
+        assert parse_entry(_entry("com.apple.TCC", process, message, pid=pid)) is None, message
+
+
+def test_screen_capture_requested_by_the_capturing_app_itself_counts() -> None:
+    # Constructed: the client-side libTCC line an app logs for its own request.
+    own = _entry(
         "com.apple.TCC",
-        "coreaudiod",
-        "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=525.369, "
-        "function=TCCAccessRequest, service=kTCCServiceScreenCapture, target_token={pid:34389, au",
-        pid=525,
+        "Recorder",
+        "SEND: 0/7 synchronous to com.apple.tccd: request: msgID=4242.7, "
+        "function=TCCAccessRequest, service=kTCCServiceScreenCapture,",
+        pid=4242,
     )
-    assert parse_entry(screen) is None
-    # Same shape for the microphone (constructed): coreaudiod's mic requests still count.
+    event = parse_entry(own)
+    assert event is not None and (event.sensor, event.pid) == (SensorType.SCREEN_CAPTURE, 4242)
+
+
+def test_coreaudiod_mic_request_for_a_client_still_counts() -> None:
+    # Constructed, same shape as coreaudiod's verbatim ScreenCapture line.
     mic = _entry(
         "com.apple.TCC",
         "coreaudiod",
