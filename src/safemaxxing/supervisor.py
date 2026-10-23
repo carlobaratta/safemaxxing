@@ -19,6 +19,8 @@ _DONE: Final = object()
 
 
 class Supervisor:
+    """Feeds sensor events and observed connections through a CorrelationEngine."""
+
     def __init__(
         self,
         events: AsyncIterable[Event],
@@ -40,6 +42,10 @@ class Supervisor:
         include_loopback: bool = False,
         resolve_hostnames: bool = True,
     ) -> Supervisor:
+        """Build a Supervisor on the real sensor listener and a polling NetworkMonitor.
+
+        Reverse-DNS hostname resolution is optional via `resolve_hostnames`.
+        """
         monitor = NetworkMonitor(
             interval_s=poll_interval_s,
             include_loopback=include_loopback,
@@ -53,6 +59,7 @@ class Supervisor:
         )
 
     def active_connections(self) -> tuple[NetworkConnection, ...]:
+        """Return the monitor's currently active connections, or the last 256 seen without one."""
         return self.monitor.active if self.monitor is not None else tuple(self._recent)
 
     def _ingest_connection(self, conn: NetworkConnection) -> list[Alert]:
@@ -64,6 +71,7 @@ class Supervisor:
         queue: asyncio.Queue[object] = asyncio.Queue()
 
         async def pump(source: AsyncIterable[T], ingest: Callable[[T], list[Alert]]) -> None:
+            """Queue `source` items and resulting alerts, then any error, then a done marker."""
             try:
                 async for item in source:
                     queue.put_nowait(item)

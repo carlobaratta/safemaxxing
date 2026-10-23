@@ -30,6 +30,8 @@ def _clock(ts: float) -> str:
 
 
 class ConfirmScreen(ModalScreen[bool]):
+    """Modal yes/no dialog; dismisses with True only when Confirm is pressed."""
+
     DEFAULT_CSS = """
     ConfirmScreen { align: center middle; }
     #dialog { width: 60; height: auto; padding: 1 2; border: thick $error; background: $surface; }
@@ -42,6 +44,7 @@ class ConfirmScreen(ModalScreen[bool]):
         self._prompt = prompt
 
     def compose(self) -> ComposeResult:
+        """Lay out the prompt with Cancel and Confirm buttons."""
         with Vertical(id="dialog"):
             yield Label(self._prompt)
             with Horizontal(id="buttons"):
@@ -49,10 +52,18 @@ class ConfirmScreen(ModalScreen[bool]):
                 yield Button("Confirm", id="yes", variant="error")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Dismiss with True for Confirm, False for Cancel."""
         self.dismiss(event.button.id == "yes")
 
 
 class SafemaxxingApp(App[None]):
+    """Dashboard of alerts, active egress sockets and sensor events fed by a `Supervisor`.
+
+    Block, unblock, suspend, resume and kill act on the selected connection: the highlighted row
+    of the connections table when it has focus, otherwise the connection of the highlighted alert.
+    Kill asks for confirmation first.
+    """
+
     TITLE = "safemaxxing"
     SUB_TITLE = "sensor → egress correlation"
     CSS = """
@@ -87,6 +98,7 @@ class SafemaxxingApp(App[None]):
         self._connections: dict[str, NetworkConnection] = {}
 
     def compose(self) -> ComposeResult:
+        """Lay out the alerts and connections tables above the sensor event log."""
         yield Header()
         with Horizontal(id="top"):
             with Vertical(classes="pane"):
@@ -101,6 +113,7 @@ class SafemaxxingApp(App[None]):
         yield Footer()
 
     def on_mount(self) -> None:
+        """Set up table columns, refresh connections every second and start consuming updates."""
         self.query_one("#alerts", DataTable).add_columns(
             "#", "time", "sev", "sensor", "app", "pid", "destination", "Δms"
         )
@@ -112,6 +125,7 @@ class SafemaxxingApp(App[None]):
 
     @work(exclusive=True, group="supervisor")
     async def consume(self) -> None:
+        """Feed supervisor alerts and events into the UI; on failure log it and notify."""
         try:
             async for update in self.supervisor.stream():
                 if isinstance(update, Alert):
@@ -123,9 +137,11 @@ class SafemaxxingApp(App[None]):
             self.notify(f"Supervisor stopped: {exc}", severity="error", timeout=10)
 
     def log_line(self, text: Text) -> None:
+        """Append a line to the sensor event log."""
         self.query_one("#events", RichLog).write(text)
 
     def log_event(self, event: Event) -> None:
+        """Log a sensor event, skipping system events unless `include_system` is configured."""
         if event.system and not self.supervisor.engine.config.include_system:
             return
         line = Text.assemble(
@@ -139,6 +155,11 @@ class SafemaxxingApp(App[None]):
         self.log_line(line)
 
     def add_alert(self, alert: Alert) -> None:
+        """Add or replace the alert's table row and log it.
+
+        Rings the bell and notifies only for HIGH or above, and only for a new alert or an
+        escalation in severity.
+        """
         ev, conn = alert.finding.event, alert.finding.connection
         style = SEVERITY_STYLE[alert.severity]
         destination = conn.hostname or conn.remote
@@ -166,6 +187,7 @@ class SafemaxxingApp(App[None]):
             self.notify(alert.summary, title="Exfiltration pattern", severity="warning")
 
     def refresh_connections(self) -> None:
+        """Rebuild the connections table (oldest first), keeping the cursor row where possible."""
         table = self.query_one("#connections", DataTable)
         row = table.cursor_row
         table.clear()
@@ -198,6 +220,7 @@ class SafemaxxingApp(App[None]):
         return alert.finding.connection if alert else None
 
     def report(self, result: ActionResult) -> None:
+        """Log an action result and show it as a notification (error severity on failure)."""
         verdict = "ok" if result.ok else "FAILED"
         message = f"{result.kind.value} {result.target}: {verdict} {result.detail}".strip()
         self.log_line(Text(message, style="green" if result.ok else "bold red"))
@@ -210,22 +233,27 @@ class SafemaxxingApp(App[None]):
         return conn
 
     async def action_block(self) -> None:
+        """Block the selected connection's remote IP in pf."""
         if conn := self._require_selection():
             self.report(await self.firewall.block(conn.remote_address))
 
     async def action_unblock(self) -> None:
+        """Unblock the selected connection's remote IP in pf."""
         if conn := self._require_selection():
             self.report(await self.firewall.unblock(conn.remote_address))
 
     def action_suspend(self) -> None:
+        """Send SIGSTOP to the selected connection's process."""
         if conn := self._require_selection():
             self.report(self.processes.suspend(conn.pid))
 
     def action_resume(self) -> None:
+        """Send SIGCONT to the selected connection's process."""
         if conn := self._require_selection():
             self.report(self.processes.resume(conn.pid))
 
     def action_kill(self) -> None:
+        """Send SIGKILL to the selected connection's process, after a confirmation dialog."""
         conn = self._require_selection()
         if conn is None:
             return
@@ -237,5 +265,6 @@ class SafemaxxingApp(App[None]):
         self.push_screen(ConfirmScreen(f"Kill {conn.process_name} (pid {conn.pid})?"), on_answer)
 
     def action_clear_alerts(self) -> None:
+        """Clear the alerts table and the alerts held by the UI."""
         self.alerts.clear()
         self.query_one("#alerts", DataTable).clear()

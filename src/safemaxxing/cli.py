@@ -40,7 +40,8 @@ NoDns = Annotated[bool, typer.Option("--no-dns", help="Disable reverse DNS looku
 IncludeSystem = Annotated[
     bool,
     typer.Option(
-        "--include-system", help="Also correlate sockets of SIP-protected Apple binaries."
+        "--include-system",
+        help="Also show events and correlate sockets of SIP-protected Apple binaries.",
     ),
 ]
 IncludeDns = Annotated[
@@ -50,6 +51,8 @@ Ignore = Annotated[
     list[str] | None,
     typer.Option("--ignore", help="Bundle id or process name to ignore (repeatable)."),
 ]
+Ip = Annotated[str, typer.Argument(help="IPv4 or IPv6 address.")]
+Pid = Annotated[int, typer.Argument(help="Process id.")]
 
 
 def _supervisor(
@@ -107,7 +110,11 @@ def tui(
     include_system: IncludeSystem = False,
     include_dns: IncludeDns = False,
 ) -> None:
-    """Interactive dashboard."""
+    """Interactive dashboard: alerts, active egress and sensor events.
+
+    Keys: b/u block/unblock the destination IP, s/r SIGSTOP/SIGCONT, k SIGKILL (asks first),
+    c clear alerts, q quit. Run as root for full visibility.
+    """
     from safemaxxing.tui.app import SafemaxxingApp
 
     _warn_if_not_root()
@@ -136,7 +143,7 @@ def watch(
     include_dns: IncludeDns = False,
     as_json: Annotated[bool, typer.Option("--json", help="Emit alerts as JSON lines.")] = False,
     show_events: Annotated[
-        bool, typer.Option("--events", help="Also print sensor events.")
+        bool, typer.Option("--events", help="Also print sensor events (not with --json).")
     ] = False,
     auto_block: Annotated[
         bool, typer.Option("--auto-block", help="Block the destination IP of qualifying alerts.")
@@ -145,7 +152,10 @@ def watch(
         bool, typer.Option("--auto-suspend", help="SIGSTOP the process of qualifying alerts.")
     ] = False,
     min_severity: Annotated[
-        str, typer.Option("--min-severity", help="Threshold for --auto-* actions.")
+        str,
+        typer.Option(
+            "--min-severity", help="Threshold for --auto-* actions: low, medium, high, critical."
+        ),
     ] = "high",
 ) -> None:
     """Headless mode: stream alerts to stdout, optionally enforcing automatically."""
@@ -199,13 +209,13 @@ def watch(
 
 
 @app.command()
-def block(ip: str) -> None:
+def block(ip: Ip) -> None:
     """Add an IP to the safemaxxing_block pf table."""
     _print_result(asyncio.run(PfFirewall().block(ip)))
 
 
 @app.command()
-def unblock(ip: str) -> None:
+def unblock(ip: Ip) -> None:
     """Remove an IP from the safemaxxing_block pf table."""
     _print_result(asyncio.run(PfFirewall().unblock(ip)))
 
@@ -219,24 +229,24 @@ def blocked() -> None:
 
 @app.command()
 def flush() -> None:
-    """Remove every IP from the block table."""
+    """Remove every IP from the block table (the anchor rule stays loaded, pf stays on)."""
     _print_result(asyncio.run(PfFirewall().flush()))
 
 
 @app.command()
-def freeze(pid: int) -> None:
+def freeze(pid: Pid) -> None:
     """Suspend a process (SIGSTOP)."""
     _print_result(ProcessController().suspend(pid))
 
 
 @app.command()
-def thaw(pid: int) -> None:
+def thaw(pid: Pid) -> None:
     """Resume a suspended process (SIGCONT)."""
     _print_result(ProcessController().resume(pid))
 
 
 @app.command()
-def kill(pid: int) -> None:
+def kill(pid: Pid) -> None:
     """Terminate a process (SIGKILL)."""
     _print_result(ProcessController().kill(pid))
 
@@ -258,7 +268,9 @@ def doctor(poll_ms: PollMs = 200) -> None:
 
 @app.command()
 def sample(
-    seconds: Annotated[float, typer.Option("--seconds", min=0.5)] = 5.0,
+    seconds: Annotated[
+        float, typer.Option("--seconds", min=0.5, help="How long to sample `log stream`.")
+    ] = 5.0,
     out: Annotated[
         Path | None, typer.Option("--out", help="Write raw entries as JSON lines.")
     ] = None,

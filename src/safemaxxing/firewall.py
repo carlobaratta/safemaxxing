@@ -20,26 +20,35 @@ ANCHOR = "com.apple/safemaxxing"
 
 
 def anchor_rules(table: str = TABLE) -> str:
+    """Return the pf rule text loaded into the anchor: drop all outbound traffic to `table`."""
     # No `table` definition: reloading a ruleset that defines a table resets its contents.
     return f"block drop out quick from any to <{table}>\n"
 
 
 class FirewallError(RuntimeError):
-    pass
+    """Raised when pf cannot be prepared: unreachable anchor, rejected rules, or pf stays off."""
 
 
 @dataclass(frozen=True, slots=True)
 class CommandResult:
+    """Exit status and decoded output of one finished subprocess."""
+
     returncode: int
     stdout: str
     stderr: str
 
 
 class Runner(Protocol):
+    """Async callable that runs an argv (optionally feeding stdin); swapped out in tests."""
+
     async def __call__(self, argv: Sequence[str], stdin: str | None = None) -> CommandResult: ...
 
 
 async def run_command(argv: Sequence[str], stdin: str | None = None) -> CommandResult:
+    """Run `argv` directly (no shell) and capture its output; never raises on a non-zero exit.
+
+    Output is decoded leniently. A missing executable still raises OSError from the spawn.
+    """
     proc = await asyncio.create_subprocess_exec(
         *argv,
         stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
@@ -61,6 +70,7 @@ def validate_ip(raw: str) -> str:
 
 
 def is_root() -> bool:
+    """True if the process runs as root, which pfctl and signalling other users' processes need."""
     return os.geteuid() == 0
 
 
@@ -86,6 +96,7 @@ _ANCHOR_MISSING = ("DIOCGETRULES: Invalid argument", "Anchor does not exist")
 
 
 def anchor_missing(stderr: str) -> bool:
+    """True if pfctl's stderr says the anchor has never been created."""
     return any(marker in stderr for marker in _ANCHOR_MISSING)
 
 
@@ -101,6 +112,7 @@ def parse_pf_status(info: str) -> bool | None:
 
 
 def meaningful_stderr(stderr: str) -> list[str]:
+    """Return stripped stderr lines that are real errors, dropping benign Darwin pfctl chatter."""
     return [
         line.strip()
         for line in stderr.splitlines()
@@ -109,6 +121,12 @@ def meaningful_stderr(stderr: str) -> list[str]:
 
 
 class PfFirewall:
+    """Blocks IPs through a pf table inside a dedicated anchor, driven by `pfctl` (needs root).
+
+    The table and its anchor rule live in the kernel, so blocks outlive this process and
+    `flush` empties the table without unloading the rule or disabling pf.
+    """
+
     def __init__(
         self, runner: Runner = run_command, anchor: str = ANCHOR, table: str = TABLE
     ) -> None:
@@ -121,6 +139,7 @@ class PfFirewall:
         return [PFCTL, "-a", self.anchor, "-t", self.table, "-T", *args]
 
     async def is_enabled(self) -> bool | None:
+        """Run `pfctl -s info`: True if pf is enabled, False if disabled, None if unrecognised."""
         return parse_pf_status((await self._run([PFCTL, "-s", "info"])).stdout)
 
     async def anchor_reachable(self) -> bool:
@@ -129,6 +148,7 @@ class PfFirewall:
         return PARENT_ANCHOR_RULE in res.stdout
 
     async def anchor_loaded(self) -> bool:
+        """True if our anchor already holds the rule referencing the block table."""
         res = await self._run([PFCTL, "-a", self.anchor, "-s", "rules"])
         return f"<{self.table}>" in res.stdout
 
@@ -157,7 +177,13 @@ class PfFirewall:
         raise FirewallError("pf is still disabled after `pfctl -E` / `pfctl -e`")
 
     async def setup(self) -> None:
-        """Load the anchor rules and enable pf. Blocks deliberately outlive this process."""
+        """Load the anchor rules and enable pf. Blocks deliberately outlive this process.
+
+        Runs once per instance (guarded by `_ready`). Loads the rules only if the anchor lacks
+        them, then enables pf with `pfctl -E`, falling back to `-e`; pf stays enabled afterwards.
+        Raises FirewallError if the main ruleset skips `com.apple/*`, pfctl rejects the rules,
+        or pf stays disabled.
+        """
         if self._ready:
             return
         if not await self.anchor_reachable():
@@ -184,6 +210,12 @@ class PfFirewall:
         return ActionResult(kind, ip, res.returncode == 0, "; ".join(meaningful_stderr(res.stderr)))
 
     async def block(self, ip: str) -> ActionResult:
+        """Add `ip` to the block table (`pfctl -T add`), running `setup` first.
+
+        Loopback, unspecified and multicast addresses are refused. Invalid input and setup
+        failures come back as a failed ActionResult rather than raising. On success `pfctl -k`
+        also kills existing states between the address and anywhere, so open sockets die too.
+        """
         result = await self._table_op(ActionKind.BLOCK_IP, "add", ip)
         if result.ok:
             # Table rules only see new flows; drop existing state so open sockets die too.
@@ -192,14 +224,27 @@ class PfFirewall:
         return result
 
     async def unblock(self, ip: str) -> ActionResult:
+        """Remove `ip` from the block table (`pfctl -T delete`) without running `setup`.
+
+        Invalid input comes back as a failed ActionResult rather than raising.
+        """
         # Removing must never depend on (re)loading rules, or a failed setup could strand a block.
         return await self._table_op(ActionKind.UNBLOCK_IP, "delete", ip, needs_setup=False)
 
     async def blocked(self) -> list[str]:
+        """List the addresses in the block table (`pfctl -T show`); empty if there are none.
+
+        Errors are not raised, so a missing table or anchor also yields an empty list.
+        """
         res = await self._run(self._table_cmd("show"))
         return [line.strip() for line in res.stdout.splitlines() if line.strip()]
 
     async def flush(self) -> ActionResult:
+        """Remove every address from the block table (`pfctl -T flush`).
+
+        The anchor rule stays loaded and pf stays enabled. A table that was never created
+        counts as success. Existing states are not touched.
+        """
         res = await self._run(self._table_cmd("flush"))
         if table_missing(res.stderr):
             return ActionResult(ActionKind.UNBLOCK_IP, self.table, True, "table already empty")
@@ -215,11 +260,18 @@ _SIGNALS: dict[ActionKind, signal.Signals] = {
 
 
 class ProcessController:
+    """Suspends, resumes or kills processes by pid with SIGSTOP, SIGCONT and SIGKILL."""
+
     def __init__(self, kill: Callable[[int, int], None] = os.kill) -> None:
         self._kill = kill
         self._protected = {0, 1, os.getpid(), os.getppid()}
 
     def signal(self, kind: ActionKind, pid: int) -> ActionResult:
+        """Send the signal for `kind` (SUSPEND, RESUME or KILL) to `pid`.
+
+        Refuses pids 0 and 1, this process, its parent and negative pids (process groups).
+        A missing process or insufficient privilege is reported in the ActionResult, not raised.
+        """
         sig = _SIGNALS[kind]
         if pid in self._protected or pid < 0:
             return ActionResult(kind, str(pid), False, "protected process")
@@ -232,10 +284,13 @@ class ProcessController:
         return ActionResult(kind, str(pid), True, sig.name)
 
     def suspend(self, pid: int) -> ActionResult:
+        """Stop a process with SIGSTOP; it cannot catch or ignore this."""
         return self.signal(ActionKind.SUSPEND, pid)
 
     def resume(self, pid: int) -> ActionResult:
+        """Continue a stopped process with SIGCONT."""
         return self.signal(ActionKind.RESUME, pid)
 
     def kill(self, pid: int) -> ActionResult:
+        """Terminate a process with SIGKILL; it cannot catch or ignore this."""
         return self.signal(ActionKind.KILL, pid)

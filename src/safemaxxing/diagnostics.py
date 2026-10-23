@@ -43,6 +43,8 @@ SyncRunner = Callable[[Sequence[str], float], CommandResult]
 
 
 class Status(StrEnum):
+    """Outcome of a check: OK is healthy, WARN degrades coverage, FAIL breaks the tool."""
+
     OK = "ok"
     WARN = "warn"
     FAIL = "fail"
@@ -50,12 +52,15 @@ class Status(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class Check:
+    """One doctor result: what was probed, its `Status` and a human-readable detail."""
+
     name: str
     status: Status
     detail: str = ""
 
 
 def run_sync(argv: Sequence[str], timeout_s: float) -> CommandResult:
+    """Run `argv` synchronously; a missing binary is exit 127 and a timeout exit -1."""
     try:
         proc = subprocess.run(
             list(argv), capture_output=True, text=True, timeout=timeout_s, check=False
@@ -69,6 +74,7 @@ def run_sync(argv: Sequence[str], timeout_s: float) -> CommandResult:
 
 
 def check_platform() -> Check:
+    """FAIL unless running on macOS (Darwin)."""
     if platform.system() != "Darwin":
         return Check("macOS", Status.FAIL, f"running on {platform.system()}")
     release, _, machine = platform.mac_ver()
@@ -76,6 +82,7 @@ def check_platform() -> Check:
 
 
 def check_root(euid: int | None = None) -> Check:
+    """FAIL unless the effective uid is 0; pfctl and system-wide socket listing need root."""
     euid = os.geteuid() if euid is None else euid
     if euid == 0:
         return Check("root privileges", Status.OK, "euid 0")
@@ -83,6 +90,7 @@ def check_root(euid: int | None = None) -> Check:
 
 
 def check_binaries(paths: Iterable[str] = (LOG_BINARY, PFCTL, LSOF)) -> list[Check]:
+    """One check per required tool (`log`, `pfctl`, `lsof`): FAIL if not executable."""
     return [
         Check(path, Status.OK, "present")
         if os.access(path, os.X_OK)
@@ -100,6 +108,11 @@ _PF_NEEDS_ROOT = "needs root (/dev/pf: Permission denied)"
 
 
 def check_pf_status(run: SyncRunner = run_sync) -> Check:
+    """Report whether pf is enabled; never FAIL.
+
+    WARN when pf is disabled (it is enabled on the first block), when `pfctl` needs root, or
+    when its output cannot be read.
+    """
     res = run([PFCTL, "-s", "info"], 5.0)
     enabled = parse_pf_status(res.stdout)
     if enabled is None and _pf_denied(res.stderr):
@@ -113,6 +126,12 @@ def check_pf_status(run: SyncRunner = run_sync) -> Check:
 
 
 def check_pf_anchor(run: SyncRunner = run_sync) -> list[Check]:
+    """Check the pf parent anchor rule and our own anchor; returns two checks.
+
+    Without root both are WARN ("needs root") rather than FAIL, since check_root already fails.
+    Otherwise FAIL if the parent anchor rule is missing from the main ruleset or our anchor
+    errors; an anchor that does not exist yet is OK (it loads on the first block).
+    """
     main = run([PFCTL, "-s", "rules"], 5.0)
     if _pf_denied(main.stderr):
         # Root is already reported as FAIL; don't claim the ruleset is broken.
@@ -211,6 +230,7 @@ def check_full_disk_access(path: str = SYSTEM_TCC_DB) -> Check:
 def check_snapshot_latency(
     poll_interval_s: float = 0.2, snapshot: Callable[[float], object] | None = None
 ) -> Check:
+    """Time one socket snapshot; WARN if slower than the poll interval or psutil is denied."""
     try:
         take = snapshot or PsutilSnapshot()
         start = time.perf_counter()
@@ -237,6 +257,7 @@ def check_log_predicate(run: SyncRunner = run_sync) -> Check:
 
 
 def run_doctor(poll_interval_s: float = 0.2) -> list[Check]:
+    """Run every check in order; on a non-macOS host return after the basic checks."""
     checks = [check_platform(), check_root(), *check_binaries()]
     if checks[0].status is Status.FAIL:
         return checks
@@ -248,6 +269,8 @@ def run_doctor(poll_interval_s: float = 0.2) -> list[Check]:
 
 @dataclass(slots=True)
 class SubsystemStats:
+    """Per-subsystem-family counters and examples gathered by `summarize_sample`."""
+
     entries: int = 0
     redacted_message: int = 0
     redacted_image_path: int = 0
@@ -275,6 +298,11 @@ def _family(subsystem: str) -> str:
 def summarize_sample(
     entries: Iterable[Mapping[str, object]], max_examples: int = 3
 ) -> dict[str, SubsystemStats]:
+    """Group log entries by subsystem family and count what the sensor parser extracts.
+
+    Tracks redacted fields, missing pids, parsed events per sensor and level, and keeps up to
+    `max_examples` parsed and unparsed lines per family (plus one example per sensor kind).
+    """
     stats: dict[str, SubsystemStats] = {}
     parser = SensorEventParser()
     for entry in entries:

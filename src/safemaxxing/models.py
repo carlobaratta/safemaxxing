@@ -11,12 +11,15 @@ SYSTEM_PREFIXES = ("/System/", "/usr/", "/bin/", "/sbin/")
 
 
 def is_system_path(path: str | None) -> bool:
+    """Whether `path` is an Apple-only binary location; `/usr/local/` is user-installed."""
     if not path or path.startswith("/usr/local/"):
         return False
     return path.startswith(SYSTEM_PREFIXES)
 
 
 class SensorType(StrEnum):
+    """Kind of sensitive resource being accessed; `TCC` covers other TCC-gated services."""
+
     CAMERA = "camera"
     MICROPHONE = "microphone"
     LOCATION = "location"
@@ -25,11 +28,15 @@ class SensorType(StrEnum):
 
 
 class Protocol(StrEnum):
+    """Transport protocol of a socket."""
+
     TCP = "tcp"
     UDP = "udp"
 
 
 class Severity(IntEnum):
+    """Alert level; ordered so levels compare and can be bumped with integer arithmetic."""
+
     LOW = 1
     MEDIUM = 2
     HIGH = 3
@@ -37,10 +44,13 @@ class Severity(IntEnum):
 
     @property
     def label(self) -> str:
+        """Lower-case level name, e.g. `high`."""
         return self.name.lower()
 
 
 class ActionKind(StrEnum):
+    """Response action that can be taken on an alert: network block or process control."""
+
     BLOCK_IP = "block_ip"
     UNBLOCK_IP = "unblock_ip"
     SUSPEND = "suspend"
@@ -66,6 +76,7 @@ class Event:
 
     @property
     def identity(self) -> str:
+        """Best display name: bundle id, else process name, else `pid:<n>`."""
         return self.bundle_id or self.process_name or f"pid:{self.pid}"
 
 
@@ -88,6 +99,7 @@ class NetworkConnection:
 
     @property
     def key(self) -> tuple[int, Protocol, str, int, str, int]:
+        """Socket identity (pid, protocol and both endpoints), independent of first_seen."""
         return (
             self.pid,
             self.protocol,
@@ -99,11 +111,13 @@ class NetworkConnection:
 
     @property
     def remote(self) -> str:
+        """Remote endpoint as `host:port`, bracketing IPv6 addresses."""
         host = f"[{self.remote_address}]" if ":" in self.remote_address else self.remote_address
         return f"{host}:{self.remote_port}"
 
     @property
     def is_loopback(self) -> bool:
+        """Whether the remote address is a loopback IP; hostnames and bad addresses are not."""
         try:
             return ipaddress.ip_address(self.remote_address).is_loopback
         except ValueError:
@@ -120,6 +134,7 @@ class Finding:
 
     @property
     def key(self) -> tuple[float, SensorType, int, Protocol, str, int, str, int]:
+        """Identity of this (event, connection) pair, used to ignore repeated matches."""
         return (self.event.timestamp, self.event.sensor, *self.connection.key)
 
 
@@ -136,11 +151,13 @@ class Alert:
 
     @property
     def sensor_label(self) -> str:
+        """Sorted sensor names joined with `+`, e.g. `camera+microphone`."""
         names = sorted(s.value for s in self.sensors) or [self.finding.event.sensor.value]
         return "+".join(names)
 
     @property
     def summary(self) -> str:
+        """One-line description: who used which sensors, where it connected and the delay."""
         ev, conn = self.finding.event, self.finding.connection
         destination = conn.hostname or conn.remote
         return (
@@ -151,6 +168,8 @@ class Alert:
 
 @dataclass(frozen=True, slots=True)
 class ActionResult:
+    """Outcome of a response action on `target` (an IP, firewall table or pid)."""
+
     kind: ActionKind
     target: str
     ok: bool

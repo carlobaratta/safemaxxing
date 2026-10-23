@@ -30,6 +30,12 @@ BASE_SEVERITY: dict[SensorType, Severity] = {
 
 @dataclass(frozen=True, slots=True)
 class CorrelationConfig:
+    """Tunables for linking a sensor access to a later outbound connection.
+
+    A connection matches an event when it first appears at most `window_s` after the event, or
+    up to `clock_skew_s` before it. `ignore` holds bundle ids / process names to skip entirely.
+    """
+
     # Measured on macOS 27: Google Meet in Brave opened its media socket 1.1 s after the
     # microphone permission check, so 0.5 s missed it.
     window_s: float = 2.0
@@ -47,6 +53,7 @@ class CorrelationConfig:
 
     @property
     def retention_s(self) -> float:
+        """How long events and connections stay buffered: the window plus late-arrival slack."""
         return self.window_s + self.late_arrival_s
 
 
@@ -59,6 +66,12 @@ def _bundle_related(a: str, b: str) -> bool:
 
 
 def same_actor(event: Event, conn: NetworkConnection) -> bool:
+    """Whether the process behind `event` owns `conn`.
+
+    Matches by pid first, then by bundle id (equal, or one a dotted prefix of the other so
+    helpers like `com.x.App.helper` match `com.x.App`), then by process name only when the
+    event carries no pid.
+    """
     if event.pid is not None and event.pid == conn.pid:
         return True
     if event.bundle_id and conn.bundle_id and _bundle_related(event.bundle_id, conn.bundle_id):
@@ -69,6 +82,13 @@ def same_actor(event: Event, conn: NetworkConnection) -> bool:
 
 
 class CorrelationEngine:
+    """Match sensor events to outbound connections and raise one alert per connection.
+
+    Events and connections may arrive in either order; each new item is checked against the
+    buffered items of the other kind. Repeat alerts for the same pid, sensor and remote address
+    are suppressed for `alert_cooldown_s`.
+    """
+
     def __init__(
         self, config: CorrelationConfig | None = None, clock: Callable[[], float] = time.time
     ) -> None:
@@ -84,6 +104,7 @@ class CorrelationEngine:
 
     @property
     def events(self) -> tuple[Event, ...]:
+        """Snapshot of the buffered events still inside the retention period."""
         return tuple(self._events)
 
     def _ignored(self, *names: str | None) -> bool:
@@ -164,6 +185,11 @@ class CorrelationEngine:
         return alerts
 
     def ingest_event(self, event: Event) -> list[Alert]:
+        """Buffer a sensor event and return alerts for buffered connections it explains.
+
+        Ignored processes, and system binaries unless `include_system`, produce nothing. A later
+        sensor matching an already-alerted connection returns the same alert, updated.
+        """
         if self._ignored(event.bundle_id, event.process_name):
             return []
         if event.system and not self.config.include_system:
@@ -174,6 +200,13 @@ class CorrelationEngine:
         return self._emit(found)
 
     def ingest_connection(self, conn: NetworkConnection) -> list[Alert]:
+        """Buffer an outbound connection and return alerts for buffered events preceding it.
+
+        Ignored processes, system-path binaries (unless `include_system`) and DNS ports
+        (unless `include_dns`) are dropped. Severity starts from the sensor's base level
+        (high for camera, microphone, location and screen; medium for other TCC) and rises one
+        step, up to critical, when several distinct sensors precede the same connection.
+        """
         if self._ignored(conn.bundle_id, conn.process_name):
             return []
         if not self.config.include_system and is_system_path(conn.exe_path):

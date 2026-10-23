@@ -101,6 +101,7 @@ def parse_lsof(output: str, now: float) -> list[NetworkConnection]:
 
 
 def snapshot_lsof(now: float) -> list[NetworkConnection]:
+    """Snapshot TCP/UDP sockets by running `lsof`; the fallback when psutil is denied access."""
     proc = subprocess.run(
         ["/usr/sbin/lsof", "-nP", "-iTCP", "-iUDP", "-FpcPnT"],
         capture_output=True,
@@ -111,6 +112,8 @@ def snapshot_lsof(now: float) -> list[NetworkConnection]:
 
 
 class _ProcessInfoCache:
+    """pid -> (name, exe) lookups cached across polls; `retain` drops pids that are gone."""
+
     def __init__(self) -> None:
         self._cache: dict[int, tuple[str, str | None]] = {}
 
@@ -168,6 +171,7 @@ class PsutilSnapshot:
 
 
 def default_snapshot() -> Snapshot:
+    """Pick `PsutilSnapshot` when psutil can list sockets, else fall back to `snapshot_lsof`."""
     try:
         psutil.net_connections(kind="inet")
     except psutil.AccessDenied:
@@ -231,6 +235,7 @@ class HostnameResolver:
         self._pending: dict[str, asyncio.Future[str | None]] = {}
 
     def cached(self, ip: str) -> str | None:
+        """Return the cached hostname for `ip` without any lookup (None if unknown or failed)."""
         return self._cache.get(ip)
 
     def _store(self, ip: str, host: str | None) -> None:
@@ -263,9 +268,14 @@ class HostnameResolver:
         return future
 
     def prefetch(self, ip: str) -> None:
+        """Start a background lookup for `ip` and return at once; the answer lands in the cache."""
         self._start(ip)
 
     async def resolve(self, ip: str) -> str | None:
+        """Look up `ip`, waiting at most `timeout_s`; return None if it is not answered in time.
+
+        A lookup that misses the timeout keeps running and fills the cache for later calls.
+        """
         future = self._start(ip)
         if future is None:
             return self._cache.get(ip)
@@ -278,6 +288,7 @@ class HostnameResolver:
         return self._cache.get(ip)
 
     def close(self) -> None:
+        """Stop the lookup pool without waiting; queued lookups are cancelled."""
         self._executor.shutdown(wait=False, cancel_futures=True)
 
 
@@ -305,9 +316,15 @@ class NetworkMonitor:
 
     @property
     def active(self) -> tuple[NetworkConnection, ...]:
+        """Outbound connections currently open, with hostnames filled in from the cache."""
         return tuple(self._named(c) for c in self._active.values())
 
     def poll_once(self, now: float | None = None) -> list[NetworkConnection]:
+        """Take one snapshot and return the outbound connections not seen in the previous poll.
+
+        The snapshot source is chosen lazily (`default_snapshot`) on the first call. Hostnames
+        are only read from the resolver cache, never looked up here.
+        """
         if self._snapshot is None:
             self._snapshot = default_snapshot()
         now = time.time() if now is None else now
