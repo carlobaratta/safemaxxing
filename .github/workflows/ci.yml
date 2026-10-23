@@ -31,3 +31,19 @@ jobs:
       - run: uv run ruff check .
       - run: uv run mypy
       - run: uv run pytest -q
+
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+      - run: uv build
+      # The wheel's metadata must carry the source version, and its entry point must run.
+      - run: |
+          expected=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/safemaxxing/__init__.py)
+          wheel=$(ls dist/*.whl)
+          meta=$(uvx --from "$wheel" python -c 'import importlib.metadata as m; print(m.version("safemaxxing"))')
+          echo "wheel metadata: $meta  source: $expected"
+          test -n "$expected" && test "$meta" = "$expected"
+          uvx --from "$wheel" safemaxxing --help > /dev/null

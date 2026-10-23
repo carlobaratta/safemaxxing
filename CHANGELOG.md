@@ -32,6 +32,8 @@ is the first development line of 0.1.0.
   documents the `block`/`unblock` and `freeze`/`thaw`/`kill` arguments, `sample --seconds`
   and the `--min-severity` values.
 - CI uses `actions/checkout@v7` and `astral-sh/setup-uv@v7`.
+- The version is read from `src/safemaxxing/__init__.py` only. A CI `build` job checks that
+  the wheel metadata carries it and that the entry point runs.
 - The default correlation window is now 2 s (it was 0.5 s). Each connection raises at most one
   alert. Events that carry only a pid are named through psutil. (61a6547)
 - Events and sockets from system binaries are hidden unless `--include-system`. DNS egress

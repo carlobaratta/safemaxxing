@@ -1,6 +1,6 @@
 [project]
 name = "safemaxxing"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Headless privacy supervisor and egress firewall for macOS, based on sensor-to-network event correlation."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -42,6 +42,13 @@ Security = "https://github.com/carlobaratta/safemaxxing/security/policy"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+# The version lives in __init__.py: reinstall the editable package when it changes.
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/safemaxxing/__init__.py" }]
+
+[tool.hatch.version]
+path = "src/safemaxxing/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/safemaxxing"]
