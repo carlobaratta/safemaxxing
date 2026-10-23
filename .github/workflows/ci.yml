@@ -39,11 +39,15 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       - run: uv build
-      # The wheel's metadata must carry the source version, and its entry point must run.
+      # Install the wheel with the locked dependencies, so an upstream release cannot break it.
+      # Its metadata must carry the source version, and its entry point must run.
       - run: |
+          env="$RUNNER_TEMP/wheel-env"
+          uv export -q --frozen --no-dev --no-emit-project --no-hashes -o "$RUNNER_TEMP/locked.txt"
+          uv venv -q "$env"
+          uv pip install -q --python "$env" -r "$RUNNER_TEMP/locked.txt" dist/*.whl
           expected=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/safemaxxing/__init__.py)
-          wheel=$(ls dist/*.whl)
-          meta=$(uvx --from "$wheel" python -c 'import importlib.metadata as m; print(m.version("safemaxxing"))')
+          meta=$("$env/bin/python" -c 'import importlib.metadata as m; print(m.version("safemaxxing"))')
           echo "wheel metadata: $meta  source: $expected"
           test -n "$expected" && test "$meta" = "$expected"
-          uvx --from "$wheel" safemaxxing --help > /dev/null
+          "$env/bin/safemaxxing" --help > /dev/null

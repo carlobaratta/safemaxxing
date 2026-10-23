@@ -162,7 +162,7 @@ Solo per `watch`:
 - la latenza di uno snapshot dei socket rispetto a `--poll-ms`;
 - la validità del predicato di `log stream`.
 
-Senza root, i tre controlli su pf risultano "needs root".
+Senza root, i tre controlli su pf e lo snapshot dei socket risultano "needs root".
 
 `sudo uv run safemaxxing sample --seconds 5 --out sample.jsonl` cattura log reali. Per ogni
 sottosistema mostra:

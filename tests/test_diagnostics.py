@@ -4,6 +4,7 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
+import psutil
 import pytest
 from test_firewall import ALTQ, DEFAULT_MAIN_RULES
 
@@ -130,6 +131,15 @@ def test_snapshot_latency_threshold() -> None:
     assert check_snapshot_latency(0.2, snapshot=lambda now: []).status is Status.OK
     slow = check_snapshot_latency(0.0, snapshot=lambda now: [])
     assert slow.status is Status.WARN
+
+
+def test_snapshot_latency_without_root_says_needs_root() -> None:
+    def denied(now: float) -> object:
+        raise psutil.AccessDenied()
+
+    check = check_snapshot_latency(0.2, snapshot=denied)
+    assert check.status is Status.WARN
+    assert check.detail == "needs root (psutil denied): lsof fallback, slower"
 
 
 def test_log_predicate_check() -> None:

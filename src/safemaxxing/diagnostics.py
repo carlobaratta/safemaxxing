@@ -237,7 +237,8 @@ def check_snapshot_latency(
         take(time.time())
         elapsed = time.perf_counter() - start
     except psutil.AccessDenied:
-        return Check("socket snapshot", Status.WARN, "psutil denied: lsof fallback (slow)")
+        detail = "needs root (psutil denied): lsof fallback, slower"
+        return Check("socket snapshot", Status.WARN, detail)
     ms = elapsed * 1000
     status = Status.OK if elapsed < poll_interval_s else Status.WARN
     return Check(
