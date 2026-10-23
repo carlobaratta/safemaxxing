@@ -43,6 +43,9 @@ IncludeSystem = Annotated[
         "--include-system", help="Also correlate sockets of SIP-protected Apple binaries."
     ),
 ]
+IncludeDns = Annotated[
+    bool, typer.Option("--include-dns", help="Also alert on DNS lookups (ports 53/853/5353).")
+]
 Ignore = Annotated[
     list[str] | None,
     typer.Option("--ignore", help="Bundle id or process name to ignore (repeatable)."),
@@ -56,9 +59,13 @@ def _supervisor(
     no_dns: bool,
     ignore: list[str] | None,
     include_system: bool,
+    include_dns: bool,
 ) -> Supervisor:
     config = CorrelationConfig(
-        window_s=window_ms / 1000, ignore=frozenset(ignore or ()), include_system=include_system
+        window_s=window_ms / 1000,
+        ignore=frozenset(ignore or ()),
+        include_system=include_system,
+        include_dns=include_dns,
     )
     return Supervisor.default(
         config=config,
@@ -98,12 +105,15 @@ def tui(
     no_dns: NoDns = False,
     ignore: Ignore = None,
     include_system: IncludeSystem = False,
+    include_dns: IncludeDns = False,
 ) -> None:
     """Interactive dashboard."""
     from safemaxxing.tui.app import SafemaxxingApp
 
     _warn_if_not_root()
-    supervisor = _supervisor(window_ms, poll_ms, include_loopback, no_dns, ignore, include_system)
+    supervisor = _supervisor(
+        window_ms, poll_ms, include_loopback, no_dns, ignore, include_system, include_dns
+    )
     SafemaxxingApp(supervisor).run()
 
 
@@ -122,6 +132,7 @@ def watch(
     no_dns: NoDns = False,
     ignore: Ignore = None,
     include_system: IncludeSystem = False,
+    include_dns: IncludeDns = False,
     as_json: Annotated[bool, typer.Option("--json", help="Emit alerts as JSON lines.")] = False,
     show_events: Annotated[
         bool, typer.Option("--events", help="Also print sensor events.")
@@ -143,12 +154,15 @@ def watch(
         raise typer.BadParameter(f"unknown severity {min_severity!r}") from None
     if not as_json:
         _warn_if_not_root()
-    supervisor = _supervisor(window_ms, poll_ms, include_loopback, no_dns, ignore, include_system)
+    supervisor = _supervisor(
+        window_ms, poll_ms, include_loopback, no_dns, ignore, include_system, include_dns
+    )
     firewall, processes = PfFirewall(), ProcessController()
 
     async def loop() -> None:
         async for update in supervisor.stream():
-            if isinstance(update, Event) and show_events and not as_json:
+            hidden = isinstance(update, Event) and update.system and not include_system
+            if isinstance(update, Event) and show_events and not as_json and not hidden:
                 service = f" ({update.service})" if update.service else ""
                 console.print(
                     f"[dim]{update.sensor.value:<14}[/] {escape(update.identity)} "
@@ -159,7 +173,10 @@ def watch(
             if as_json:
                 print(_alert_json(update), flush=True)
             else:
-                console.print(f"[bold red]ALERT[/] [{update.severity.label}] {update.summary}")
+                console.print(
+                    f"[bold red]ALERT[/] {escape(f'[{update.severity.label}]')} "
+                    f"{escape(update.summary)}"
+                )
             if update.severity < threshold:
                 continue
             conn = update.finding.connection

@@ -108,15 +108,15 @@ def test_one_access_from_three_sources_yields_one_alert() -> None:
 
 
 def test_system_binaries_ignored_by_default() -> None:
-    from safemaxxing.correlation import is_system_binary
+    from safemaxxing.models import is_system_path
 
-    assert is_system_binary(
+    assert is_system_path(
         "/System/Library/PrivateFrameworks/CloudKitDaemon.framework/Support/cloudd"
     )
-    assert is_system_binary("/usr/libexec/apsd")
-    assert not is_system_binary("/usr/local/bin/spy")
-    assert not is_system_binary("/Applications/Spy.app/Contents/MacOS/Spy")
-    assert not is_system_binary(None)
+    assert is_system_path("/usr/libexec/apsd")
+    assert not is_system_path("/usr/local/bin/spy")
+    assert not is_system_path("/Applications/Spy.app/Contents/MacOS/Spy")
+    assert not is_system_path(None)
 
     eng = engine()
     eng.ingest_event(make_event())
@@ -135,3 +135,22 @@ def test_include_system_opt_in() -> None:
     eng = engine(include_system=True)
     eng.ingest_event(make_event())
     assert len(eng.ingest_connection(make_conn(exe_path="/usr/libexec/apsd"))) == 1
+
+
+def test_dns_lookups_do_not_alert_by_default() -> None:
+    eng = engine()
+    eng.ingest_event(make_event())
+    assert eng.ingest_connection(make_conn(remote_address="10.128.132.57", remote_port=53)) == []
+    assert len(eng.ingest_connection(make_conn(local_port=2, remote_port=443))) == 1
+    eng = engine(include_dns=True)
+    eng.ingest_event(make_event())
+    assert len(eng.ingest_connection(make_conn(remote_port=53))) == 1
+
+
+def test_system_events_not_correlated_by_default() -> None:
+    eng = engine()
+    eng.ingest_event(make_event(system=True))
+    assert eng.ingest_connection(make_conn()) == []
+    eng = engine(include_system=True)
+    eng.ingest_event(make_event(system=True))
+    assert len(eng.ingest_connection(make_conn())) == 1
