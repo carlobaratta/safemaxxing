@@ -16,7 +16,7 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 
 ## Now (In Progress)
 
-- [ ] [P1] Do tccd's own lines for coreaudiod's ScreenCapture requests (`msgID=525.x`, logged by tccd, not naming coreaudiod) still produce `screen_capture`? @sensors #tcc (dump every ScreenCapture line from `testlogs/20261023-1424-sample.jsonl`, then add verbatim fixtures)
+- [ ] [P1] Validate a real screen capture live: `screencapture -x /tmp/s.png` or QuickTime screen recording during `sample`; expect the app's own SEND line and an `scr:` indicator @sensors #tcc (the new rule relies on the client-side line at Info level)
 
 ## Next Up
 
@@ -36,6 +36,8 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 - [ ] [P3] CI job on a macOS runner for the non-root parts of the live suite @ci #macos
 
 ## Completed
+
+- [x] [P1] Screen capture counts only when the capturing process logs its own request: drops WindowServer/coreaudiod preflights and tccd's echoes (all 9 line kinds from the 14:24 dump) @sensors #tcc (done: 2026-10-23 @09c2673)
 
 - [x] [P1] pid 525 = `/usr/sbin/coreaudiod`: its `kTCCServiceScreenCapture` requests for audio clients are no longer screen captures (mic requests still attributed) @sensors #tcc (done: 2026-10-23 @1cbeb54)
 
