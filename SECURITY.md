@@ -16,8 +16,7 @@ anything personal from logs: raw `log stream` captures contain app activity and 
 
 ## Supported versions
 
-safemaxxing is alpha (0.1.x). Only the latest commit on the development branch
-(`claude/gifted-pascal-tp5iot`, until a `main` branch replaces it) receives fixes.
+safemaxxing is alpha (0.1.x). Only the latest commit on `main` receives fixes.
 Validation so far has been on macOS 27.0.1, Apple Silicon (see [TESTLOG.md](TESTLOG.md)).
 
 ## Scope

@@ -42,6 +42,12 @@ The script reads only three variables: `SAFEMAXXING_LIVE_IP`, `SAMPLE_S` (defaul
 `PF_DISABLED_TEST=1`. The other live variables do not reach it through sudo. `PF_DISABLED_TEST=1` runs
 `pfctl -d` first and checks that `block` re-enables pf, which leaves pf enabled afterwards.
 
+## Branches
+
+`main` is the default branch and the target of pull requests. Until the TODO item "Move
+day-to-day work onto `main`" is done, some sessions still push to `claude/gifted-pascal-tp5iot`;
+keep `main` a fast-forward of it.
+
 ## Tracking work
 
 - [TODO.md](TODO.md) holds the task list. Use the format and section rules in its header.

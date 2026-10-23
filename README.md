@@ -83,7 +83,7 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
 Requisiti: macOS (Apple Silicon o Intel), Python 3.12+, [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-git clone -b claude/gifted-pascal-tp5iot https://github.com/carlobaratta/safemaxxing
+git clone https://github.com/carlobaratta/safemaxxing
 cd safemaxxing
 uv sync
 sudo uv run safemaxxing doctor
