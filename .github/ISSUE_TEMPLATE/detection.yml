@@ -1,0 +1,36 @@
+name: Missed or false alert
+description: A sensor access or connection was not correlated, or an alert was wrong.
+labels: [detection]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - Missed alert (false negative)
+        - Wrong alert (false positive)
+        - Wrong attribution (pid / bundle id)
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Scenario
+      description: The app, the sensor (camera, mic, location, screen), and what it connected to.
+    validations:
+      required: true
+  - type: textarea
+    id: sample
+    attributes:
+      label: sample output
+      description: >
+        Output of `sudo uv run safemaxxing sample --seconds 10` captured while the scenario
+        happens. Remove anything personal. Do not paste the raw `--out` JSON lines publicly.
+      render: text
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and commit
+      placeholder: 27.0.1 arm64, f3e5144
+    validations:
+      required: true

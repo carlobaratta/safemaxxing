@@ -9,3 +9,16 @@ build/
 .pytest_cache/
 .coverage
 .DS_Store
+.coverage.*
+htmlcov/
+.env
+
+# Local agent tooling state
+.omc/
+.claude/settings.local.json
+graphify-out/
+
+# Raw `log stream` captures: full unified-log entries from a real Mac (app activity,
+# paths, pids). Only the `testlogs/*.log` summaries are committed.
+testlogs/*.jsonl
+*.pcap
