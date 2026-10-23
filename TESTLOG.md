@@ -14,6 +14,46 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-23 15:00 +0200] - Every ScreenCapture line in the 14:24 sample (Mac + Linux container)
+
+- **Environment:** Mac (macOS 27.0.1, arm64, uid 501) for the dump; Linux container for the
+  fix and the checks.
+- **Goal:** check whether tccd's lines for the `msgID=525.x` requests still become
+  `screen_capture`.
+- **Commands run (Mac):** a Python script over `testlogs/20261023-1424-sample.jsonl` that
+  prints `processID process | eventMessage[:220]` for every line containing `ScreenCapture`,
+  then `sort | uniq -c`.
+- **Result and raw data (counts, processes):**
+  ```text
+  5 407 tccd | <TCCDProcess: identifier=com.apple.WindowServer, pid=406> has the ...tcc.manager... kTCCServiceScreenCapture
+  5 407 tccd | <TCCDProcess: identifier=com.apple.audio.coreaudiod, pid=525> has the ...tcc.manager... kTCCServiceScreenCapture
+  2 407 tccd | system tccd handled entitlements check for: kTCCServiceScreenCapture
+  2 407 tccd | Handling access request to kTCCServiceScreenCapture, from Sub:{com.apple.VoiceMemos}... pid=34399
+  2 407 tccd | Handling access request to kTCCServiceScreenCapture, from Sub:{com.apple.PhotoBooth}... pid=34389
+  2 407 tccd | Auth:Allowed (Entitled) to kTCCServiceScreenCapture because accessing process ...ringlighthelper, pid=34393
+  2 407 tccd | <TCCDProcess: identifier=com.apple.controlcenter, pid=689> has the com.apple.private.tcc.allow entitlement ...
+  3 525 coreaudiod   | SEND ... msgID=525.369/372/374 ... ScreenCapture, target_token={pid:34389|34393|34399}
+  3 406 WindowServer | SEND ... msgID=406.215/216/218 ... ScreenCapture, target_token={pid:34389|34393|34399}
+  6 407 tccd | REQUEST_MSG msgID=525.x / 406.x ... preflight=true target_token={pid:...}
+  4 407 tccd | AUTHREQ_CTX msgID=525.x / 406.x ... preflight=yes
+  ```
+  Every request is a **preflight** made by WindowServer or coreaudiod for the apps that had
+  just started. No line comes from an app capturing the screen. Before the fix, `REQUEST_MSG`,
+  `Handling access request`, `Auth:Allowed` and the WindowServer `SEND` still produced
+  `screen_capture`.
+- **Code changes:** `src/safemaxxing/sensors.py`: a single rule replaces the coreaudiod
+  special case. A `screen_capture` event requires the logging pid to equal the accessing
+  pid. `tests/test_sensors.py`: one fixture per line kind (expected None); an app's own SEND
+  (constructed) still counts; coreaudiod's mic request (constructed) is still attributed to
+  the client. The old WindowServer attribution test moves to the Camera service so it keeps
+  testing the generic rule.
+- **Commands run (container):** `uv run ruff check && uv run ruff format --check src tests && uv run mypy --strict && uv run pytest -q`
+  → `All checks passed!` · `20 files already formatted` · `Success: no issues found in 20 source files` · `124 passed, 7 skipped in 2.81s`
+- **Problems / regressions:** known limit: a real capture is detected only from the app's
+  own client-side line (Info level) or from an `scr:` indicator (never observed yet).
+  Not validated live.
+- **Next steps:** test a real screen capture during `sample`.
+
 ## [2026-10-23 14:50 +0200] - pid 525 identified: coreaudiod (Mac + Linux container)
 
 - **Environment:** Mac (macOS 27.0.1, arm64, uid 501) for the lookup; Linux container for
