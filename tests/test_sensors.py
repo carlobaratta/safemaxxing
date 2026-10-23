@@ -855,3 +855,25 @@ def test_real_screen_capture_indicator_and_replayd_own_request() -> None:
     )
     event = parse_entry(replayd)
     assert event is not None and (event.sensor, event.pid) == (SensorType.SCREEN_CAPTURE, 733)
+
+
+def test_calaccessd_tcc_checks_on_behalf_of_others_are_not_accesses() -> None:
+    # Verbatim from macOS 27.0.1 (2026-10-22 13:17): calaccessd checking Calendar for routined.
+    send = _entry(
+        "com.apple.TCC",
+        "calaccessd",
+        "SEND: 0/7 synchronous to com.apple.tccd: request: msgID=710.183, "
+        "function=TCCAccessRequest, service=kTCCServiceCalendar,",
+        pid=710,
+        processImagePath="/System/Library/PrivateFrameworks/CalendarDaemon.framework/Support/calaccessd",
+    )
+    manager = _entry(
+        "com.apple.TCC",
+        "tccd",
+        "<TCCDProcess: identifier=com.apple.calaccessd, pid=710> has the "
+        "com.apple.private.tcc.manager.check-by-audit-token entitlement for service "
+        "kTCCServiceCalendar (composed to parent: (null))",
+        pid=648,
+    )
+    assert parse_entry(send) is None
+    assert parse_entry(manager) is None

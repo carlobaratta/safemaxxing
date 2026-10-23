@@ -46,6 +46,8 @@ BROKER_PROCESSES = frozenset(
         "ControlCenter",
         # Checks TCC for sandboxed processes (seen on macOS 27.0.1 with kTCCServiceSystemPolicy*).
         "sandboxd",
+        # Checks Calendar/Reminders TCC for EventKit clients (macOS 27.0.1: for routined).
+        "calaccessd",
     }
 )
 
