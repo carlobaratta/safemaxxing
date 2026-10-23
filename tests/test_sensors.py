@@ -832,3 +832,26 @@ def test_coreaudiod_mic_request_for_a_client_still_counts() -> None:
     )
     event = parse_entry(mic)
     assert event is not None and (event.sensor, event.pid) == (SensorType.MICROPHONE, 34389)
+
+
+def test_real_screen_capture_indicator_and_replayd_own_request() -> None:
+    # Verbatim from macOS 27.0.1, 2026-10-23: two Cmd+Shift+5 captures.
+    parser = SensorEventParser()
+    emitted = [
+        (event.sensor, event.bundle_id)
+        for attributions in ('["scr:com.apple.systemuiserver"]', "[]") * 2
+        for event in parser.parse(
+            _indicator(f"Active activity attributions changed to {attributions}")
+        )
+    ]
+    assert emitted == [(SensorType.SCREEN_CAPTURE, "com.apple.systemuiserver")] * 2
+    # replayd logs its own request (no target_token): it is the capturing process, so it counts.
+    replayd = _entry(
+        "com.apple.TCC",
+        "replayd",
+        "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=733.14, "
+        "function=TCCAccessRequest, service=kTCCServiceScreenCapture,",
+        pid=733,
+    )
+    event = parse_entry(replayd)
+    assert event is not None and (event.sensor, event.pid) == (SensorType.SCREEN_CAPTURE, 733)
