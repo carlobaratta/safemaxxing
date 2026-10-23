@@ -99,7 +99,7 @@ def version() -> None:
 
 @app.command()
 def tui(
-    window_ms: WindowMs = 500,
+    window_ms: WindowMs = 2000,
     poll_ms: PollMs = 200,
     include_loopback: Loopback = False,
     no_dns: NoDns = False,
@@ -120,13 +120,14 @@ def tui(
 def _alert_json(alert: Alert) -> str:
     payload = dataclasses.asdict(alert)
     payload["severity"] = alert.severity.label
+    payload["sensors"] = sorted(s.value for s in alert.sensors)
     payload["summary"] = alert.summary
     return json.dumps(payload, default=str)
 
 
 @app.command()
 def watch(
-    window_ms: WindowMs = 500,
+    window_ms: WindowMs = 2000,
     poll_ms: PollMs = 200,
     include_loopback: Loopback = False,
     no_dns: NoDns = False,
@@ -160,6 +161,7 @@ def watch(
     firewall, processes = PfFirewall(), ProcessController()
 
     async def loop() -> None:
+        enforced: set[int] = set()
         async for update in supervisor.stream():
             hidden = isinstance(update, Event) and update.system and not include_system
             if isinstance(update, Event) and show_events and not as_json and not hidden:
@@ -173,12 +175,15 @@ def watch(
             if as_json:
                 print(_alert_json(update), flush=True)
             else:
+                tag = f"ALERT #{update.id}" + (" updated" if update.updated else "")
                 console.print(
-                    f"[bold red]ALERT[/] {escape(f'[{update.severity.label}]')} "
+                    f"[bold red]{tag}[/] {escape(f'[{update.severity.label}]')} "
                     f"{escape(update.summary)}"
                 )
-            if update.severity < threshold:
+            # An updated alert may cross the threshold later; act at most once per alert.
+            if update.severity < threshold or update.id in enforced:
                 continue
+            enforced.add(update.id)
             conn = update.finding.connection
             results: list[ActionResult] = []
             if auto_block:

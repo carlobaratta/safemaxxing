@@ -80,3 +80,46 @@ async def test_tui_shows_alert_and_enforces() -> None:
         assert [pid for pid, _ in signals] == [4242, 4242]
         await pilot.press("c")
         assert table.row_count == 0
+
+
+async def test_tui_updates_merged_alert_in_place() -> None:
+    import dataclasses
+
+    from safemaxxing.models import Alert, Finding, SensorType, Severity
+
+    finding = Finding(make_event(sensor=SensorType.MICROPHONE), make_conn(), 0.1)
+    first = Alert(1, finding, Severity.HIGH, T0, frozenset({SensorType.MICROPHONE}))
+    merged = dataclasses.replace(
+        first,
+        sensors=frozenset({SensorType.MICROPHONE, SensorType.CAMERA}),
+        severity=Severity.CRITICAL,
+        updated=True,
+    )
+    app = SafemaxxingApp(supervisor(hold=True), firewall=PfFirewall(runner=FakePf()))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        table = app.query_one("#alerts", DataTable)
+        table.clear()
+        app.alerts.clear()
+        app.add_alert(first)
+        app.add_alert(merged)
+        assert table.row_count == 1
+        assert table.get_row("1")[3] == "camera+microphone"
+        assert app.alerts["1"].severity is Severity.CRITICAL
+
+
+def test_alert_json_lists_sensors() -> None:
+    import json
+
+    from safemaxxing.cli import _alert_json
+    from safemaxxing.models import Alert, Finding, SensorType, Severity
+
+    alert = Alert(
+        1,
+        Finding(make_event(), make_conn(), 0.0),
+        Severity.HIGH,
+        T0,
+        frozenset({SensorType.CAMERA}),
+    )
+    payload = json.loads(_alert_json(alert))
+    assert payload["sensors"] == ["camera"] and payload["severity"] == "high"
