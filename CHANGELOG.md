@@ -47,8 +47,8 @@ is the first development line of 0.1.0.
 - Darwin `pfctl` quirks: stderr decoding, missing anchor or table replies, the harmless
   ALTQ notices (49f16e3), and the `-f` flushing warning (f655d9f). (9ef0b91, 74eafa3)
 - pf cold start: `pfctl -E`, then `-e`, checked with `-s info`. (49f16e3)
-- Broker attribution. `tccd`, `coreaudiod` and `sandboxd`, and TCC-manager self checks, no
-  longer count as the accessing app. (bd884f9, 66596f3, 65305d6, 1cbeb54)
-- Without root, `doctor` now reports the pf checks as "needs root". It no longer reports a
-  missing anchor. (bc5a019)
+- Broker attribution. `tccd`, `coreaudiod`, `sandboxd` and `calaccessd`, and TCC-manager self
+  checks, no longer count as the accessing app. (bd884f9, 66596f3, 65305d6, 1cbeb54, d9ca8c8)
+- Without root, `doctor` now reports the pf checks and the socket snapshot as "needs root".
+  It no longer reports a missing anchor. (bc5a019, 4d97f18)
 - Severity markup (`[high]`) was swallowed in the text output of `watch`. (071bdce)

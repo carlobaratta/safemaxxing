@@ -3,16 +3,14 @@
 Format: `- [ ] [P1] Title @area #tag (details / key commands)`.
 Rule: max 1-2 tasks in **Now**; every finished task moves to **Completed** with date and commit.
 Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testlogs/`.
+Rule: `testlogs/*.log` are committed only from the Mac that produced them (a copy committed
+elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are never committed.
 
 ## Inbox
 
 - [ ] [P2] Tag `v0.1.0` on `main` once the screen-recording check in **Now** is done; the `claude/*` branches stay as history (frozen at 40ed2b8) @process #release
 
-- [ ] [P1] Process rule: `testlogs/*.log` are committed only from the Mac, never from the container @process #tracking (a container commit made `git pull` fail at 13:50)
-- [ ] [P3] coreaudio: 389 lines while recording but 0 parsed (mic is already covered by TCC + `mic:` indicator); look for an IO-start line in `testlogs/20261023-1424-sample.jsonl` before adding hints @sensors #mic
-- [ ] [P3] `calaccessd` (7 TCC lines at 13:51) may be another broker: check its lines in the raw JSON @sensors #tcc
 - [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design)
-- [ ] [P3] `socket snapshot` without root falls back to lsof: say "needs root" there too @cli #doctor
 
 ## Now (In Progress)
 
@@ -24,7 +22,7 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 
 - [ ] [P2] Screen sharing from a third-party app via ScreenCaptureKit (e.g. Meet in Brave): does replayd send with `target_token={pid:app}`? The logging-pid rule would drop it; then only `scr:<bundle>` would catch it @sensors #tcc
 
-- [ ] [P1] Blocks do not survive a reboot: after the restart on 2026-10-23 pf was `Disabled`, the anchor was empty and the table missing @firewall #pf (persist the list and reapply it at boot via a launchd daemon, or document it)
+- [ ] [P1] Blocks do not survive a reboot: after the restart on 2026-10-23 pf was `Disabled`, the anchor was empty and the table missing @firewall #pf (documented in README and SECURITY.md; still open: persist the list and reapply it at boot via a launchd daemon)
 - [ ] [P2] Live `watch` with Photo Booth / Voice Memos: confirm they are hidden as system apps (`/System/Applications`) and shown with `--include-system` @correlation #macos
 - [ ] [P3] cmio `CMIODeviceStartStream backtrace N` lines count as extra camera events (32 for one start); cooldown collapses them, but `sample` counts are inflated @sensors #cmio
 
@@ -41,6 +39,9 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 
 ## Completed
 
+- [x] [P3] `calaccessd` is a broker (checks Calendar/Reminders for routined): added to `BROKER_PROCESSES`, verbatim fixture; 7 false events gone on the real captures @sensors #tcc (done: 2026-10-23 @d9ca8c8)
+- [x] [P3] coreaudio closed as "indicator + TCC are enough": IO-start lines exist (audiomxd `input_running`) but add nothing over tccd's mic request and `mic:`; see TESTLOG 16:33 @sensors #mic (done: 2026-10-23, no code change)
+- [x] [P3] Non-root `doctor`: `socket snapshot` now reads "needs root (psutil denied): lsof fallback, slower" like the pf checks; CI `build` job installs the wheel with the locked dependencies @cli #doctor (done: 2026-10-23 @4d97f18)
 - [x] [P1] Day-to-day work moved onto `main`, cloud session included; `claude/*` branches frozen @process #git (done: 2026-10-23 @40ed2b8)
 - [x] [P1] `main` created from 25744dc and set as GitHub's default branch; `claude/*` branches kept, all three at the same commit @process #git (done: 2026-10-23 @25744dc)
 - [x] [P2] Docstrings for every public API outside `sensors.py`, `--help` for every argument, CI actions bumped to checkout@v7 / setup-uv@v7, TESTLOG entries back in newest-first order @docs #github (done: 2026-10-23 @2857704)

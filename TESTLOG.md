@@ -14,6 +14,42 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-23 16:33 +0200] - coreaudio and calaccessd in the raw captures (Mac)
+
+- **Environment:** macOS 27.0.1, arm64 Apple M4, uid 501, branch `main`, CPython 3.13.14.
+  Offline analysis only: no sudo, nothing native re-run.
+- **Goal:** close the two Inbox questions that need the raw JSON, which exists only on the Mac.
+- **Data:** `testlogs/20261023-1424-sample.jsonl` (14:25, Photo Booth + Voice Memos),
+  `testlogs/20261022-stash-wide.jsonl` (13:16-13:17) and `testlogs/20261022-stash-sensors.jsonl`
+  (13:13). The last two were recovered from a local stash; all three are git-ignored.
+- **Commands run:** Python scripts calling `safemaxxing.sensors.parse_entry` on every line,
+  grouped by (subsystem, category, process, message template), with times measured relative to
+  the `mic:` indicator.
+- **Result and raw data:**
+  - **calaccessd is a broker.** It has 63 lines at 13:17:00, and they cover 7 requests (4 Calendar,
+    3 Reminders). It logs `SEND: ... function=TCCAccessRequest, service=kTCCServiceCalendar`
+    with no other actor. tccd then logs `requestor: ... calaccessd, pid=710 ... is checking
+    access for accessor ... com.apple.routined, pid=665` and the `tcc.manager.check-by-audit-token`
+    entitlement. The parser turned the 7 SEND lines into Calendar/Reminders events for
+    calaccessd, so all 7 were attributed to the wrong process.
+    **Fix:** `calaccessd` was added to `BROKER_PROCESSES`. Over the three captures, the parsed
+    events went from 371 to 364, and the only change is `calaccessd` going from 7 to 0.
+  - **coreaudio adds nothing.** The 14:24 sample has 389 lines, 254 templates and 0 parsed.
+    - The lines that match the start hints (`_StartIO(80) succeeded`, `starting IO`) never
+      say input/mic/record.
+    - The input lines (`client starting: ...:input`, `"input_running":true`) never match a
+      start hint.
+    - Start lines do line up with `mic:` on both days, 116-10 ms before it. Example:
+      audiomxd `"update_running_state" ... "name":"VoiceMemos(34399)" ... "input_running":true`.
+    - But tccd's microphone request for VoiceMemos already has an exact pid 50-75 ms before
+      the indicator.
+    - Every template also fires for corespeechd, and neither capture holds a stop line.
+- **Problems / regressions:** none. Tradeoff: an app that reads Calendar/Reminders through
+  EventKit now produces no TCC event. Before, it produced a wrong one. The real accessor appears
+  only in tccd lines without `kTCCService*`, which would need a msgID join.
+- **Next steps:** none for coreaudio unless a mic *stop*/duration is wanted. That would first
+  need a capture that includes the end of a recording.
+
 ## [2026-10-23 15:15 +0200] - Live screen capture: QuickTime and Cmd+Shift+5 (Mac + Linux container)
 
 - **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, uid 501 + sudo, HEAD f3e5144
