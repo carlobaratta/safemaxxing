@@ -18,7 +18,6 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Next Up
 
-- [ ] [P2] Indicator events (`cam:`/`mic:`/`scr:` for Apple bundles) are created with `system=False`: they show up even without `--include-system` @sensors #system (derive `system` from the bundle id, e.g. its `.app` path via LaunchServices, or from `com.apple.` + a SIP path)
 
 - [ ] [P2] Screen sharing from a third-party app via ScreenCaptureKit (e.g. Meet in Brave): does replayd send with `target_token={pid:app}`? The logging-pid rule would drop it; then only `scr:<bundle>` would catch it @sensors #tcc
 
@@ -39,6 +38,7 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Completed
 
+- [x] [P2] Indicator events of Apple apps are now hidden without `--include-system`: `system` only when every running process that may carry the bundle id (any enclosing .app, or an unreadable Info.plist outside SIP) runs from a SIP path. They stay correlated, so a spoofed bundle id still alerts. Hostile Info.plists (malformed, FIFO) no longer crash or hang `log stream` @sensors #system (done: 2026-10-23 @eb9c13b)
 - [x] [P3] `calaccessd` is a broker (checks Calendar/Reminders for routined): added to `BROKER_PROCESSES`, verbatim fixture; 7 false events gone on the real captures @sensors #tcc (done: 2026-10-23 @d9ca8c8)
 - [x] [P3] coreaudio closed as "indicator + TCC are enough": IO-start lines exist (audiomxd `input_running`) but add nothing over tccd's mic request and `mic:`; see TESTLOG 16:33 @sensors #mic (done: 2026-10-23, no code change)
 - [x] [P3] Non-root `doctor`: `socket snapshot` now reads "needs root (psutil denied): lsof fallback, slower" like the pf checks; CI `build` job installs the wheel with the locked dependencies @cli #doctor (done: 2026-10-23 @4d97f18)

@@ -14,6 +14,54 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-23 16:58 +0200] - System flag for Control Center indicator events (Mac)
+
+- **Environment:** macOS 27.0.1, arm64 Apple M4, uid 501 (no sudo), branch `main`,
+  CPython 3.13.14 (3.12.13 in a scratch venv). There were 845 processes, and 844 of them had a
+  readable exe.
+- **Goal:** TODO P2. Indicator events (`cam:`/`mic:`/`scr:`) carry only a bundle id, so
+  until now they were always shown, even for Apple apps.
+- **Code changes:**
+  - `sensors.py`: added `possible_exes_for_bundle`. A running process qualifies if any
+    enclosing .app declares the id, or if it sits outside SIP paths in an .app with an
+    unusable Info.plist. `SensorListener` sets `system=True` only if that list is non-empty
+    and all of its paths are SIP paths. The lookup runs in a thread and stops after 1 s;
+    if it times out, the event stays visible.
+  - `correlation.py` / `models.py`: added `Event.from_indicator`. Indicator events are always
+    correlated, so their flag only hides them from display.
+  - `network.py`: added `_read_plist`, which opens the file with O_NONBLOCK, accepts regular
+    files only, reads at most 1 MiB and treats any parse error as None. Also added
+    `enclosing_apps` and `bundle_id_for_app`.
+  - 6 new tests: SIP vs non-SIP, a copy claiming an Apple id, hostile plists, timeout,
+    correlation of spoofs, and nested/moved claimants.
+- **Commands run:** gates; `possible_exes_for_bundle` on the live process table; two
+  change-tester passes with compiled test bundles (Bad.app with malformed XML, Fifo.app,
+  a Copy.app claiming `com.apple.finder`, a moved Info.plist, a nested Inner.app); 6 code
+  mutations in a scratch copy.
+- **Result and raw data:**
+  ```text
+  133 passed, 7 skipped (3.12 and 3.13); ruff 0, mypy 0
+  com.apple.systemuiserver 52.7 ms system=True | finder 8.1 ms True | Terminal 7.9 ms True
+  com.brave.Browser 7.4 ms False (18 procs) | PhotoBooth (not running) False
+  mutations: no O_NONBLOCK / narrow except / ignore unreadable plists / outermost app only /
+             drop exes guard / drop from_indicator -> 1 failed each (O_NONBLOCK in 2 s, no hang)
+  ```
+  - The first version crashed `watch` (`ExpatError`) as soon as any running app had a
+    malformed Info.plist, and it hung on a FIFO plist. Both are fixed: with Bad.app and
+    Fifo.app running, `events()` and `watch --events` exit 0 and the events arrive after
+    about 0.1 s.
+  - Copy.app claiming `com.apple.finder` stays visible and raises ALERT #1. Before the
+    rework, a moved plist or a nested app let the event be hidden. Now both keep it visible.
+- **Problems / regressions:** none in the suite.
+  - Known limit: a moved plist or a nested app also defeats bundle-id matching for the
+    connection, so no alert is raised. That limit predates this change.
+  - Without root, lsof gives no exe path, so indicator events cannot match any connection.
+  - A lookup that truly blocks (for example a stuck network mount) leaves its worker thread
+    behind. The event stays visible.
+  - The real Control Center source was not exercised here; it needs a camera/mic grant.
+- **Next steps:** confirm live that Photo Booth / Voice Memos disappear from `watch --events`
+  without `--include-system` and come back with it (TODO P2).
+
 ## [2026-10-23 16:33 +0200] - coreaudio and calaccessd in the raw captures (Mac)
 
 - **Environment:** macOS 27.0.1, arm64 Apple M4, uid 501, branch `main`, CPython 3.13.14.

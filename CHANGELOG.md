@@ -41,9 +41,15 @@ is the first development line of 0.1.0.
 - Reverse DNS runs in the background on its own thread pool. The poll loop only prefetches
   and reads the cache, so it never waits for a lookup. (49f16e3)
 - A screen capture counts only when the capturing process logs its own request. (09c2673)
+- Control Center indicator events of Apple apps are hidden unless `--include-system`. This
+  happens only when every running process that may carry the bundle id runs from a SIP path.
+  They are still correlated, so another app claiming that bundle id still raises an alert.
+  (eb9c13b)
 
 ### Fixed
 
+- Any running app's Info.plist is read as untrusted input. A malformed one no longer
+  crashes the sensor stream, and a FIFO no longer blocks it. (eb9c13b)
 - Darwin `pfctl` quirks: stderr decoding, missing anchor or table replies, the harmless
   ALTQ notices (49f16e3), and the `-f` flushing warning (f655d9f). (9ef0b91, 74eafa3)
 - pf cold start: `pfctl -E`, then `-e`, checked with `-s info`. (49f16e3)
