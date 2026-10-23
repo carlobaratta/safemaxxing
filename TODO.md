@@ -9,16 +9,20 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 - [ ] [P1] Use a single branch: `claude/amazing-pasteur-hj7ek5` (another session) and `claude/gifted-pascal-tp5iot` (this one) diverged on 2026-10-23 @process #git (merged in @2be7366; on the Mac: `git pull --ff-only origin claude/gifted-pascal-tp5iot`)
 
 - [ ] [P1] Process rule: `testlogs/*.log` are committed only from the Mac, never from the container @process #tracking (a container commit made `git pull` fail at 13:50)
-- [ ] [P2] No `com.apple.coreaudio` lines at all while Voice Memos recorded: rely on the `mic:` indicator, or find the new subsystem with `sample --wide --debug` @sensors #mic
+- [ ] [P3] coreaudio: 389 lines while recording but 0 parsed (mic is already covered by TCC + `mic:` indicator); look for an IO-start line in `testlogs/20261023-1424-sample.jsonl` before adding hints @sensors #mic
 - [ ] [P3] `calaccessd` (7 TCC lines at 13:51) may be another broker: check its lines in the raw JSON @sensors #tcc
 - [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design)
 - [ ] [P3] `socket snapshot` without root falls back to lsof: say "needs root" there too @cli #doctor
 
 ## Now (In Progress)
 
-- [ ] [P1] Task 3b: log sample with camera and mic opened *during* the sample @sensors #log (`git pull`, `scripts/macos_validate.sh`: Enter first, then open Photo Booth + record in Voice Memos within 15 s; expect `indicator ... [cam:com.apple.PhotoBooth]` and `[mic:com.apple.VoiceMemos]`, camera/microphone events; raw entries in `testlogs/<stamp>-sample.jsonl`)
+- [ ] [P1] Identify pid 525: it asks `kTCCServiceScreenCapture` for Photo Booth (`target_token={pid:34389}`), giving 20 `screen_capture` events at 14:24. Real or a broker preflight? @sensors #tcc (look up pid 525's `processImagePath` in `testlogs/20261023-1424-sample.jsonl`)
 
 ## Next Up
+
+- [ ] [P1] Blocks do not survive a reboot: after the restart on 2026-10-23 pf was `Disabled`, the anchor was empty and the table missing @firewall #pf (persist the list and reapply it at boot via a launchd daemon, or document it)
+- [ ] [P2] Live `watch` with Photo Booth / Voice Memos: confirm they are hidden as system apps (`/System/Applications`) and shown with `--include-system` @correlation #macos
+- [ ] [P3] cmio `CMIODeviceStartStream backtrace N` lines count as extra camera events (32 for one start); cooldown collapses them, but `sample` counts are inflated @sensors #cmio
 
 - [ ] [P2] Grant Full Disk Access to the terminal and confirm the FDA check turns OK @cli #fda (System Settings → Privacy & Security → Full Disk Access)
 - [ ] [P2] Watch `sudo uv run safemaxxing tui` for freezes for a few minutes of normal browsing @network #dns
@@ -32,6 +36,10 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 - [ ] [P3] CI job on a macOS runner for the non-root parts of the live suite @ci #macos
 
 ## Completed
+
+- [x] [P1] Task 3b: camera, mic and location caught live: TCC camera/mic for Photo Booth pid 34389, cmio `CMIODeviceStartStream` with pid, indicator `cam:`/`loc:`/`mic:` (first real `mic`), real sequence pinned as a test @sensors #log (done: 2026-10-23 @c19cc1b, Mac run 14:24)
+- [x] [P1] Task 2c: pf cold start after reboot: `Disabled`, anchor `DIOCGETRULES: Invalid argument`, table missing → `block` creates the table, loads the anchor, enables pf; curl 301 → 000 → 301 @firewall #pf (done: 2026-10-23 @97763f1, Mac run 14:24)
+- [x] [P2] photolibraryd's `tcc.manager` self check dropped by the generic rule (a daemon it was not written for) @sensors #tcc (done: 2026-10-23 @65305d6, Mac run 14:24)
 
 - [x] [P1] Merge `claude/amazing-pasteur-hj7ek5` into this branch: 1 conflict (tests appended on both sides), ruff/mypy 0, 120 passed @process #git (done: 2026-10-23 @2be7366)
 - [x] [P1] (other session) Hide system-binary events, skip DNS egress (53/853/5353), fix swallowed `[high]` markup: first real alert, Brave mic → UDP :53 after 267 ms @correlation #macos (done: 2026-10-23 @071bdce)
