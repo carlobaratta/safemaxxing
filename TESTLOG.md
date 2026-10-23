@@ -4,7 +4,7 @@ Newest session first. Each session: environment, goal, code changes, exact comma
 problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go in `testlogs/`.
 
 <!-- Template:
-## [YYYY-MM-DD HH:MM] - Session name / Target
+## [YYYY-MM-DD HH:MM +ZZZZ] - Session name / Target
 - **Environment:** macOS Darwin, arch (Apple Silicon/Intel), OS version, UID/privileges
 - **Goal:**
 - **Code changes:**

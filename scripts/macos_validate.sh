@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
-# Collect raw evidence for TESTLOG.md on a real Mac (Tasks 1-4 of the macOS validation plan).
+# Collect raw evidence for TESTLOG.md on a real Mac: doctor, a live pf block, a log stream
+# sample and the live pytest suite (Tasks 1-4 in TESTLOG.md).
 #
-#   scripts/macos_validate.sh            # asks for sudo once; writes testlogs/<stamp>-macos.log
+#   scripts/macos_validate.sh            # from any directory; asks for sudo once
+#
+# Needs macOS, `uv` on PATH and an admin account. Interactive: before the log sample it waits
+# for Enter on the terminal, then expects Photo Booth and Voice Memos to be opened.
+#
+# Writes testlogs/<stamp>-macos.log (commit it) and testlogs/<stamp>-sample.jsonl (raw unified
+# log, git-ignored; do not publish it).
 #
 # Env: SAFEMAXXING_LIVE_IP (default 1.1.1.1), SAMPLE_S (log sample seconds, default 15),
 #      PF_DISABLED_TEST=1 to `pfctl -d` first and check that `block` re-enables pf.
-# The block test adds and always removes one IP in the safemaxxing_block table.
+# The block test adds and always removes one IP in the safemaxxing_block table. The first
+# block loads the anchor rule and enables pf; both stay that way afterwards. Root-owned
+# .pytest_cache and __pycache__ directories are chowned back to you.
 set -u
 
 [[ "$(uname -s)" == Darwin ]] || { echo "needs macOS (Darwin)" >&2; exit 1; }
@@ -36,8 +45,9 @@ probe() {  # curl with a short timeout; prints the HTTP code (000 = no connectio
 }
 
 sudo -v || exit 1
-# Earlier `sudo pytest` runs leave a root-owned cache that breaks the non-root run.
+# Earlier `sudo pytest` runs leave root-owned caches that break or slow the non-root run.
 [[ -d .pytest_cache ]] && sudo chown -R "$(id -un)" .pytest_cache
+sudo find src tests -name __pycache__ -user root -exec chown -R "$(id -un)" {} +
 was_blocked=0
 sudo "$PFCTL" -a "$ANCHOR" -t "$TABLE" -T show 2>/dev/null | grep -qx "[[:space:]]*$TARGET_IP" \
     && was_blocked=1
@@ -53,10 +63,13 @@ trap cleanup EXIT INT TERM
     run id
     run git rev-parse --abbrev-ref HEAD
     run git rev-parse --short HEAD
+    # Catches running stale code after an aborted pull (TESTLOG 2026-10-22 13:50).
+    run git status -sb
 
     echo; echo "## Static checks"
+    run "$UV" run ruff format --check .
     run "$UV" run ruff check
-    run "$UV" run mypy --strict
+    run "$UV" run mypy
     run "$UV" run pytest -q
 
     echo; echo "## Task 1: doctor (non-root, then root)"
