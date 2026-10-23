@@ -264,8 +264,8 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Goal:** validate the non-root doctor fix and pf Disabled → auto-enable; sample with
   Photo Booth (camera) and Voice Memos (mic).
 - **Code changes:** none (run of a534d12).
-- **Commands run:** `PF_DISABLED_TEST=1 scripts/macos_validate.sh`; raw log on the Mac at
-  `testlogs/20261022-1351-macos.log`.
+- **Commands run:** `PF_DISABLED_TEST=1 scripts/macos_validate.sh`; raw log in
+  `testlogs/20261022-1351-macos.log` (committed from the Mac on 2026-10-23).
 - **Result and raw data:**
   - **Task 1 non-root:** `! pf status / pf parent anchor / anchor com.apple/safemaxxing:
     needs root (/dev/pf: Permission denied)` → **fix confirmed**. Root: exit 0, 31 pids
@@ -339,7 +339,7 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
   - DNS: every answer in 1-3 ms (mDNSResponder cache, warm after the previous run;
     9.9.9.9 now resolves to `dns9.quad9.net`).
   - Live suite 7/7 PASSED in 12.51 s.
-  - Raw log is on the Mac at `testlogs/20261022-1350-macos.log` (not committed from here).
+  - Raw log: `testlogs/20261022-1350-macos.log` (committed from the Mac on 2026-10-23).
 - **Problems / regressions:** no code regression. Process problem: committing from the
   container a log that the script also creates on the Mac makes `git pull` fail. From now on
   `testlogs/` is committed **only from the Mac**.
