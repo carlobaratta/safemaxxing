@@ -28,6 +28,10 @@ is the first development line of 0.1.0.
 
 ### Changed
 
+- Docstrings on every public class and function, except in `sensors.py`. `--help` now
+  documents the `block`/`unblock` and `freeze`/`thaw`/`kill` arguments, `sample --seconds`
+  and the `--min-severity` values.
+- CI uses `actions/checkout@v7` and `astral-sh/setup-uv@v7`.
 - The default correlation window is now 2 s (it was 0.5 s). Each connection raises at most one
   alert. Events that carry only a pid are named through psutil. (61a6547)
 - Events and sockets from system binaries are hidden unless `--include-system`. DNS egress
