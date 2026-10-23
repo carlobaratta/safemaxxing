@@ -126,6 +126,8 @@ class SafemaxxingApp(App[None]):
         self.query_one("#events", RichLog).write(text)
 
     def log_event(self, event: Event) -> None:
+        if event.system and not self.supervisor.engine.config.include_system:
+            return
         line = Text.assemble(
             (_clock(event.timestamp), "dim"),
             " ",

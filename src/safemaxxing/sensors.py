@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from datetime import datetime
 from pathlib import PurePosixPath
 
-from safemaxxing.models import Event, SensorType
+from safemaxxing.models import Event, SensorType, is_system_path
 
 LOG_BINARY = "/usr/bin/log"
 
@@ -115,6 +115,7 @@ _TCC_IDENTITY_RES = (
 _TCCD_PROCESS_RE = re.compile(r"TCCDProcess:\s*((?:<[^>]*>|[^}>])*)")
 _BLOCK_IDENTIFIER_RE = re.compile(rf"\bidentifier={_REDACTABLE}")
 _BLOCK_PID_RE = re.compile(r"\bpid=(\d+)")
+_BLOCK_BINARY_RE = re.compile(r"\bbinary_path=([^,}>]+)")
 # Requests a broker makes on behalf of a client name the client here. (msgID is deliberately
 # not used: its prefix is the *sender*, i.e. the broker for coreaudiod/cameracaptured requests.)
 _TCC_PID_RES = (
@@ -191,20 +192,26 @@ _LOCATION_CLIENT_RE = re.compile(r'"Client"\s*:\s*"(?:[\w\-]+:)?([^"]+)"')
 _LOCATION_BUNDLE_PATH_PREFIX = "com.apple.locationd.bundle-"
 
 
-def _location_client(message: str) -> tuple[str | None, str] | None:
-    """Parse locationd's `"Client":"<user>:<bundle id | com.apple.locationd.bundle-<path>>"`."""
+def _location_client(message: str) -> tuple[str | None, str, bool] | None:
+    """Parse locationd's `"Client"` into (bundle id, name, is system).
+
+    Seen on macOS 27: "<user>:<bundle id>", "i<bundle id>:", "e<executable>:",
+    "p<plugin path>[:p<path>...]" and "<user>:com.apple.locationd.bundle-<path>".
+    """
     match = _LOCATION_CLIENT_RE.search(message)
     value = unredacted(match.group(1)) if match else None
     if value is None:
         return None
-    # locationd client keys: "i<bundle id>:" or "e<executable path>:".
-    if value.endswith(":") and len(value) > 2 and value[0] in "ie":
-        body = value[1:-1].replace("\\/", "/")
-        return (body, "") if value[0] == "i" else (None, PurePosixPath(body).name)
+    value = value.replace("\\/", "/")
     if value.startswith(_LOCATION_BUNDLE_PATH_PREFIX):
-        path = value.removeprefix(_LOCATION_BUNDLE_PATH_PREFIX).replace("\\/", "/")
-        return None, PurePosixPath(path).stem
-    return value, ""
+        path = value.removeprefix(_LOCATION_BUNDLE_PATH_PREFIX)
+    elif value[0] in "ep" and value[1:2] == "/":
+        path = value[1:].split(":", 1)[0]
+    elif value[0] == "i" and value.endswith(":") and len(value) > 2:
+        return value[1:-1], "", False
+    else:
+        return value, "", False
+    return None, PurePosixPath(path).stem, is_system_path(path)
 
 
 def _contains_any(text: str, hints: Sequence[str]) -> bool:
@@ -223,37 +230,40 @@ def _attribute(
     return pid, bundle
 
 
-def _tcc_actor(message: str, client_pid: int | None) -> tuple[int | None, str | None]:
+def _tcc_actor(message: str, client_pid: int | None) -> tuple[int | None, str | None, str | None]:
+    """Return (pid, bundle id, binary path) of the process using the resource."""
     # The `accessing` process is the one using the resource; prefer it over requester/sender.
     accessing = _ACCESSING_RE.search(message)
     if block := _TCCD_PROCESS_RE.search(accessing.group(1) if accessing else message):
-        raw_pid = _first(_BLOCK_PID_RE, block.group(1))
-        return (int(raw_pid) if raw_pid else None), _first(_BLOCK_IDENTIFIER_RE, block.group(1))
+        text = block.group(1)
+        raw_pid = _first(_BLOCK_PID_RE, text)
+        binary = _first(_BLOCK_BINARY_RE, text)
+        return (int(raw_pid) if raw_pid else None), _first(_BLOCK_IDENTIFIER_RE, text), binary
     pid = next((int(p) for r in _TCC_PID_RES if (p := _first(r, message))), None)
     bundle = next((b for r in _TCC_IDENTITY_RES if (b := _first(r, message))), None)
     if pid is None and bundle is None:
         # Client-side libTCC lines ("SEND: ... service=kTCCServiceCamera") are logged by the
         # requesting app itself, so the entry's own PID identifies it.
         pid = client_pid
-    return pid, bundle
+    return pid, bundle, None
 
 
 def _classify_tcc(
     message: str, client_pid: int | None
-) -> tuple[SensorType, str, int | None, str | None] | None:
+) -> tuple[SensorType, str, int | None, str | None, bool] | None:
     service_match = _TCC_SERVICE_RE.search(message)
     if not service_match:
         return None
     service = service_match.group(1)
     sensor = TCC_SERVICE_MAP.get(service, SensorType.TCC)
-    pid, bundle = _tcc_actor(message, client_pid)
+    pid, bundle, binary = _tcc_actor(message, client_pid)
     # e.g. "identifier=com.apple.audio.coreaudiod ... entitlement for service kTCCServiceMicrophone"
     # is the daemon's own check on behalf of a client, reported separately via target_token.
     if bundle is not None and bundle.rsplit(".", 1)[-1] in BROKER_PROCESSES:
         return None
     if pid is None and bundle is None:
         return None
-    return sensor, service, pid, bundle
+    return sensor, service, pid, bundle, is_system_path(binary)
 
 
 def parse_entry(entry: Mapping[str, object]) -> Event | None:
@@ -270,12 +280,13 @@ def parse_entry(entry: Mapping[str, object]) -> Event | None:
 
     sensor: SensorType
     service: str | None = None
+    system = False
     if subsystem == SUBSYSTEM_TCC:
         client_pid = None if process_name in BROKER_PROCESSES else log_pid
         classified = _classify_tcc(message, client_pid)
         if classified is None:
             return None
-        sensor, service, pid, bundle = classified
+        sensor, service, pid, bundle, system = classified
     elif subsystem.startswith(SUBSYSTEM_CMIO):
         if not _contains_any(lowered, CAMERA_HINTS):
             return None
@@ -294,10 +305,12 @@ def parse_entry(entry: Mapping[str, object]) -> Event | None:
         sensor = SensorType.LOCATION
         pid, bundle = _attribute(message, log_pid, process_name)
         if client := _location_client(message):
-            bundle, process_name = client
+            bundle, process_name, system = client
     else:
         return None
 
+    if pid is not None and pid == log_pid and is_system_path(image_path):
+        system = True
     # The logging process is not the actor when the message names a different pid.
     if process_name in BROKER_PROCESSES or (pid is not None and log_pid not in (None, pid)):
         process_name = ""
@@ -312,6 +325,7 @@ def parse_entry(entry: Mapping[str, object]) -> Event | None:
         subsystem=subsystem,
         message=message,
         service=service,
+        system=system,
     )
 
 

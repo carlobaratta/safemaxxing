@@ -8,7 +8,15 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from safemaxxing.models import Alert, Event, Finding, NetworkConnection, SensorType, Severity
+from safemaxxing.models import (
+    Alert,
+    Event,
+    Finding,
+    NetworkConnection,
+    SensorType,
+    Severity,
+    is_system_path,
+)
 
 BASE_SEVERITY: dict[SensorType, Severity] = {
     SensorType.CAMERA: Severity.HIGH,
@@ -32,19 +40,15 @@ class CorrelationConfig:
     # SIP-protected Apple binaries (cloudd, apsd, FaceTime's helpers...) talk to the network
     # constantly; by default their sockets are not treated as possible exfiltration.
     include_system: bool = False
+    include_dns: bool = False
 
     @property
     def retention_s(self) -> float:
         return self.window_s + self.late_arrival_s
 
 
-SYSTEM_PREFIXES = ("/System/", "/usr/", "/bin/", "/sbin/")
-
-
-def is_system_binary(exe_path: str | None) -> bool:
-    if not exe_path or exe_path.startswith("/usr/local/"):
-        return False
-    return exe_path.startswith(SYSTEM_PREFIXES)
+# A DNS lookup is the prelude to a connection, not the exfiltration itself.
+DNS_PORTS = frozenset({53, 853, 5353})
 
 
 def _bundle_related(a: str, b: str) -> bool:
@@ -141,6 +145,8 @@ class CorrelationEngine:
     def ingest_event(self, event: Event) -> list[Alert]:
         if self._ignored(event.bundle_id, event.process_name):
             return []
+        if event.system and not self.config.include_system:
+            return []
         self._advance(event.timestamp)
         self._events.append(event)
         found = [f for c in self._connections if (f := self._matches(event, c)) is not None]
@@ -149,7 +155,9 @@ class CorrelationEngine:
     def ingest_connection(self, conn: NetworkConnection) -> list[Alert]:
         if self._ignored(conn.bundle_id, conn.process_name):
             return []
-        if not self.config.include_system and is_system_binary(conn.exe_path):
+        if not self.config.include_system and is_system_path(conn.exe_path):
+            return []
+        if not self.config.include_dns and conn.remote_port in DNS_PORTS:
             return []
         self._advance(conn.first_seen)
         self._connections.append(conn)

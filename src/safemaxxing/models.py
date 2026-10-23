@@ -6,6 +6,15 @@ import ipaddress
 from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 
+# SIP-protected locations: binaries here can only come from Apple.
+SYSTEM_PREFIXES = ("/System/", "/usr/", "/bin/", "/sbin/")
+
+
+def is_system_path(path: str | None) -> bool:
+    if not path or path.startswith("/usr/local/"):
+        return False
+    return path.startswith(SYSTEM_PREFIXES)
+
 
 class SensorType(StrEnum):
     CAMERA = "camera"
@@ -51,6 +60,9 @@ class Event:
     subsystem: str
     message: str
     service: str | None = None
+    # Set only from paths (log metadata, tccd's binary_path), never from bundle ids, which an
+    # app can choose freely.
+    system: bool = False
 
     @property
     def identity(self) -> str:

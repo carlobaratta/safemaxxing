@@ -505,9 +505,7 @@ def test_locationd_client_key_format_i_prefix() -> None:
 
 
 def test_locationd_client_key_format_e_prefix() -> None:
-    message = (
-        '{"msg":"markReceivingLocationInformation", "Client":"e\\\\/usr\\\\/libexec\\\\/airportd:"}'
-    )
+    message = '{"msg":"markReceivingLocationInformation", "Client":"e\\/usr\\/libexec\\/airportd:"}'
     event = parse_entry(_locationd(message))
     assert event is not None and (event.bundle_id, event.process_name) == (None, "airportd")
 
@@ -564,3 +562,47 @@ async def test_listener_cooldown_keys_on_pid_across_differing_names(tmp_path: Pa
     listener = SensorListener(command=[sys.executable, "-c", script], cooldown_s=1.0)
     events = [e async for e in listener.events()]
     assert len(events) == 1 and events[0].pid == 35075
+
+
+def test_locationd_system_clients_are_flagged_system() -> None:
+    # Verbatim client keys from the macOS 27.0.1 `watch --events` run.
+    for client in (
+        "root:com.apple.locationd.bundle-\\/System\\/Library\\/LocationBundles\\/FindMyDevice.bundle",
+        "p\\/System\\/Library\\/LocationBundles\\/TimeZone.bundle:",
+        "p\\/System\\/Library\\/PrivateFrameworks\\/WirelessDiagnostics.framework:p\\/System\\/Library\\/Frameworks\\/CoreWLAN.framework",
+    ):
+        message = '{"msg":"markReceivingLocationInformation", "Client":"' + client + '"}'
+        event = parse_entry(_locationd(message))
+        assert event is not None and event.system, client
+        assert "\\" not in event.identity and "/" not in event.identity
+    app = parse_entry(
+        _locationd('{"msg":"markReceivingLocationInformation", "Client":"icom.apple.VoiceMemos:"}')
+    )
+    assert app is not None and not app.system
+
+
+def test_tcc_binary_path_marks_system() -> None:
+    system = parse_entry(
+        _entry(
+            "com.apple.TCC",
+            "tccd",
+            "Auth:Allowed (Entitled) to kTCCServiceMicrophone for TCCDProcess: identifier=com.apple.VoiceMemos, pid=34661, auid=501, euid=501, binary_path=/System/Applications/VoiceMemos.app/Contents/MacOS/VoiceMemos}",
+        )
+    )
+    assert system is not None and system.system
+    third_party = parse_entry(
+        _entry(
+            "com.apple.TCC",
+            "tccd",
+            "Auth:Allowed to kTCCServiceMicrophone for TCCDProcess: identifier=com.brave.Browser, pid=2051, auid=501, euid=501, binary_path=/Applications/Brave Browser.app/Contents/MacOS/Brave Browser}",
+        )
+    )
+    assert third_party is not None and not third_party.system
+    assert third_party.bundle_id == "com.brave.Browser"
+
+
+def test_in_process_line_from_system_binary_is_system() -> None:
+    entry = _locationd('{"msg":"startUpdatingLocation"}')
+    entry["processImagePath"] = "/usr/libexec/airportd"
+    event = parse_entry(entry)
+    assert event is not None and event.system
