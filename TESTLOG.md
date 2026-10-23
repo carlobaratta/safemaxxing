@@ -46,8 +46,12 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Commands run (container):** `uv run ruff check && uv run mypy --strict && uv run pytest -q`
   → `All checks passed!` · `Success: no issues found in 20 source files` · `125 passed, 7 skipped in 2.96s`
 - **Problems / regressions:** the attribution is to system processes (systemuiserver,
-  replayd), not to the screencapture tool; they're hidden as system unless
-  `--include-system`. Not covered yet: video recording, and screen sharing from a
+  replayd), not to the screencapture tool. replayd (path `/usr/libexec`) is marked system and
+  hidden. **Indicator events are not:** they're created with `system=False` (no pid, no
+  path), so `scr:com.apple.systemuiserver` shows up among the events. No alert results only
+  because SystemUIServer's sockets are discarded as system on the network side
+  (`correlation.py:179`). The same applies to `cam:com.apple.PhotoBooth` and
+  `mic:com.apple.VoiceMemos`. Not covered yet: video recording, and screen sharing from a
   third-party app.
 - **Next steps:** recording started inside the window; Meet screen sharing in Brave.
 
