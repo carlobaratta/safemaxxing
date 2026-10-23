@@ -24,7 +24,7 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Cause:** after 66596f3 another session pushed 071bdce and 61a6547 to
   `claude/amazing-pasteur-hj7ek5`, while this session pushed 7 commits to
   `claude/gifted-pascal-tp5iot`. The two lines had no commit in common after 66596f3.
-- **Code changes:** merge 2d6586d. The only conflict was `tests/test_sensors.py` (both sides
+- **Code changes:** merge 2be7366 (its message reads "Log the branch divergence..." because the first `git commit` stopped on the unstaged resolution and the next commit completed the merge). The only conflict was `tests/test_sensors.py` (both sides
   appended tests), resolved by keeping both. `sensors.py` merged automatically: sandboxd /
   TCC-manager filter plus the other session's `system` flag and 5-tuple `_classify_tcc`.
 - **Commands run:**
