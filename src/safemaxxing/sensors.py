@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import contextlib
 import dataclasses
 import json
 import re
@@ -15,9 +16,10 @@ from pathlib import PurePosixPath
 import psutil
 
 from safemaxxing.models import Event, SensorType, is_system_path
-from safemaxxing.network import bundle_id_for_exe
+from safemaxxing.network import bundle_id_for_app, bundle_id_for_exe, enclosing_apps
 
 ProcessInfo = Callable[[int], tuple[str, str | None] | None]
+BundleExes = Callable[[str], list[str]]
 
 LOG_BINARY = "/usr/bin/log"
 
@@ -448,6 +450,24 @@ def process_info(pid: int) -> tuple[str, str | None] | None:
     return name, exe
 
 
+def possible_exes_for_bundle(bundle_id: str) -> list[str]:
+    """Executable paths of running processes that may carry `bundle_id`.
+
+    A process qualifies if any .app enclosing it declares the id (a nested app counts), or if
+    it is outside SIP paths inside an .app whose Info.plist is unusable: it may have been
+    moved or broken after launch. Processes whose path is unreadable are skipped.
+    """
+    exes: list[str] = []
+    for proc in psutil.process_iter(["exe"]):
+        exe = proc.info.get("exe")
+        if not exe:
+            continue
+        ids = [bundle_id_for_app(app) for app in enclosing_apps(exe)]
+        if bundle_id in ids or (None in ids and not is_system_path(exe)):
+            exes.append(exe)
+    return exes
+
+
 class _ProcessEnricher:
     """Fills name / bundle id / system flag of events that only carry a pid (e.g. TCC lines
     naming a client via target_token), so they display and correlate like the others."""
@@ -485,10 +505,14 @@ class SensorListener:
         command: Sequence[str] | None = None,
         cooldown_s: float = 1.0,
         process_lookup: ProcessInfo = process_info,
+        bundle_exes: BundleExes = possible_exes_for_bundle,
+        bundle_lookup_timeout_s: float = 1.0,
     ) -> None:
         self._command = list(command) if command is not None else log_stream_command()
         self._cooldown = _Cooldown(cooldown_s)
         self._enrich = _ProcessEnricher(process_lookup)
+        self._bundle_exes = bundle_exes
+        self._bundle_lookup_timeout_s = bundle_lookup_timeout_s
 
     async def entries(self) -> AsyncIterator[dict[str, object]]:
         """Raw unified-log entries; raises `SensorError` if `log` exits with an error."""
@@ -515,9 +539,33 @@ class SensorListener:
                 await proc.wait()
             stderr_task.cancel()
 
+    def _mark_indicator_system(self, event: Event) -> Event:
+        """Indicator events carry only a bundle id, which any app can claim. They count as system
+        (hidden from display; still correlated) only if every process that may carry that id
+        runs from a SIP-protected path."""
+        if (
+            event.subsystem != SUBSYSTEM_CONTROLCENTER
+            or event.pid is not None
+            or not event.bundle_id
+        ):
+            return event
+        exes = self._bundle_exes(event.bundle_id)
+        if exes and all(is_system_path(exe) for exe in exes):
+            return dataclasses.replace(event, system=True)
+        return event
+
     async def events(self) -> AsyncIterator[Event]:
         parser = SensorEventParser()
         async for entry in self.entries():
             for event in parser.parse(entry):
-                if self._cooldown.accept(event):
-                    yield self._enrich(event)
+                if not self._cooldown.accept(event):
+                    continue
+                if event.subsystem == SUBSYSTEM_CONTROLCENTER:
+                    # Walks the process table (~60-100 ms cold): keep it off the event loop, and
+                    # leave the event visible if it takes too long.
+                    with contextlib.suppress(TimeoutError):
+                        event = await asyncio.wait_for(
+                            asyncio.to_thread(self._mark_indicator_system, event),
+                            self._bundle_lookup_timeout_s,
+                        )
+                yield self._enrich(event)

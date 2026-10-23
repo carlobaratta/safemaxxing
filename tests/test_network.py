@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import plistlib
 import threading
 import time
@@ -170,3 +171,29 @@ async def test_active_picks_up_hostname_once_resolved() -> None:
     assert await resolver.resolve("8.8.8.8") == "dst.example"
     assert monitor.active[0].hostname == "dst.example"
     resolver.close()
+
+
+def test_bundle_id_survives_hostile_info_plists(tmp_path: Path) -> None:
+    # Any running app's Info.plist is read: a broken, oversized or non-regular one must not
+    # raise or block the caller.
+    broken = tmp_path / "Broken.app" / "Contents"
+    broken.mkdir(parents=True)
+    (broken / "Info.plist").write_text('<?xml version="1.0"?><plist><dict><key>CFBundle')
+    huge = tmp_path / "Huge.app" / "Contents"
+    huge.mkdir(parents=True)
+    with open(huge / "Info.plist", "wb") as fh:
+        plistlib.dump({"CFBundleIdentifier": "com.example.huge", "pad": "x" * (2 << 20)}, fh)
+    fifo = tmp_path / "Fifo.app" / "Contents"
+    fifo.mkdir(parents=True)
+    os.mkfifo(fifo / "Info.plist")
+    results: dict[str, str | None] = {}
+
+    def lookup() -> None:
+        for app in ("Broken", "Huge", "Fifo"):
+            results[app] = bundle_id_for_exe(str(tmp_path / f"{app}.app/Contents/MacOS/{app}"))
+
+    worker = threading.Thread(target=lookup, daemon=True)
+    worker.start()
+    worker.join(timeout=2.0)
+    assert not worker.is_alive(), "blocked on a FIFO Info.plist"
+    assert results == {"Broken": None, "Huge": None, "Fifo": None}

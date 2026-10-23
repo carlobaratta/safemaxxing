@@ -233,9 +233,20 @@ testabile anche su Linux (la CI gira su macOS).
   `/usr/local`, `/bin`, `/sbin`) sono nascosti e non vengono correlati, e lo stesso vale per i
   loro socket. Servizi come `cloudd` o `apsd` usano la rete di continuo e genererebbero falsi
   positivi. I socket restano comunque visibili nel pannello connessioni. Usa
-  `--include-system` per includerli. Eccezione: gli eventi dell'indicatore di Control Center
-  per le app Apple oggi non sono marcati come di sistema e compaiono comunque
-  ([TODO.md](TODO.md)).
+  `--include-system` per includerli.
+- Gli eventi dell'indicatore di Control Center portano solo un bundle id, che qualunque app può
+  dichiarare.
+  - Vengono nascosti dalla visualizzazione solo se tutti i processi in esecuzione che possono
+    avere quel bundle id girano da un percorso protetto da SIP. Una copia di un'app Apple fuori
+    da `/System` resta quindi visibile. Restano visibili anche un'app annidata che dichiara quel
+    bundle id e un'app con l'`Info.plist` illeggibile o spostato.
+  - Vengono comunque **sempre correlati**: i socket dell'app Apple vera sono di sistema e
+    vengono già scartati. Un socket non di sistema con lo stesso bundle id produce quindi un
+    alert.
+  - Non vengono correlate le connessioni di un'app il cui bundle id, ricavato dal suo
+    `Info.plist`, non coincide con quello dell'indicatore. È il caso di un'app annidata in
+    un'altra, o di un `Info.plist` spostato dopo l'avvio. In quel caso l'evento resta visibile,
+    ma non c'è alert.
 - Molte app Apple (FaceTime, Messaggi) delegano la rete a daemon di sistema (`avconferenced`,
   `identityservicesd`). L'accesso al sensore e la connessione avvengono quindi in processi
   diversi e non producono alert. La correlazione è pensata per le app di terze parti che fanno

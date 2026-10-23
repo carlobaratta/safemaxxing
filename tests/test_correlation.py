@@ -196,3 +196,34 @@ def test_merged_alert_sensors_all_enter_cooldown() -> None:
     eng.ingest_event(make_event())
     assert len(eng.ingest_connection(make_conn())) == 1
     assert eng.ingest_connection(make_conn(local_port=9)) == []
+
+
+def test_indicator_events_correlate_even_when_marked_system() -> None:
+    # An indicator event's system flag comes from a bundle id, which any app can claim, so it
+    # only hides the event from display. The genuine Apple app's sockets are system and
+    # dropped anyway; a non-system socket with that bundle id is exactly the spoof to catch.
+    indicator = make_event(
+        pid=None,
+        process_name="",
+        bundle_id="com.apple.PhotoBooth",
+        subsystem="com.apple.controlcenter",
+        service="indicator:cam",
+        system=True,
+    )
+    eng = engine()
+    eng.ingest_event(indicator)
+    genuine = make_conn(
+        bundle_id="com.apple.PhotoBooth",
+        exe_path="/System/Applications/Photo Booth.app/Contents/MacOS/Photo Booth",
+    )
+    assert eng.ingest_connection(genuine) == []
+    spoof = make_conn(
+        local_port=2,
+        bundle_id="com.apple.PhotoBooth",
+        exe_path="/Users/u/Applications/Photo Booth.app/Contents/MacOS/Photo Booth",
+    )
+    assert len(eng.ingest_connection(spoof)) == 1
+    # A path-based system event (log metadata) is still ignored.
+    eng = engine()
+    eng.ingest_event(make_event(system=True))
+    assert eng.ingest_connection(make_conn()) == []

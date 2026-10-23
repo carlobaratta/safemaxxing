@@ -189,10 +189,12 @@ class CorrelationEngine:
 
         Ignored processes, and system binaries unless `include_system`, produce nothing. A later
         sensor matching an already-alerted connection returns the same alert, updated.
+        Indicator events are always kept: their system flag rests on a bundle id any app can
+        claim, and the genuine Apple app's sockets are dropped as system anyway.
         """
         if self._ignored(event.bundle_id, event.process_name):
             return []
-        if event.system and not self.config.include_system:
+        if event.system and not event.from_indicator and not self.config.include_system:
             return []
         self._advance(event.timestamp)
         self._events.append(event)

@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 import plistlib
 import sys
+import time
 from pathlib import Path
+
+import psutil
+import pytest
 
 from safemaxxing.models import SensorType
 from safemaxxing.sensors import (
@@ -20,6 +24,7 @@ from safemaxxing.sensors import (
     log_stream_command,
     parse_entry,
     parse_timestamp,
+    possible_exes_for_bundle,
 )
 
 TCC_ATTRIBUTION = {
@@ -877,3 +882,98 @@ def test_calaccessd_tcc_checks_on_behalf_of_others_are_not_accesses() -> None:
     )
     assert parse_entry(send) is None
     assert parse_entry(manager) is None
+
+
+async def _indicator_events(
+    tmp_path: Path, attributions: str, exes: dict[str, list[str]]
+) -> list[tuple[str | None, bool]]:
+    line = _indicator(f"Active activity attributions changed to {attributions}")
+    data = tmp_path / "log.json"
+    data.write_text("[" + json.dumps(line) + "]")
+    script = f"import sys; sys.stdout.write(open({str(data)!r}).read())"
+    listener = SensorListener(
+        command=[sys.executable, "-c", script], bundle_exes=lambda b: exes.get(b, [])
+    )
+    return [(e.bundle_id, e.system) async for e in listener.events()]
+
+
+async def test_indicator_events_for_apps_in_sip_locations_are_system(tmp_path: Path) -> None:
+    # Attributions seen on macOS 27.0.1 (2026-10-23), with the apps' real install paths.
+    exes = {
+        "com.apple.PhotoBooth": ["/System/Applications/Photo Booth.app/Contents/MacOS/Photo Booth"],
+        "com.apple.systemuiserver": [
+            "/System/Library/CoreServices/SystemUIServer.app/Contents/MacOS/SystemUIServer"
+        ],
+    }
+    events = await _indicator_events(
+        tmp_path, '["cam:com.apple.PhotoBooth", "scr:com.apple.systemuiserver"]', exes
+    )
+    assert events == [("com.apple.PhotoBooth", True), ("com.apple.systemuiserver", True)]
+
+
+async def test_indicator_bundle_id_alone_never_makes_an_event_system(tmp_path: Path) -> None:
+    # A copy outside SIP claiming an Apple bundle id, an Apple id with no running process
+    # found, and a third-party app.
+    exes = {
+        "com.apple.PhotoBooth": [
+            "/System/Applications/Photo Booth.app/Contents/MacOS/Photo Booth",
+            "/Users/u/Applications/Photo Booth.app/Contents/MacOS/Photo Booth",
+        ],
+        "com.brave.Browser": ["/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"],
+    }
+    attributions = (
+        '["cam:com.apple.PhotoBooth", "mic:com.apple.VoiceMemos", "mic:com.brave.Browser"]'
+    )
+    events = await _indicator_events(tmp_path, attributions, exes)
+    assert events == [
+        ("com.apple.PhotoBooth", False),
+        ("com.apple.VoiceMemos", False),
+        ("com.brave.Browser", False),
+    ]
+
+
+async def test_slow_indicator_lookup_times_out_and_keeps_the_event_visible(
+    tmp_path: Path,
+) -> None:
+    line = _indicator('Active activity attributions changed to ["cam:com.apple.PhotoBooth"]')
+    data = tmp_path / "log.json"
+    data.write_text("[" + json.dumps(line) + "]")
+    script = f"import sys; sys.stdout.write(open({str(data)!r}).read())"
+
+    def stuck(bundle_id: str) -> list[str]:
+        time.sleep(1.0)
+        return ["/System/Applications/Photo Booth.app/Contents/MacOS/Photo Booth"]
+
+    listener = SensorListener(
+        command=[sys.executable, "-c", script], bundle_exes=stuck, bundle_lookup_timeout_s=0.05
+    )
+    start = time.monotonic()
+    (event,) = [e async for e in listener.events()]
+    assert not event.system and time.monotonic() - start < 0.9
+
+
+def test_possible_exes_for_bundle_counts_every_way_to_claim_an_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def app(path: str, ident: str | None) -> Path:
+        contents = tmp_path / path / "Contents"
+        contents.mkdir(parents=True)
+        if ident is not None:
+            with open(contents / "Info.plist", "wb") as fh:
+                plistlib.dump({"CFBundleIdentifier": ident}, fh)
+        return contents / "MacOS"
+
+    spy = str(app("Spy.app", "com.example.spy") / "Spy")
+    other = str(app("Other.app", "com.example.other") / "Other")
+    app("Outer.app", "com.example.outer")
+    nested = str(app("Outer.app/Contents/Resources/Inner.app", "com.example.spy") / "Inner")
+    moved = str(app("Moved.app", None) / "Moved")  # Info.plist moved away after launch
+    exes = [spy, other, nested, moved, None]
+
+    class Proc:
+        def __init__(self, exe: str | None) -> None:
+            self.info = {"exe": exe}
+
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs: map(Proc, exes))
+    assert possible_exes_for_bundle("com.example.spy") == [spy, nested, moved]
+    assert possible_exes_for_bundle("com.example.missing") == [moved]

@@ -70,14 +70,19 @@ class Event:
     subsystem: str
     message: str
     service: str | None = None
-    # Set only from paths (log metadata, tccd's binary_path), never from bundle ids, which an
-    # app can choose freely.
+    # Set only from paths (log metadata, tccd's binary_path, the running binaries behind an
+    # indicator's bundle id), never from a bundle id alone, which an app can choose freely.
     system: bool = False
 
     @property
     def identity(self) -> str:
         """Best display name: bundle id, else process name, else `pid:<n>`."""
         return self.bundle_id or self.process_name or f"pid:{self.pid}"
+
+    @property
+    def from_indicator(self) -> bool:
+        """Whether Control Center's sensor indicator reported it: its identity is a bundle id."""
+        return self.service is not None and self.service.startswith("indicator:")
 
 
 @dataclass(frozen=True, slots=True)

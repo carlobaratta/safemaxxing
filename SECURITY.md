@@ -28,7 +28,9 @@ In scope:
 - pf rules that block more than the listed IPs, or IPs that stay blocked after
   `safemaxxing flush`;
 - `--auto-block` / `--auto-suspend` acting on a process or IP other than the one in the alert;
-- crashes or hangs triggered by crafted log lines or socket tables.
+- crashes or hangs triggered by crafted log lines, socket tables or a running app's
+  `Info.plist`;
+- an app hiding its sensor use from correlation by claiming another app's bundle id.
 
 Not a vulnerability (these are documented limits, see "Limiti noti" in the README):
 

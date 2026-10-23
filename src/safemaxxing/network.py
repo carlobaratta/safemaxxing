@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import ipaddress
+import os
 import plistlib
 import re
 import socket
+import stat
 import subprocess
 import time
 from collections.abc import AsyncGenerator, Callable, Iterable
@@ -27,21 +29,54 @@ Snapshot = Callable[[float], list[NetworkConnection]]
 _LSOF_NAME_RE = re.compile(r"^(?P<laddr>.+):(?P<lport>\d+|\*)->(?P<raddr>.+):(?P<rport>\d+)$")
 
 
+_MAX_PLIST_BYTES = 1 << 20
+
+
+def _read_plist(path: str) -> object | None:
+    """Parse `path` only if it is a small regular file; never raise or block on it.
+
+    Any running app's Info.plist is untrusted input: it may be malformed, huge or a FIFO.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            return None
+        data = os.read(fd, _MAX_PLIST_BYTES + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if len(data) > _MAX_PLIST_BYTES:
+        return None
+    try:
+        parsed: object = plistlib.loads(data)
+    except Exception:  # expat errors, bad binary plists: the file is attacker-controlled
+        return None
+    return parsed
+
+
+def enclosing_apps(exe_path: str) -> list[str]:
+    """Every .app directory containing `exe_path`, outermost first."""
+    parts = PurePosixPath(exe_path).parts
+    return [str(PurePosixPath(*parts[: i + 1])) for i, p in enumerate(parts) if p.endswith(".app")]
+
+
 @lru_cache(maxsize=1024)
+def bundle_id_for_app(app_path: str) -> str | None:
+    """CFBundleIdentifier of the .app at `app_path`, or None if its Info.plist is unusable."""
+    data = _read_plist(f"{app_path}/Contents/Info.plist")
+    ident = data.get("CFBundleIdentifier") if isinstance(data, dict) else None
+    return ident if isinstance(ident, str) else None
+
+
 def bundle_id_for_exe(exe_path: str) -> str | None:
     """Return the CFBundleIdentifier of the outermost .app containing `exe_path`."""
-    parts = PurePosixPath(exe_path).parts
-    for i, part in enumerate(parts):
-        if part.endswith(".app"):
-            plist = PurePosixPath(*parts[: i + 1]) / "Contents" / "Info.plist"
-            try:
-                with open(plist, "rb") as fh:
-                    data = plistlib.load(fh)
-            except (OSError, plistlib.InvalidFileException, ValueError):
-                return None
-            ident = data.get("CFBundleIdentifier") if isinstance(data, dict) else None
-            return ident if isinstance(ident, str) else None
-    return None
+    apps = enclosing_apps(exe_path)
+    return bundle_id_for_app(apps[0]) if apps else None
 
 
 def _strip_brackets(addr: str) -> str:
