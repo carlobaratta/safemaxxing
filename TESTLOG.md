@@ -14,6 +14,83 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-23 14:40 +0200] - Indicator test from the 14:24 run (Linux container)
+
+- **Environment:** Linux x86_64 cloud container, CPython 3.13.16, uid=0. Static checks only.
+- **Goal:** pin the real camera/location/mic indicator sequence.
+- **Code changes:** `tests/test_sensors.py` gets
+  `test_real_indicator_sequence_with_camera_location_and_microphone` (5 verbatim lines →
+  cam, loc, loc, mic). `src/safemaxxing/sensors.py`: comment updated, since `mic` has now
+  been observed.
+- **Commands run:** `uv run ruff check && uv run ruff format --check src tests && uv run mypy --strict && uv run pytest -q`
+- **Result and raw data:** `All checks passed!` · `Success: no issues found in 20 source
+  files` · `121 passed, 7 skipped in 2.88s`
+- **Problems / regressions:** none.
+- **Next steps:** identify pid 525 (screen capture for Photo Booth); reboot persistence.
+
+## [2026-10-23 14:24 +0200] - Fourth Mac run: camera + mic live, pf cold start after reboot
+
+- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, uid=501 + sudo. Local branch
+  `claude/amazing-pasteur-hj7ek5` fast-forwarded to **97763f1** (merged code). Raw log and
+  JSON on the Mac: `testlogs/20261023-1424-macos.log`, `testlogs/20261023-1424-sample.jsonl`.
+- **Goal:** Task 3 with Photo Booth and Voice Memos opened *during* a 15 s sample; full run
+  on the merged code.
+- **Code changes:** none (run of 97763f1).
+- **Commands run:** `git pull --ff-only origin claude/gifted-pascal-tp5iot`, then
+  `scripts/macos_validate.sh`.
+- **Result and raw data:**
+  - Static: ruff 0, mypy 0, pytest `120 passed, 7 skipped` (cache warning gone).
+  - **Task 1:** non-root shows the 3 pf checks as `needs root`. Root: exit 0; after the
+    reboot `! pf status: Disabled (enabled automatically on first block)` and
+    `anchor com.apple/safemaxxing: not created yet (loads on first block)`.
+  - **Task 2c (cold start):**
+    ```text
+    pfctl -s info                     -> Status: Disabled
+    pfctl -a com.apple/safemaxxing -s rules            -> pfctl: DIOCGETRULES: Invalid argument (exit 0)
+    pfctl -a ... -t safemaxxing_block -T show          -> pfctl: Table does not exist. (exit 255)
+    curl 1.1.1.1 -> 301 (0.109s)
+    safemaxxing block 1.1.1.1         -> ok 1 table created.; 1/1 addresses added.
+    pfctl -s info                     -> Status: Enabled for 0 days 00:00:00
+    curl -> 000 (timeout 3.003s); unblock -> ok 1/1 addresses deleted.; curl -> 301 (0.084s)
+    ```
+  - **Task 3, sample 15 s, 3755 entries:**
+    | subsystem | entries | `<private>` | parsed | w/ pid | sensors |
+    |---|---|---|---|---|---|
+    | com.apple.TCC | 210 | 21 | 121 | 121 | tcc 53, microphone 41, screen_capture 20, camera 7 |
+    | com.apple.cmio | 2436 | 2303 | 32 | 32 | camera 32 (Photo Booth `CMIODeviceStartStream`) |
+    | com.apple.controlcenter | 5 | 0 | 4 | 0 | location 2, camera 1, microphone 1 |
+    | com.apple.coreaudio | 389 | 0 | 0 | 0 | — |
+    | com.apple.locationd | 715 | 371 | 24 | 14 | location 24 |
+
+    PID and processImagePath arrived in clear on every subsystem (`no image path` = `no pid` = 0).
+    - TCC: `microphone Photo Booth pid=34389` and `camera Photo Booth pid=34389` from Photo
+      Booth's own `SEND` lines. Also `screen_capture pid:34389` from
+      `msgID=525.369 ... service=kTCCServiceScreenCapture, target_token={pid:34389}`: process
+      525 asks on behalf of Photo Booth, **to be checked**. `photolibraryd`'s `tcc.manager`
+      self check was dropped (generic rule ✓). `com.apple.campo` pid 729 `has the
+      com.apple.private.tcc.allow entitlement for service kTCCServicePhotos` was parsed as
+      tcc (a pre-granted access by a system agent).
+    - cmio: `CMIOHardware.cpp:741:CMIODeviceStartStream (35 36)` with Photo Booth's pid ✓,
+      plus the `... backtrace N` lines of the same call.
+    - Indicator timeline: `[cam:PhotoBooth]` → `[cam, loc:VoiceMemos]` → `[cam]` →
+      `[cam, loc:VoiceMemos]` → `[cam, loc:VoiceMemos, mic:VoiceMemos]`. **First real
+      `mic:`**; Voice Memos uses location to tag recordings.
+    - coreaudio: 389 lines (corespeech, VoiceMemos, coreaudiod), none matches the
+      start-IO + input hints, e.g. `[AMCP] ... Voice isolation DSP is available for client
+      with bundle id com.apple.PhotoBooth`.
+    - locationd: new stop line `{"msg":"stopped receiving location information",
+      "client":"root:p\/System\/...CoreParsec.framework:"}`, correctly not an access.
+  - **Live suite 7/7 PASSED** (12.97 s). Live sample: indicator
+    `[cam:com.apple.PhotoBooth, mic:com.apple.VoiceMemos]` → camera + microphone events.
+    Wide predicate 522 entries/s with audio active.
+  - **Task 4:** 21 / 35 / 42 ms (cold cache after the reboot); `17.253.144.10: None in 101 ms`
+    (cap; < 150 ms).
+- **Problems / regressions:** (1) after a reboot pf is disabled and the anchor/table are
+  gone, so **blocks don't persist** (expected with the current design, never written
+  down); (2) 20 `screen_capture` events for Photo Booth via pid 525 need checking; (3)
+  `backtrace` lines inflate the cmio count. No regression vs the previous runs.
+- **Next steps:** identify pid 525; decide on reboot persistence.
+
 ## [2026-10-23 14:30 +0200] - Diverged branches merged (Linux container)
 
 - **Environment:** Linux x86_64 cloud container, CPython 3.13.16, uid=0. Static checks only.
