@@ -6,7 +6,7 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 
 ## Inbox
 
-- [ ] [P1] Use a single branch: `claude/amazing-pasteur-hj7ek5` (another session) and `claude/gifted-pascal-tp5iot` (this one) diverged on 2026-10-23 @process #git (merged in @2be7366; on the Mac: `git pull --ff-only origin claude/gifted-pascal-tp5iot`)
+- [ ] [P1] GitHub's default branch is still `claude/amazing-pasteur-hj7ek5`, stale at 61a6547; all work is on `claude/gifted-pascal-tp5iot` (the Mac switched to it on 2026-10-23) @process #git (create `main` from it, make it the default, delete the `claude/*` branches; then tag `v0.1.0`)
 
 - [ ] [P1] Process rule: `testlogs/*.log` are committed only from the Mac, never from the container @process #tracking (a container commit made `git pull` fail at 13:50)
 - [ ] [P3] coreaudio: 389 lines while recording but 0 parsed (mic is already covered by TCC + `mic:` indicator); look for an IO-start line in `testlogs/20261023-1424-sample.jsonl` before adding hints @sensors #mic
@@ -41,6 +41,7 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 
 ## Completed
 
+- [x] [P1] GitHub documentation pass: README checked claim by claim against the code (Italian, all options documented), SECURITY/CONTRIBUTING/CHANGELOG, issue and PR templates, Dependabot, CI permissions/concurrency, raw `testlogs/*.jsonl` git-ignored; 14:24 raw log committed from the Mac @docs #github (done: 2026-10-23 @57fdd2d, @313920e)
 - [x] [P1] Screen capture live (Cmd+Shift+5 ×2): first real `scr:` indicator (`scr:com.apple.systemuiserver`), replayd pid 733's own request counted; pinned as a test @sensors #tcc (done: 2026-10-23 @ec1c8ee)
 
 - [x] [P1] Screen capture counts only when the capturing process logs its own request: drops WindowServer/coreaudiod preflights and tccd's echoes (all 9 line kinds from the 14:24 dump) @sensors #tcc (done: 2026-10-23 @09c2673)
