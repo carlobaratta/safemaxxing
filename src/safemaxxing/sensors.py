@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import codecs
+import dataclasses
 import json
 import re
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import PurePosixPath
 
+import psutil
+
 from safemaxxing.models import Event, SensorType, is_system_path
+from safemaxxing.network import bundle_id_for_exe
+
+ProcessInfo = Callable[[int], tuple[str, str | None] | None]
 
 LOG_BINARY = "/usr/bin/log"
 
@@ -416,12 +422,61 @@ def log_stream_command(predicate: str = PREDICATE, level: str = "info") -> list[
     return [LOG_BINARY, "stream", "--style", "json", "--level", level, "--predicate", predicate]
 
 
+def process_info(pid: int) -> tuple[str, str | None] | None:
+    """(name, executable path) of a live process, or None if it is gone or inaccessible."""
+    try:
+        proc = psutil.Process(pid)
+        name = proc.name()
+        try:
+            exe: str | None = proc.exe() or None
+        except (psutil.AccessDenied, psutil.ZombieProcess):
+            exe = None
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return None
+    return name, exe
+
+
+class _ProcessEnricher:
+    """Fills name / bundle id / system flag of events that only carry a pid (e.g. TCC lines
+    naming a client via target_token), so they display and correlate like the others."""
+
+    def __init__(self, lookup: ProcessInfo, max_entries: int = 2048) -> None:
+        self._lookup = lookup
+        self._max_entries = max_entries
+        self._cache: dict[int, tuple[str, str | None]] = {}
+
+    def __call__(self, event: Event) -> Event:
+        if event.pid is None or (event.process_name and event.bundle_id):
+            return event
+        info = self._cache.get(event.pid)
+        if info is None:
+            info = self._lookup(event.pid)
+            if info is None:
+                return event
+            if len(self._cache) >= self._max_entries:
+                self._cache.clear()
+            self._cache[event.pid] = info
+        name, exe = info
+        return dataclasses.replace(
+            event,
+            process_name=event.process_name or name,
+            bundle_id=event.bundle_id or (bundle_id_for_exe(exe) if exe else None),
+            system=event.system or is_system_path(exe),
+        )
+
+
 class SensorListener:
     """Async wrapper around `log stream` yielding classified sensor events."""
 
-    def __init__(self, command: Sequence[str] | None = None, cooldown_s: float = 1.0) -> None:
+    def __init__(
+        self,
+        command: Sequence[str] | None = None,
+        cooldown_s: float = 1.0,
+        process_lookup: ProcessInfo = process_info,
+    ) -> None:
         self._command = list(command) if command is not None else log_stream_command()
         self._cooldown = _Cooldown(cooldown_s)
+        self._enrich = _ProcessEnricher(process_lookup)
 
     async def entries(self) -> AsyncIterator[dict[str, object]]:
         """Raw unified-log entries; raises `SensorError` if `log` exits with an error."""
@@ -453,4 +508,4 @@ class SensorListener:
         async for entry in self.entries():
             for event in parser.parse(entry):
                 if self._cooldown.accept(event):
-                    yield event
+                    yield self._enrich(event)

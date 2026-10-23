@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import plistlib
 import sys
 from pathlib import Path
 
@@ -606,3 +607,57 @@ def test_in_process_line_from_system_binary_is_system() -> None:
     entry["processImagePath"] = "/usr/libexec/airportd"
     event = parse_entry(entry)
     assert event is not None and event.system
+
+
+async def test_listener_names_pid_only_events_from_the_live_process(tmp_path: Path) -> None:
+    app = tmp_path / "Brave Browser.app"
+    (app / "Contents").mkdir(parents=True)
+    with open(app / "Contents" / "Info.plist", "wb") as fh:
+        plistlib.dump({"CFBundleIdentifier": "com.brave.Browser"}, fh)
+    helper = str(
+        app / "Contents/Frameworks/Brave Browser Helper.app/Contents/MacOS/Brave Browser Helper"
+    )
+    line = {
+        "timestamp": "2026-10-23 10:00:00.000000+0200",
+        "subsystem": "com.apple.TCC",
+        "processID": 567,
+        "processImagePath": "/usr/sbin/coreaudiod",
+        "eventMessage": "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=567.177, function=TCCAccessRequest, service=kTCCServiceMicrophone, target_token={pid:2597, auid:501, euid:501},",
+    }
+    data = tmp_path / "log.json"
+    data.write_text("[" + json.dumps(line) + "]")
+    script = f"import sys; sys.stdout.write(open({str(data)!r}).read())"
+    lookups: list[int] = []
+
+    def lookup(pid: int) -> tuple[str, str | None] | None:
+        lookups.append(pid)
+        return "Brave Browser Helper", helper
+
+    listener = SensorListener(command=[sys.executable, "-c", script], process_lookup=lookup)
+    (event,) = [e async for e in listener.events()]
+    assert lookups == [2597]
+    assert (event.pid, event.process_name, event.bundle_id) == (
+        2597,
+        "Brave Browser Helper",
+        "com.brave.Browser",
+    )
+    assert not event.system
+
+
+async def test_listener_marks_enriched_system_binaries(tmp_path: Path) -> None:
+    line = {
+        **TCC_ATTRIBUTION,
+        "eventMessage": "REQUEST: sender_pid=740, function=TCCAccessRequest, service=kTCCServiceAddressBook",
+    }
+    data = tmp_path / "log.json"
+    data.write_text("[" + json.dumps(line) + "]")
+    script = f"import sys; sys.stdout.write(open({str(data)!r}).read())"
+    listener = SensorListener(
+        command=[sys.executable, "-c", script],
+        process_lookup=lambda pid: (
+            "cloudd",
+            "/System/Library/PrivateFrameworks/CloudKitDaemon.framework/Support/cloudd",
+        ),
+    )
+    (event,) = [e async for e in listener.events()]
+    assert event.process_name == "cloudd" and event.system

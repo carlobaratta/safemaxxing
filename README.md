@@ -3,7 +3,7 @@
 **Privacy supervisor ed egress firewall headless per macOS, basato su correlazione di eventi.**
 
 LuLu e Little Snitch ti chiedono *"questa app può connettersi a X?"*. safemaxxing risponde a
-una domanda diversa: **"questa app ha appena acceso la fotocamera e, nei 500 ms successivi,
+una domanda diversa: **"questa app ha appena acceso la fotocamera e, nei 2 secondi successivi,
 ha aperto un socket verso Internet?"**
 
 Rileva la catena causa → effetto tipica dell'esfiltrazione:
@@ -11,7 +11,7 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
 ```
  [Sensore]  kTCCServiceCamera  pid=4242 com.example.spy      t = 0 ms
      │
-     ▼  finestra di correlazione (default 500 ms)
+     ▼  finestra di correlazione (default 2000 ms)
  [Egress]   tcp 10.0.0.5:51544 -> 203.0.113.9:443 pid=4242   t = 87 ms
      │
      ▼
