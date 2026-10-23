@@ -357,7 +357,7 @@ async def _drain_tail(stream: asyncio.StreamReader, keep: int = 4096) -> bytes:
     return tail
 
 
-# "cam", "loc" and "mic" observed on macOS 27.0.1 (Photo Booth, Voice Memos); "scr" is assumed.
+# All four observed on macOS 27.0.1: Photo Booth, Voice Memos, Cmd+Shift+5 (scr:systemuiserver).
 INDICATOR_SENSORS: Mapping[str, SensorType] = {
     "cam": SensorType.CAMERA,
     "mic": SensorType.MICROPHONE,
