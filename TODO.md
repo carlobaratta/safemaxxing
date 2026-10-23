@@ -16,9 +16,11 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 
 ## Now (In Progress)
 
-- [ ] [P1] Validate a real screen capture live: `screencapture -x /tmp/s.png` or QuickTime screen recording during `sample`; expect the app's own SEND line and an `scr:` indicator @sensors #tcc (the new rule relies on the client-side line at Info level)
+- [ ] [P1] Screen *recording* (video) live: start a QuickTime / Cmd+Shift+5 recording and keep it going for a few seconds *inside* the 15 s sample @sensors #tcc (the QuickTime run at 2026-10-23 produced no ScreenCapture line and no `scr:`: recording probably not started)
 
 ## Next Up
+
+- [ ] [P2] Screen sharing from a third-party app via ScreenCaptureKit (e.g. Meet in Brave): does replayd send with `target_token={pid:app}`? The logging-pid rule would drop it; then only `scr:<bundle>` would catch it @sensors #tcc
 
 - [ ] [P1] Blocks do not survive a reboot: after the restart on 2026-10-23 pf was `Disabled`, the anchor was empty and the table missing @firewall #pf (persist the list and reapply it at boot via a launchd daemon, or document it)
 - [ ] [P2] Live `watch` with Photo Booth / Voice Memos: confirm they are hidden as system apps (`/System/Applications`) and shown with `--include-system` @correlation #macos
@@ -36,6 +38,8 @@ Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testl
 - [ ] [P3] CI job on a macOS runner for the non-root parts of the live suite @ci #macos
 
 ## Completed
+
+- [x] [P1] Screen capture live (Cmd+Shift+5 ×2): first real `scr:` indicator (`scr:com.apple.systemuiserver`), replayd pid 733's own request counted; pinned as a test @sensors #tcc (done: 2026-10-23 @ec1c8ee)
 
 - [x] [P1] Screen capture counts only when the capturing process logs its own request: drops WindowServer/coreaudiod preflights and tccd's echoes (all 9 line kinds from the 14:24 dump) @sensors #tcc (done: 2026-10-23 @09c2673)
 
