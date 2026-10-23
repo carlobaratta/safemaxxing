@@ -352,7 +352,7 @@ async def _drain_tail(stream: asyncio.StreamReader, keep: int = 4096) -> bytes:
     return tail
 
 
-# Only "cam" and "loc" have been observed (macOS 27.0.1); "mic" follows the same scheme.
+# "cam", "loc" and "mic" observed on macOS 27.0.1 (Photo Booth, Voice Memos); "scr" is assumed.
 INDICATOR_SENSORS: Mapping[str, SensorType] = {
     "cam": SensorType.CAMERA,
     "mic": SensorType.MICROPHONE,
