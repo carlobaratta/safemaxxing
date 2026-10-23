@@ -14,6 +14,43 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-23 15:15 +0200] - Live screen capture: QuickTime and Cmd+Shift+5 (Mac + Linux container)
+
+- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, uid 501 + sudo, HEAD f3e5144
+  (`git pull --ff-only`: already up to date).
+- **Goal:** check that a real screen capture is still detected after the logging-pid rule.
+- **Commands run (Mac), twice:**
+  ```sh
+  sudo uv run safemaxxing sample --seconds 15 --out testlogs/screen-sample.jsonl
+  ```
+- **Result and raw data:**
+  - **Run 1 (QuickTime):** 180 entries. TCC 106 (64 parsed: `tcc`×57, `microphone`×7, incl.
+    `microphone QuickTime Player pid=36030` from its own `SEND ... msgID=36030.3`). **No
+    `screen_capture`, no controlcenter line.** coreaudio: `Voice isolation DSP is available
+    for client with bundle id com.apple.QuickTimePlayerX`. The recording probably was not
+    started within the window: not conclusive.
+  - **Run 2 (Cmd+Shift+5, two captures):** 699 entries.
+    - TCC 68 (32 parsed: `tcc`×28, `screen_capture`×4):
+      `screen_capture replayd pid=733 [Info] SEND: 0/7 synchronous to com.apple.tccd.system:
+      request: msgID=733.14, function=TCCAccessRequest, service=kTCCServiceScreenCapture,`.
+      replayd's own request counts ✓. `screencapture` pid 37712 (`/usr/sbin/screencapture`):
+      `kTCCServiceListenEvent` (entitled), parsed as generic tcc.
+    - **Indicator:** `[scr:com.apple.systemuiserver]` → `[]` → `[scr:com.apple.systemuiserver]`
+      → `[]`: **first real `scr:`**, 2 screen_capture events.
+    - coreaudio `[sss] clientPID 37712(screencapture) ... SystemSounds/system/Screen
+      Capture.aif`: shutter sound, so they were screenshots.
+    - No WindowServer/coreaudiod ScreenCapture preflight among the parsed lines.
+- **Code changes (container):** `src/safemaxxing/sensors.py`: comment updated (all four
+  indicator kinds observed). `tests/test_sensors.py`: verbatim `scr:` sequence → 2 events;
+  replayd's SEND → `screen_capture` pid 733.
+- **Commands run (container):** `uv run ruff check && uv run mypy --strict && uv run pytest -q`
+  → `All checks passed!` · `Success: no issues found in 20 source files` · `125 passed, 7 skipped in 2.96s`
+- **Problems / regressions:** the attribution is to system processes (systemuiserver,
+  replayd), not to the screencapture tool; they're hidden as system unless
+  `--include-system`. Not covered yet: video recording, and screen sharing from a
+  third-party app.
+- **Next steps:** recording started inside the window; Meet screen sharing in Brave.
+
 ## [2026-10-23 15:00 +0200] - Every ScreenCapture line in the 14:24 sample (Mac + Linux container)
 
 - **Environment:** Mac (macOS 27.0.1, arm64, uid 501) for the dump; Linux container for the
