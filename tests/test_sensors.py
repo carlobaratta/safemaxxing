@@ -748,3 +748,26 @@ async def test_listener_marks_enriched_system_binaries(tmp_path: Path) -> None:
     )
     (event,) = [e async for e in listener.events()]
     assert event.process_name == "cloudd" and event.system
+
+
+def test_coreaudiod_screen_capture_check_for_audio_client_is_not_screen_capture() -> None:
+    # Verbatim (truncated by `sample`) from macOS 27.0.1, 2026-10-23 14:24; pid 525 was
+    # /usr/sbin/coreaudiod and 34389 Photo Booth, which used only the camera and microphone.
+    screen = _entry(
+        "com.apple.TCC",
+        "coreaudiod",
+        "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=525.369, "
+        "function=TCCAccessRequest, service=kTCCServiceScreenCapture, target_token={pid:34389, au",
+        pid=525,
+    )
+    assert parse_entry(screen) is None
+    # Same shape for the microphone (constructed): coreaudiod's mic requests still count.
+    mic = _entry(
+        "com.apple.TCC",
+        "coreaudiod",
+        "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=525.368, "
+        "function=TCCAccessRequest, service=kTCCServiceMicrophone, target_token={pid:34389, auid:501}",
+        pid=525,
+    )
+    event = parse_entry(mic)
+    assert event is not None and (event.sensor, event.pid) == (SensorType.MICROPHONE, 34389)

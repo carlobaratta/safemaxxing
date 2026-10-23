@@ -298,6 +298,10 @@ def parse_entry(entry: Mapping[str, object]) -> Event | None:
         if classified is None:
             return None
         sensor, service, pid, bundle, system = classified
+        # coreaudiod asks ScreenCapture on behalf of its audio clients: on macOS 27.0.1 it did so
+        # 20 times for Photo Booth, which only used camera + mic. Not a screen capture.
+        if process_name == "coreaudiod" and sensor is SensorType.SCREEN_CAPTURE:
+            return None
     elif subsystem.startswith(SUBSYSTEM_CMIO):
         if not _contains_any(lowered, CAMERA_HINTS):
             return None
