@@ -440,6 +440,32 @@ def test_control_center_indicator_emits_only_new_attributions() -> None:
     assert again.sensor is SensorType.CAMERA
 
 
+def test_real_indicator_sequence_with_camera_location_and_microphone() -> None:
+    # Verbatim, in order, from macOS 27.0.1 (2026-10-23 14:24): Photo Booth opened, then a
+    # Voice Memos recording (location flaps while it tags the recording).
+    sequence = [
+        '["cam:com.apple.PhotoBooth"]',
+        '["cam:com.apple.PhotoBooth", "loc:com.apple.VoiceMemos"]',
+        '["cam:com.apple.PhotoBooth"]',
+        '["cam:com.apple.PhotoBooth", "loc:com.apple.VoiceMemos"]',
+        '["cam:com.apple.PhotoBooth", "loc:com.apple.VoiceMemos", "mic:com.apple.VoiceMemos"]',
+    ]
+    parser = SensorEventParser()
+    emitted = [
+        (event.sensor, event.bundle_id)
+        for attributions in sequence
+        for event in parser.parse(
+            _indicator(f"Active activity attributions changed to {attributions}")
+        )
+    ]
+    assert emitted == [
+        (SensorType.CAMERA, "com.apple.PhotoBooth"),
+        (SensorType.LOCATION, "com.apple.VoiceMemos"),
+        (SensorType.LOCATION, "com.apple.VoiceMemos"),
+        (SensorType.MICROPHONE, "com.apple.VoiceMemos"),
+    ]
+
+
 def test_other_control_center_lines_ignored() -> None:
     parser = SensorEventParser()
     for message in (
