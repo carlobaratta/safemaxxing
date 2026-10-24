@@ -26,6 +26,11 @@ is the first development line of 0.1.0.
 - Live test suite for macOS (`pytest -m live`) and `scripts/macos_validate.sh`.
   (49f16e3, ab5aaaa)
 
+- Blocks can survive a reboot. `block`, `unblock` and `flush` save each successful change to
+  `/Library/Application Support/safemaxxing/blocklist`. `boot install` loads a launchd job
+  that reapplies the list at boot with `/bin/sh` and `/sbin/pfctl` only. `boot status` and
+  `boot uninstall` show and remove it.
+
 ### Changed
 
 - Docstrings on every public class and function, except in `sensors.py`. `--help` now

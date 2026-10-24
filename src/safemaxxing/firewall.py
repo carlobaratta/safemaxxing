@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import dataclasses
 import ipaddress
 import os
 import re
 import signal
+import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from safemaxxing.models import ActionKind, ActionResult
@@ -17,6 +21,9 @@ PFCTL = "/sbin/pfctl"
 TABLE = "safemaxxing_block"
 # The stock /etc/pf.conf evaluates `anchor "com.apple/*"`, so rules here apply without editing it.
 ANCHOR = "com.apple/safemaxxing"
+# Root-owned, so only root can change what the boot job feeds to pfctl.
+STATE_DIR = Path("/Library/Application Support/safemaxxing")
+BLOCKLIST = STATE_DIR / "blocklist"
 
 
 def anchor_rules(table: str = TABLE) -> str:
@@ -120,20 +127,86 @@ def meaningful_stderr(stderr: str) -> list[str]:
     ]
 
 
+class BlockList:
+    """Blocked addresses saved on disk, one per line, for the boot job to reapply.
+
+    pf forgets its tables at reboot; `safemaxxing boot install` adds a launchd job that feeds
+    this file to `pfctl -T add -f`. The file is replaced atomically and kept mode 0644.
+    """
+
+    def __init__(self, path: Path = BLOCKLIST) -> None:
+        self.path = path
+
+    def load(self) -> list[str]:
+        """Return the saved addresses in insertion order; a missing file means none."""
+        try:
+            text = self.path.read_text()
+        except FileNotFoundError:
+            return []
+        return [line.strip() for line in text.splitlines() if line.strip() and line[0] != "#"]
+
+    def _save(self, ips: list[str]) -> None:
+        self.path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".blocklist-")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write("".join(f"{ip}\n" for ip in ips))
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, self.path)
+        except BaseException:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp)
+            raise
+
+    def add(self, ip: str) -> None:
+        """Save `ip` unless it is already listed."""
+        ips = self.load()
+        if ip not in ips:
+            self._save([*ips, ip])
+
+    def remove(self, ip: str) -> None:
+        """Drop `ip` from the file; an address that was never saved is not an error."""
+        ips = self.load()
+        if ip in ips:
+            self._save([i for i in ips if i != ip])
+
+    def clear(self) -> None:
+        """Empty the file (it stays in place, so the boot job finds nothing to do)."""
+        if self.path.exists():
+            self._save([])
+
+
 class PfFirewall:
     """Blocks IPs through a pf table inside a dedicated anchor, driven by `pfctl` (needs root).
 
     The table and its anchor rule live in the kernel, so blocks outlive this process and
-    `flush` empties the table without unloading the rule or disabling pf.
+    `flush` empties the table without unloading the rule or disabling pf. With a `store`,
+    every successful change is also saved there so the boot job can reapply it.
     """
 
     def __init__(
-        self, runner: Runner = run_command, anchor: str = ANCHOR, table: str = TABLE
+        self,
+        runner: Runner = run_command,
+        anchor: str = ANCHOR,
+        table: str = TABLE,
+        store: BlockList | None = None,
     ) -> None:
         self._run = runner
         self.anchor = anchor
         self.table = table
+        self.store = store
         self._ready = False
+
+    def _persist(self, result: ActionResult, save: Callable[[BlockList], None]) -> ActionResult:
+        # The kernel change already happened; a failed save is reported, not turned into a failure.
+        if not result.ok or self.store is None:
+            return result
+        try:
+            save(self.store)
+        except OSError as exc:
+            detail = "; ".join(filter(None, (result.detail, f"not saved for reboot: {exc}")))
+            return dataclasses.replace(result, detail=detail)
+        return result
 
     def _table_cmd(self, *args: str) -> list[str]:
         return [PFCTL, "-a", self.anchor, "-t", self.table, "-T", *args]
@@ -221,7 +294,7 @@ class PfFirewall:
             # Table rules only see new flows; drop existing state so open sockets die too.
             any_net = "::/0" if ":" in result.target else "0.0.0.0/0"
             await self._run([PFCTL, "-k", any_net, "-k", result.target])
-        return result
+        return self._persist(result, lambda store: store.add(result.target))
 
     async def unblock(self, ip: str) -> ActionResult:
         """Remove `ip` from the block table (`pfctl -T delete`) without running `setup`.
@@ -229,7 +302,8 @@ class PfFirewall:
         Invalid input comes back as a failed ActionResult rather than raising.
         """
         # Removing must never depend on (re)loading rules, or a failed setup could strand a block.
-        return await self._table_op(ActionKind.UNBLOCK_IP, "delete", ip, needs_setup=False)
+        result = await self._table_op(ActionKind.UNBLOCK_IP, "delete", ip, needs_setup=False)
+        return self._persist(result, lambda store: store.remove(result.target))
 
     async def blocked(self) -> list[str]:
         """List the addresses in the block table (`pfctl -T show`); empty if there are none.
@@ -247,9 +321,11 @@ class PfFirewall:
         """
         res = await self._run(self._table_cmd("flush"))
         if table_missing(res.stderr):
-            return ActionResult(ActionKind.UNBLOCK_IP, self.table, True, "table already empty")
-        detail = "; ".join(meaningful_stderr(res.stderr))
-        return ActionResult(ActionKind.UNBLOCK_IP, self.table, res.returncode == 0, detail)
+            result = ActionResult(ActionKind.UNBLOCK_IP, self.table, True, "table already empty")
+        else:
+            detail = "; ".join(meaningful_stderr(res.stderr))
+            result = ActionResult(ActionKind.UNBLOCK_IP, self.table, res.returncode == 0, detail)
+        return self._persist(result, BlockList.clear)
 
 
 _SIGNALS: dict[ActionKind, signal.Signals] = {

@@ -15,9 +15,10 @@ from rich.markup import escape
 from rich.table import Table
 
 from safemaxxing import __version__
+from safemaxxing.boot import LOG, PLIST, BootJob
 from safemaxxing.correlation import CorrelationConfig
 from safemaxxing.diagnostics import Status, collect_log_sample, run_doctor, summarize_sample
-from safemaxxing.firewall import PfFirewall, ProcessController, is_root
+from safemaxxing.firewall import BLOCKLIST, BlockList, PfFirewall, ProcessController, is_root
 from safemaxxing.models import ActionResult, Alert, Event, Severity
 from safemaxxing.sensors import (
     DISCOVERY_PREDICATE,
@@ -32,6 +33,11 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+boot_app = typer.Typer(
+    help="Reapply saved blocks after a reboot with a launchd job (install/uninstall need root).",
+    no_args_is_help=True,
+)
+app.add_typer(boot_app, name="boot")
 
 WindowMs = Annotated[int, typer.Option("--window-ms", help="Correlation window in ms.", min=1)]
 PollMs = Annotated[int, typer.Option("--poll-ms", help="Socket table poll interval in ms.", min=20)]
@@ -84,6 +90,11 @@ def _warn_if_not_root() -> None:
             "[yellow]Not running as root: other users' sockets, pfctl and signalling "
             "foreign processes will be unavailable. Use sudo for full coverage.[/]"
         )
+
+
+def _firewall() -> PfFirewall:
+    """A firewall that also saves each change to BLOCKLIST for the boot job."""
+    return PfFirewall(store=BlockList())
 
 
 def _print_result(result: ActionResult) -> None:
@@ -168,7 +179,7 @@ def watch(
     supervisor = _supervisor(
         window_ms, poll_ms, include_loopback, no_dns, ignore, include_system, include_dns
     )
-    firewall, processes = PfFirewall(), ProcessController()
+    firewall, processes = _firewall(), ProcessController()
 
     async def loop() -> None:
         enforced: set[int] = set()
@@ -210,14 +221,14 @@ def watch(
 
 @app.command()
 def block(ip: Ip) -> None:
-    """Add an IP to the safemaxxing_block pf table."""
-    _print_result(asyncio.run(PfFirewall().block(ip)))
+    """Add an IP to the safemaxxing_block pf table and save it for `boot install`."""
+    _print_result(asyncio.run(_firewall().block(ip)))
 
 
 @app.command()
 def unblock(ip: Ip) -> None:
-    """Remove an IP from the safemaxxing_block pf table."""
-    _print_result(asyncio.run(PfFirewall().unblock(ip)))
+    """Remove an IP from the safemaxxing_block pf table and from the saved list."""
+    _print_result(asyncio.run(_firewall().unblock(ip)))
 
 
 @app.command()
@@ -229,8 +240,58 @@ def blocked() -> None:
 
 @app.command()
 def flush() -> None:
-    """Remove every IP from the block table (the anchor rule stays loaded, pf stays on)."""
-    _print_result(asyncio.run(PfFirewall().flush()))
+    """Remove every IP from the block table and the saved list (rule stays loaded, pf on)."""
+    _print_result(asyncio.run(_firewall().flush()))
+
+
+def _require_root() -> None:
+    if not is_root():
+        console.print("[bold red]needs root:[/] re-run with sudo")
+        raise typer.Exit(1)
+
+
+@boot_app.command("install")
+def boot_install() -> None:
+    """Save the current blocks and load a launchd job that reapplies them at every boot."""
+    _require_root()
+
+    async def run() -> str:
+        store = BlockList()
+        for ip in await PfFirewall().blocked():
+            store.add(ip)
+        return await BootJob().install()
+
+    problem = asyncio.run(run())
+    if problem:
+        console.print(f"[bold red]launchctl bootstrap failed:[/] {escape(problem)}")
+        raise typer.Exit(1)
+    count = len(BlockList().load())
+    console.print(f"[green]installed {PLIST}[/] ({count} saved address(es) in {BLOCKLIST})")
+
+
+@boot_app.command("uninstall")
+def boot_uninstall() -> None:
+    """Unload and delete the launchd job; current blocks and the saved list stay."""
+    _require_root()
+    asyncio.run(BootJob().uninstall())
+    console.print(f"[green]removed {PLIST}[/]")
+
+
+@boot_app.command("status")
+def boot_status() -> None:
+    """Show whether the job is installed and loaded, and the saved and live block counts."""
+    status = asyncio.run(BootJob().status())
+    saved = BlockList().load()
+    console.print(f"job {PLIST}: installed={status.installed} loaded={status.loaded}")
+    if not is_root():
+        console.print(f"saved {BLOCKLIST}: {len(saved)}  live table: needs root  log: {LOG}")
+        return
+    live = asyncio.run(PfFirewall().blocked())
+    console.print(f"saved {BLOCKLIST}: {len(saved)}  live table: {len(live)}  log: {LOG}")
+    for ip in sorted(set(saved) - set(live)):
+        console.print(f"[yellow]saved, not live:[/] {ip}")
+    for ip in sorted(set(live) - set(saved)):
+        console.print(f"[yellow]live, not saved:[/] {ip}")
 
 
 @app.command()

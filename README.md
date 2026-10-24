@@ -103,6 +103,10 @@ sudo uv run safemaxxing blocked
 sudo uv run safemaxxing unblock 203.0.113.9
 sudo uv run safemaxxing flush
 
+sudo uv run safemaxxing boot install              # riapplica i blocchi a ogni avvio
+uv run safemaxxing boot status
+sudo uv run safemaxxing boot uninstall
+
 sudo uv run safemaxxing freeze 4242               # SIGSTOP
 sudo uv run safemaxxing thaw 4242                 # SIGCONT
 sudo uv run safemaxxing kill 4242                 # SIGKILL
@@ -182,10 +186,13 @@ macchine di test, perché espone dati sensibili nel log di sistema.
 
 ### Note sul firewall
 
-I blocchi persistono dopo l'uscita da safemaxxing, fino a `safemaxxing flush`. **Non
+I blocchi persistono dopo l'uscita da safemaxxing, fino a `safemaxxing flush`. Da soli **non
 sopravvivono al riavvio**: dopo un restart pf torna allo stato di boot e la tabella non
-esiste più. Prima del primo blocco di ogni processo (cioè a ogni comando `block`, ma una
-sola volta per sessione in `tui` / `watch`) safemaxxing:
+esiste più. Per riaverli serve `sudo safemaxxing boot install` (vedi
+[Blocchi dopo il riavvio](#blocchi-dopo-il-riavvio)).
+
+Prima del primo blocco di ogni processo (cioè a ogni comando `block`, ma una sola volta per
+sessione in `tui` / `watch`) safemaxxing:
 
 1. rifiuta di procedere se il ruleset principale non valuta `anchor "com.apple/*"`, perché le
    regole dell'anchor sarebbero ignorate, e suggerisce `sudo pfctl -f /etc/pf.conf`;
@@ -204,6 +211,30 @@ sudo pfctl -a com.apple/safemaxxing -s rules
 sudo pfctl -a com.apple/safemaxxing -t safemaxxing_block -T show
 ```
 
+### Blocchi dopo il riavvio
+
+`block`, `unblock` e `flush` (anche dalla TUI e con `--auto-block`) salvano ogni modifica
+riuscita in `/Library/Application Support/safemaxxing/blocklist`, un indirizzo per riga.
+Il file è di root, mode 0644, e viene sostituito in modo atomico. Se il salvataggio fallisce
+il blocco resta attivo nel kernel e il dettaglio dice `not saved for reboot: …`.
+
+`sudo safemaxxing boot install` aggiunge al file gli IP già presenti nella tabella. Poi scrive
+`/Library/LaunchDaemons/io.github.carlobaratta.safemaxxing.restore.plist` e lo carica con
+`launchctl bootstrap system`. A ogni avvio il job esegue uno script `/bin/sh` che usa solo
+`/sbin/pfctl`, mai il codice Python di safemaxxing:
+
+1. esce senza toccare pf se la lista è vuota o manca;
+2. aspetta fino a 60 s che `com.apple.pfctl` carichi `/etc/pf.conf`, cioè che il ruleset
+   principale contenga `anchor "com.apple/*"`;
+3. carica la regola dell'anchor, aggiunge gli IP con `pfctl -T add -f <lista>` e abilita pf
+   con `pfctl -E`.
+
+Il job scrive in `/var/log/safemaxxing-boot.log`. Anche il caricamento con `install` esegue
+lo script una volta: aggiunge gli IP salvati alla tabella attiva e non ne toglie nessuno.
+`boot status` mostra se il job è installato e caricato e confronta la lista salvata con la
+tabella attiva. Con `boot uninstall` il job viene rimosso, mentre i blocchi attivi e la lista
+restano.
+
 ## Architettura
 
 ```
@@ -213,7 +244,8 @@ src/safemaxxing/
 ├── network.py       psutil / lsof → outbound_only → NetworkMonitor (+ HostnameResolver)
 ├── correlation.py   CorrelationEngine: buffer circolari, finestra temporale, severità
 ├── supervisor.py    unisce gli stream asincroni e alimenta l'engine
-├── firewall.py      PfFirewall (pfctl) e ProcessController (segnali)
+├── firewall.py      PfFirewall (pfctl), BlockList (lista salvata) e ProcessController (segnali)
+├── boot.py          job launchd che riapplica la lista al boot (solo /bin/sh e /sbin/pfctl)
 ├── diagnostics.py   doctor (Check) e sample (summarize_sample)
 ├── tui/app.py       dashboard Textual
 └── cli.py           entry point Typer
@@ -267,7 +299,9 @@ testabile anche su Linux (la CI gira su macOS).
   basato su Network Extension / Endpoint Security risolverebbe il problema.
 - **SNI**: oggi il nome host arriva dal reverse DNS. Estrarre lo SNI dal ClientHello richiede
   la cattura dei pacchetti (pcap/NE) ed è nella roadmap ([TODO.md](TODO.md)).
-- I blocchi non sopravvivono al riavvio (vedi [Note sul firewall](#note-sul-firewall)).
+- I blocchi sopravvivono al riavvio solo con `boot install` (vedi
+  [Blocchi dopo il riavvio](#blocchi-dopo-il-riavvio)). Il job non è ancora stato provato con
+  un riavvio reale. Le modifiche fatte a mano con `pfctl` non finiscono nella lista salvata.
 - `SIGSTOP` su un'app GUI può lasciare finestre non responsive finché non si invia `SIGCONT`.
 
 ## Sviluppo

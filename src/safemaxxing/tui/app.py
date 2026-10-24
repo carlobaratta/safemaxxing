@@ -13,7 +13,7 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Button, DataTable, Footer, Header, Label, RichLog
 
-from safemaxxing.firewall import PfFirewall, ProcessController
+from safemaxxing.firewall import BlockList, PfFirewall, ProcessController
 from safemaxxing.models import ActionResult, Alert, Event, NetworkConnection, Severity
 from safemaxxing.supervisor import Supervisor
 
@@ -92,7 +92,7 @@ class SafemaxxingApp(App[None]):
     ) -> None:
         super().__init__()
         self.supervisor = supervisor
-        self.firewall = firewall or PfFirewall()
+        self.firewall = firewall or PfFirewall(store=BlockList())
         self.processes = processes or ProcessController()
         self.alerts: dict[str, Alert] = {}
         self._connections: dict[str, NetworkConnection] = {}

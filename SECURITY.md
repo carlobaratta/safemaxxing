@@ -44,6 +44,8 @@ Not a vulnerability (these are documented limits, see "Limiti noti" in the READM
 | Change | When | How to undo |
 |--------|------|-------------|
 | Rule `block drop out quick from any to <safemaxxing_block>` loaded in anchor `com.apple/safemaxxing` | first block (`block`, TUI `b`, `--auto-block`, live suite) | stays until reboot, or `sudo pfctl -a com.apple/safemaxxing -F rules` |
+| Blocked IPs saved to `/Library/Application Support/safemaxxing/blocklist` (root, 0644) | every successful `block`, `unblock`, `flush` and `boot install` | `flush` empties it; delete the directory |
+| launchd job `/Library/LaunchDaemons/io.github.carlobaratta.safemaxxing.restore.plist`, log `/var/log/safemaxxing-boot.log` | `boot install` | `sudo safemaxxing boot uninstall`; delete the log |
 | IPs in table `safemaxxing_block` | every block | `unblock <ip>`, or `flush` to empty the table |
 | Existing pf states to the blocked IP killed (`pfctl -k`) | every block | none; apps must reconnect |
 | pf enabled (`pfctl -E`) | first block, if pf was disabled | `sudo pfctl -d` |
@@ -52,8 +54,13 @@ Not a vulnerability (these are documented limits, see "Limiti noti" in the READM
 | Raw unified-log file written | `sample --out PATH` (root-owned under sudo) | delete the file |
 | `testlogs/` files written, `.pytest_cache` chowned to you | `scripts/macos_validate.sh` | delete the files |
 
-`/etc/pf.conf` is never modified. Blocks do not survive a reboot: after a restart pf is back to
-its boot state and the table is gone.
+`/etc/pf.conf` is never modified. Without `boot install`, blocks do not survive a reboot:
+after a restart pf is back to its boot state and the table is gone. With it, a root launchd job
+reapplies the saved list at boot and enables pf (`pfctl -E`) when the list is not empty.
+
+The boot job runs `/bin/sh` and `/sbin/pfctl` only. It never runs safemaxxing itself, which
+usually lives in a user-writable virtualenv: a root job pointing there would let any process
+running as that user execute code as root. The only input the job reads is the root-owned list.
 
 `--auto-block` and `--auto-suspend` act on a heuristic (a sensor event followed by egress in
 the correlation window). Try them on a test machine before relying on them.

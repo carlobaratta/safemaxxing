@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import os
 import signal
+import stat
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 
@@ -11,6 +13,7 @@ from safemaxxing.firewall import (
     ANCHOR,
     PFCTL,
     TABLE,
+    BlockList,
     CommandResult,
     PfFirewall,
     ProcessController,
@@ -248,3 +251,61 @@ async def test_flush_of_never_created_table_is_ok() -> None:
     assert result.ok and result.detail == "table already empty"
     pf.table.add("203.0.113.9")
     assert (await PfFirewall(runner=pf).flush()).ok and pf.table == set()
+
+
+def test_blocklist_keeps_order_skips_duplicates_and_comments(tmp_path: Path) -> None:
+    store = BlockList(tmp_path / "state" / "blocklist")
+    assert store.load() == []
+    store.add("203.0.113.9")
+    store.add("2001:db8::1")
+    store.add("203.0.113.9")
+    assert store.load() == ["203.0.113.9", "2001:db8::1"]
+    assert stat.S_IMODE(store.path.stat().st_mode) == 0o644
+    store.path.write_text("# kept by hand\n\n198.51.100.1\n")
+    assert store.load() == ["198.51.100.1"]
+
+
+def test_blocklist_remove_and_clear(tmp_path: Path) -> None:
+    store = BlockList(tmp_path / "blocklist")
+    store.clear()  # nothing saved yet: no file is created
+    assert not store.path.exists()
+    for ip in ("203.0.113.9", "198.51.100.1"):
+        store.add(ip)
+    store.remove("192.0.2.7")  # never saved: not an error
+    store.remove("203.0.113.9")
+    assert store.load() == ["198.51.100.1"]
+    store.clear()
+    assert store.path.read_text() == ""
+    assert [p.name for p in tmp_path.iterdir()] == ["blocklist"]  # no temp files left
+
+
+async def test_store_follows_block_unblock_and_flush(tmp_path: Path) -> None:
+    store = BlockList(tmp_path / "blocklist")
+    fw = PfFirewall(runner=FakePf(enabled=True), store=store)
+    await fw.block("203.0.113.9")
+    await fw.block("2001:DB8::1")
+    assert store.load() == ["203.0.113.9", "2001:db8::1"]  # saved normalised
+    await fw.unblock("203.0.113.9")
+    assert store.load() == ["2001:db8::1"]
+    assert (await fw.flush()).ok
+    assert store.load() == []
+
+
+async def test_failed_block_is_not_saved(tmp_path: Path) -> None:
+    store = BlockList(tmp_path / "blocklist")
+    fw = PfFirewall(runner=FakePf(main_rules="pass all\n"), store=store)
+    assert not (await fw.block("203.0.113.9")).ok
+    assert not (await fw.block("127.0.0.1")).ok
+    assert store.load() == []
+
+
+async def test_unwritable_store_keeps_the_block_and_says_so(tmp_path: Path) -> None:
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+    pf = FakePf(enabled=True)
+    result = await PfFirewall(runner=pf, store=BlockList(blocker / "blocklist")).block(
+        "203.0.113.9"
+    )
+    assert result.ok
+    assert pf.table == {"203.0.113.9"}
+    assert "not saved for reboot: [Errno 20]" in result.detail
