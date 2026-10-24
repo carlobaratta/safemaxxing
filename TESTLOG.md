@@ -16,7 +16,7 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 
 ## [2026-10-24 20:42 +0200] - Live screen *recording* with Cmd+Shift+5 (Mac)
 
-- **Environment:** macOS 27.0.1, arm64 Apple M4, sudo, branch `main` at fdf2651.
+- **Environment:** macOS 27.0.1, arm64 Apple M4, sudo, branch `main` at 93417be.
 - **Goal:** TODO P1 in **Now**. A video recording must start inside the sample window: the
   QuickTime run on 2026-10-23 produced no ScreenCapture line at all.
 - **Code changes:** none.
@@ -50,8 +50,8 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 
 ## [2026-10-24 20:38 +0200] - Blocks across a real reboot with `boot install` (Mac)
 
-- **Environment:** macOS 27.0.1, arm64 Apple M4, sudo, branch `main` at c559b33.
-- **Goal:** TODO P1. Check that the launchd job from 2e55bba reapplies the saved blocks
+- **Environment:** macOS 27.0.1, arm64 Apple M4, sudo, branch `main` at e146bc2.
+- **Goal:** TODO P1. Check that the launchd job from 9b0af93 reapplies the saved blocks
   after a real restart.
 - **Code changes:** none.
 - **Commands run:** `sudo uv run safemaxxing block 1.1.1.1`, `sudo uv run safemaxxing boot
@@ -164,7 +164,7 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 
 ## [2026-10-23 15:15 +0200] - Live screen capture: QuickTime and Cmd+Shift+5 (Mac + Linux container)
 
-- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, uid 501 + sudo, HEAD f3e5144
+- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, uid 501 + sudo, HEAD 741aa5b
   (`git pull --ff-only`: already up to date).
 - **Goal:** check that a real screen capture is still detected after the logging-pid rule.
 - **Commands run (Mac), twice:**
@@ -292,12 +292,12 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Environment:** Linux x86_64 cloud container, CPython 3.13.16, uid=0. Static checks only.
 - **Goal:** unblock the Mac. `git pull origin claude/gifted-pascal-tp5iot` failed with
   "divergent branches". The plain `git pull` fast-forwarded the local branch to
-  `origin/claude/amazing-pasteur-hj7ek5` (61a6547), which has no `scripts/` folder:
+  `origin/claude/amazing-pasteur-hj7ek5` (b7f39ba), which has no `scripts/` folder:
   `zsh: no such file or directory: scripts/macos_validate.sh`.
-- **Cause:** after 66596f3 another session pushed 071bdce and 61a6547 to
+- **Cause:** after 32c1b74 another session pushed c6cdc44 and b7f39ba to
   `claude/amazing-pasteur-hj7ek5`, while this session pushed 7 commits to
-  `claude/gifted-pascal-tp5iot`. The two lines had no commit in common after 66596f3.
-- **Code changes:** merge 2be7366 (its message reads "Log the branch divergence..." because the first `git commit` stopped on the unstaged resolution and the next commit completed the merge). The only conflict was `tests/test_sensors.py` (both sides
+  `claude/gifted-pascal-tp5iot`. The two lines had no commit in common after 32c1b74.
+- **Code changes:** merge c9155e4 (its message reads "Log the branch divergence..." because the first `git commit` stopped on the unstaged resolution and the next commit completed the merge). The only conflict was `tests/test_sensors.py` (both sides
   appended tests), resolved by keeping both. `sensors.py` merged automatically: sandboxd /
   TCC-manager filter plus the other session's `system` flag and 5-tuple `_classify_tcc`.
 - **Commands run:**
@@ -319,11 +319,11 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 ## [2026-10-23 14:24 +0200] - Fourth Mac run: camera + mic live, pf cold start after reboot
 
 - **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, uid=501 + sudo. Local branch
-  `claude/amazing-pasteur-hj7ek5` fast-forwarded to **97763f1** (merged code). Raw log and
+  `claude/amazing-pasteur-hj7ek5` fast-forwarded to **65370e5** (merged code). Raw log and
   JSON on the Mac: `testlogs/20261023-1424-macos.log`, `testlogs/20261023-1424-sample.jsonl`.
 - **Goal:** Task 3 with Photo Booth and Voice Memos opened *during* a 15 s sample; full run
   on the merged code.
-- **Code changes:** none (run of 97763f1).
+- **Code changes:** none (run of 65370e5).
 - **Commands run:** `git pull --ff-only origin claude/gifted-pascal-tp5iot`, then
   `scripts/macos_validate.sh`.
 - **Result and raw data:**
@@ -407,11 +407,11 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 
 ## [2026-10-22 13:51 +0200] - Third Mac run: pf auto-enable, non-root doctor, sensors in use
 
-- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, uid=501 + sudo, HEAD a534d12
+- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, uid=501 + sudo, HEAD 5b18f0f
   (pull OK after removing the colliding testlog). Pasted from "Task 1" onward.
 - **Goal:** validate the non-root doctor fix and pf Disabled → auto-enable; sample with
   Photo Booth (camera) and Voice Memos (mic).
-- **Code changes:** none (run of a534d12).
+- **Code changes:** none (run of 5b18f0f).
 - **Commands run:** `PF_DISABLED_TEST=1 scripts/macos_validate.sh`; raw log in
   `testlogs/20261022-1351-macos.log` (committed from the Mac on 2026-10-23).
 - **Result and raw data:**
@@ -429,14 +429,14 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
   - **Task 3 `sample` 8 s** (216 entries):
     - `com.apple.TCC` 65 entries, 9 `<private>`, 41 parsed, all `tcc` (no camera/mic).
       Mostly `sandboxd` pid 401 checking `kTCCServiceSystemPolicyAllFiles` for others →
-      **false attribution, fixed in 65305d6**. `CoreRoutine.helperservice` pid 36094
+      **false attribution, fixed in 70fbd74**. `CoreRoutine.helperservice` pid 36094
       correctly attributed.
     - `com.apple.cmio` 8 entries, all from `cameracaptured`, all
       `CMIOExtensionStream _initWithLocalizedName...<private>`: not start events.
     - `com.apple.locationd` 143 entries, 8 parsed (client CoreParsec).
     - **No `com.apple.coreaudio` entries and no indicator lines.** The apps were opened
       *before* Enter, so their start lines were logged before the stream began (script
-      flaw, fixed in 65305d6).
+      flaw, fixed in 70fbd74).
   - **Live sample 5 s** (500 entries, apps open):
     - cmio 344 entries (`registerassistantservice` 207, `Photo Booth` 82,
       `cameracaptured` 23), 252 with `<private>`, **2 parsed with pid** (sensor not
@@ -459,8 +459,8 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 ## [2026-10-22 13:50 +0200] - Second Mac run: STALE code (pull aborted)
 
 - **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, uid=501 + sudo. Local branch
-  `claude/amazing-pasteur-hj7ek5` still at **f58a357**.
-- **Goal:** validate bc5a019 (non-root doctor), pf Disabled → auto-enable
+  `claude/amazing-pasteur-hj7ek5` still at **c895276**.
+- **Goal:** validate 34c9f53 (non-root doctor), pf Disabled → auto-enable
   (`PF_DISABLED_TEST=1`), and the sample with camera and mic active.
 - **Code changes:** none (the pull did not apply).
 - **Commands run:**
@@ -474,7 +474,7 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
           testlogs/20261022-1345-macos.log
   Aborting
   ```
-  The script ran anyway at f58a357, the old version: no pause before the sample, no
+  The script ran anyway at c895276, the old version: no pause before the sample, no
   `PF_DISABLED_TEST`, doctor still says "parent anchor missing" without sudo, and the
   `.pytest_cache` warning is still there. The results repeat the 13:45 run:
   - doctor (root) exit 0, 30 pids incl. `_mdnsresponder`, `_netbios`; snapshot 8-9 ms.
@@ -495,7 +495,7 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
   ```sh
   rm testlogs/20261022-1345-macos.log   # identical copy is already in the repo
   git pull origin claude/gifted-pascal-tp5iot
-  git log --oneline -1                  # must show 511c802 or later
+  git log --oneline -1                  # must show 44b98e0 or later
   PF_DISABLED_TEST=1 scripts/macos_validate.sh
   ```
 
@@ -534,10 +534,10 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 
 - **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4 (Apple Silicon), user `carlo`
   uid=501 (admin), root steps via sudo; Python 3.13.14, uv from Homebrew. Local branch
-  `claude/amazing-pasteur-hj7ek5` at f58a357.
+  `claude/amazing-pasteur-hj7ek5` at c895276.
 - **Goal:** validate native calls: doctor, pf block in the kernel, `log stream` redaction,
   real reverse DNS.
-- **Code changes:** none (run of f58a357).
+- **Code changes:** none (run of c895276).
 - **Commands run:** `scripts/macos_validate.sh` (full list and output in
   `testlogs/20261022-1345-macos.log`).
 - **Result and raw data:**
@@ -572,7 +572,7 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
   - Live suite: **7 passed** in 12.80 s.
 - **Problems / regressions vs Linux:**
   1. Non-root `doctor` printed `✘ pf parent anchor: ... missing ... sudo pfctl -f /etc/pf.conf`.
-     That is false: the real cause is `/dev/pf: Permission denied`. Fixed in bc5a019.
+     That is false: the real cause is `/dev/pf: Permission denied`. Fixed in 34c9f53.
   2. `PytestCacheWarning: Permission denied .pytest_cache`: an earlier `sudo pytest` left
      the cache owned by root. One-off fix: `sudo chown -R "$USER" .pytest_cache`; the script
      now avoids it.
@@ -587,7 +587,7 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Environment:** Linux 6.18.44 x86_64 (Claude Code cloud container), CPython 3.13.16,
   uv 0.11.32, uid=0 (root). **Not Darwin:** no `pfctl`, `log`, real `lsof` or TCC, so nothing
   here validates native macOS calls. The live suite is skipped automatically.
-- **Goal:** record the static baseline on branch `claude/gifted-pascal-tp5iot` @66596f3, close
+- **Goal:** record the static baseline on branch `claude/gifted-pascal-tp5iot` @32c1b74, close
   the gaps found in Tasks 1-4, and prepare a one-shot script for the real Mac.
   (The branch `claude/amazing-pasteur-hj7ek5` named in the brief does not exist on the remote;
   its history is in this branch.)
@@ -615,12 +615,12 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
   ```
 - **Result and raw data:**
   ```text
-  # baseline @66596f3
+  # baseline @32c1b74
   All checks passed!
   Success: no issues found in 20 source files
   102 passed, 6 skipped in 2.81s
 
-  # after changes @ab5aaaa
+  # after changes @9421e63
   All checks passed!
   Success: no issues found in 20 source files
   103 passed, 7 skipped in 2.09s
