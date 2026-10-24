@@ -290,8 +290,8 @@ testabile anche su Linux (la CI gira su macOS).
   - Su macOS 27.0.1 sono stati osservati tutti e quattro gli indicatori: `cam:`, `mic:`, `loc:`
     e `scr:`. Uno screenshot con Cmd+Shift+5 viene attribuito a SystemUIServer
     (`scr:com.apple.systemuiserver`), non al tool che cattura. La registrazione video dello
-    schermo e la
-    condivisione via ScreenCaptureKit non sono ancora state verificate.
+    schermo con Cmd+Shift+5 è stata verificata il 2026-10-24, con la stessa attribuzione. La
+    condivisione via ScreenCaptureKit da app di terze parti non è ancora stata verificata.
 - Il reverse DNS gira in background su un pool dedicato (4 thread) e il polling non lo
   aspetta mai. Il nome host compare nel pannello connessioni appena risolto. Un alert invece
   mostra il nome solo se l'IP era già in cache; altrimenti mostra solo l'IP.

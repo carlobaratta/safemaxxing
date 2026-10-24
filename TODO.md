@@ -8,16 +8,17 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Inbox
 
-- [ ] [P2] Tag `v0.1.0` on `main` once the screen-recording check in **Now** is done; the `claude/*` branches stay as history (frozen at 40ed2b8) @process #release
+- [ ] [P2] Tag `v0.1.0` on `main` (the screen-recording check is done); the `claude/*` branches stay as history (frozen at 40ed2b8) @process #release
 
 - [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design)
 
 ## Now (In Progress)
 
-- [ ] [P1] Screen *recording* (video) live: start a QuickTime / Cmd+Shift+5 recording and keep it going for a few seconds *inside* the 15 s sample @sensors #tcc (the QuickTime run at 2026-10-23 produced no ScreenCapture line and no `scr:`: recording probably not started)
 
 ## Next Up
 
+- [ ] [P3] One Cmd+Shift+5 recording gives 2 `scr:` events: a 24 ms `[scr:…]` → `[]` flicker comes before the real 7.4 s span (TESTLOG 2026-10-24 20:42) @sensors #indicator
+- [ ] [P3] coreaudiod's mic *preflight* for `screencapture` (`target_token={pid:3506}`, `preflight=true` only in tccd's REQUEST_MSG) became a `microphone` event with no `mic:` indicator; check against the Brave/Meet mic captures before dropping preflights @sensors #mic
 
 - [ ] [P2] Screen sharing from a third-party app via ScreenCaptureKit (e.g. Meet in Brave): does replayd send with `target_token={pid:app}`? The logging-pid rule would drop it; then only `scr:<bundle>` would catch it @sensors #tcc
 
@@ -37,6 +38,7 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Completed
 
+- [x] [P1] Screen *recording* live (Cmd+Shift+5, ~8 s inside a 25 s sample): replayd's own ScreenCapture requests plus `scr:com.apple.systemuiserver` on for 7.4 s = the recording; attributed to SIP system processes, so hidden without `--include-system` @sensors #tcc (done: 2026-10-24, Mac run 20:42, no code change)
 - [x] [P1] Reboot test of `boot install`: after a real restart the job rebuilt the table (`1 table created`, `1/1 addresses added`) and re-enabled pf; `boot status` saved 1 = live 1, `curl https://1.1.1.1` timed out; see TESTLOG 2026-10-24 20:38 @firewall #pf (done: 2026-10-24, Mac run)
 - [x] [P1] Blocks can survive a reboot: `block`/`unblock`/`flush` save to `/Library/Application Support/safemaxxing/blocklist`; `boot install|status|uninstall` manage a launchd job that waits for pf.conf, loads the anchor, `pfctl -T add -f` the list and `pfctl -E`, using only /bin/sh and /sbin/pfctl. Script tested under sh with a fake pfctl, then across a real reboot @firewall #pf (done: 2026-10-24 @2e55bba)
 - [x] [P2] Indicator events of Apple apps are now hidden without `--include-system`: `system` only when every running process that may carry the bundle id (any enclosing .app, or an unreadable Info.plist outside SIP) runs from a SIP path. They stay correlated, so a spoofed bundle id still alerts. Hostile Info.plists (malformed, FIFO) no longer crash or hang `log stream` @sensors #system (done: 2026-10-23 @eb9c13b)

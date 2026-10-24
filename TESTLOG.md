@@ -14,6 +14,40 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-24 20:42 +0200] - Live screen *recording* with Cmd+Shift+5 (Mac)
+
+- **Environment:** macOS 27.0.1, arm64 Apple M4, sudo, branch `main` at fdf2651.
+- **Goal:** TODO P1 in **Now**. A video recording must start inside the sample window: the
+  QuickTime run on 2026-10-23 produced no ScreenCapture line at all.
+- **Code changes:** none.
+- **Commands run:** `sudo -v`, then
+  `sudo uv run safemaxxing sample --seconds 25 --out testlogs/screen-recording-sample.jsonl`.
+  During the sample: Cmd+Shift+5, "Record Entire Screen", Record, about 8 s, then stop from
+  the menu bar. Timestamps were read from the raw `.jsonl`, which is not committed.
+- **Result and raw data:** 290 entries. TCC 116 (47 parsed: `tcc`×30, `microphone`×12,
+  `screen_capture`×5). Control Center 4 (2 parsed `screen_capture`).
+  ```text
+  20:42:19.341 screencapture 3506  kTCCServiceListenEvent (toolbar open, entitled)
+  20:42:23.228 replayd 791         SEND msgID=791.2 service=kTCCServiceScreenCapture   (also .3 .4 .5)
+  20:42:23.252 ControlCenter       ["scr:com.apple.systemuiserver"]
+  20:42:23.276 ControlCenter       []                                 <- 24 ms flicker
+  20:42:23.506 coreaudiod 591      kTCCServiceMicrophone target_token={pid:3506} preflight=true
+  20:42:23.640 ControlCenter       ["scr:com.apple.systemuiserver"]
+  20:42:31.037 ControlCenter       []                                 <- 7.4 s = the recording
+  ```
+  - The recording is detected the same way as screenshots: replayd's own ScreenCapture
+    requests count, and the `scr:` indicator stays on for exactly as long as the recording.
+  - Attribution goes to system processes (replayd, `com.apple.systemuiserver`), not to the
+    `screencapture` tool. Both are SIP binaries, so they stay hidden without
+    `--include-system`. That is right for the built-in recorder.
+- **Problems / regressions:** none in the code. Two cosmetic findings:
+  - A 24 ms `scr:` flicker comes before the real start, so one recording yields 2
+    screen-capture events.
+  - coreaudiod's microphone *preflight* for `screencapture` (pid 3506) was parsed as a
+    `microphone` event, although no `mic:` indicator ever appeared. The recording had no mic
+    input selected. The SEND line does not carry `preflight`; only tccd's REQUEST_MSG does.
+- **Next steps:** tag `v0.1.0`. The two findings are added to **Next Up** in TODO.md.
+
 ## [2026-10-24 20:38 +0200] - Blocks across a real reboot with `boot install` (Mac)
 
 - **Environment:** macOS 27.0.1, arm64 Apple M4, sudo, branch `main` at c559b33.
