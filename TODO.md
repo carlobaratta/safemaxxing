@@ -21,7 +21,6 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 - [ ] [P2] Screen sharing from a third-party app via ScreenCaptureKit (e.g. Meet in Brave): does replayd send with `target_token={pid:app}`? The logging-pid rule would drop it; then only `scr:<bundle>` would catch it @sensors #tcc
 
-- [ ] [P1] Reboot test of `boot install`: `sudo uv run safemaxxing block 1.1.1.1`, `sudo uv run safemaxxing boot install`, reboot, then `sudo uv run safemaxxing boot status` (saved = live), `sudo pfctl -s info` Enabled, `curl -m 3 https://1.1.1.1` → 000, `cat /var/log/safemaxxing-boot.log`; also check the anchor survives if com.apple.pfctl loads pf.conf after our job @firewall #pf
 - [ ] [P2] Live `watch` with Photo Booth / Voice Memos: confirm they are hidden as system apps (`/System/Applications`) and shown with `--include-system` @correlation #macos
 - [ ] [P3] cmio `CMIODeviceStartStream backtrace N` lines count as extra camera events (32 for one start); cooldown collapses them, but `sample` counts are inflated @sensors #cmio
 
@@ -38,7 +37,8 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Completed
 
-- [x] [P1] Blocks can survive a reboot: `block`/`unblock`/`flush` save to `/Library/Application Support/safemaxxing/blocklist`; `boot install|status|uninstall` manage a launchd job that waits for pf.conf, loads the anchor, `pfctl -T add -f` the list and `pfctl -E`, using only /bin/sh and /sbin/pfctl. Script tested under sh with a fake pfctl; not yet tried across a real reboot (see **Next Up**) @firewall #pf (done: 2026-10-24 @2e55bba)
+- [x] [P1] Reboot test of `boot install`: after a real restart the job rebuilt the table (`1 table created`, `1/1 addresses added`) and re-enabled pf; `boot status` saved 1 = live 1, `curl https://1.1.1.1` timed out; see TESTLOG 2026-10-24 20:38 @firewall #pf (done: 2026-10-24, Mac run)
+- [x] [P1] Blocks can survive a reboot: `block`/`unblock`/`flush` save to `/Library/Application Support/safemaxxing/blocklist`; `boot install|status|uninstall` manage a launchd job that waits for pf.conf, loads the anchor, `pfctl -T add -f` the list and `pfctl -E`, using only /bin/sh and /sbin/pfctl. Script tested under sh with a fake pfctl, then across a real reboot @firewall #pf (done: 2026-10-24 @2e55bba)
 - [x] [P2] Indicator events of Apple apps are now hidden without `--include-system`: `system` only when every running process that may carry the bundle id (any enclosing .app, or an unreadable Info.plist outside SIP) runs from a SIP path. They stay correlated, so a spoofed bundle id still alerts. Hostile Info.plists (malformed, FIFO) no longer crash or hang `log stream` @sensors #system (done: 2026-10-23 @eb9c13b)
 - [x] [P3] `calaccessd` is a broker (checks Calendar/Reminders for routined): added to `BROKER_PROCESSES`, verbatim fixture; 7 false events gone on the real captures @sensors #tcc (done: 2026-10-23 @d9ca8c8)
 - [x] [P3] coreaudio closed as "indicator + TCC are enough": IO-start lines exist (audiomxd `input_running`) but add nothing over tccd's mic request and `mic:`; see TESTLOG 16:33 @sensors #mic (done: 2026-10-23, no code change)

@@ -14,6 +14,36 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-24 20:38 +0200] - Blocks across a real reboot with `boot install` (Mac)
+
+- **Environment:** macOS 27.0.1, arm64 Apple M4, sudo, branch `main` at c559b33.
+- **Goal:** TODO P1. Check that the launchd job from 2e55bba reapplies the saved blocks
+  after a real restart.
+- **Code changes:** none.
+- **Commands run:** `sudo uv run safemaxxing block 1.1.1.1`, `sudo uv run safemaxxing boot
+  install`, reboot, `sudo uv run safemaxxing boot status`, `curl -m 3 https://1.1.1.1`,
+  `cat /var/log/safemaxxing-boot.log`.
+- **Result and raw data:**
+  ```text
+  job ...restore.plist: installed=True loaded=True
+  saved /Library/Application Support/safemaxxing/blocklist: 1  live table: 1
+  curl: (28) Connection timed out after 3003 milliseconds
+  boot log, run 1 (install, live system): 0/1 addresses added. / pf enabled / Token : 8348…
+  boot log, run 2 (after reboot):         1 table created. / 1/1 addresses added. / pf enabled / Token : 6268…
+  ```
+  - Run 1 is the one-off run triggered by `launchctl bootstrap`: the IP was already in the
+    table, so `-T add` added 0 and removed nothing, as intended.
+  - Run 2 is the boot. `1 table created` shows that the table was gone after the restart and
+    the job rebuilt it. pf came back enabled and 1.1.1.1 stayed blocked.
+  - The wait loop let the job load only after `com.apple.pfctl` had loaded `/etc/pf.conf`,
+    and the anchor rule was still in effect afterwards (curl timed out).
+- **Problems / regressions:** none.
+  - The log fills with benign pfctl chatter (`-f` warning, ALTQ) and is appended on every
+    boot.
+  - Each run takes a new `pfctl -E` reference (one per boot, plus one per `boot install`).
+    The Inbox item about releasing the token covers this.
+- **Next steps:** tag `v0.1.0` once the screen-recording check is done.
+
 ## [2026-10-23 16:58 +0200] - System flag for Control Center indicator events (Mac)
 
 - **Environment:** macOS 27.0.1, arm64 Apple M4, uid 501 (no sudo), branch `main`,

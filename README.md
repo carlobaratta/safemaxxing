@@ -300,8 +300,8 @@ testabile anche su Linux (la CI gira su macOS).
 - **SNI**: oggi il nome host arriva dal reverse DNS. Estrarre lo SNI dal ClientHello richiede
   la cattura dei pacchetti (pcap/NE) ed è nella roadmap ([TODO.md](TODO.md)).
 - I blocchi sopravvivono al riavvio solo con `boot install` (vedi
-  [Blocchi dopo il riavvio](#blocchi-dopo-il-riavvio)). Il job non è ancora stato provato con
-  un riavvio reale. Le modifiche fatte a mano con `pfctl` non finiscono nella lista salvata.
+  [Blocchi dopo il riavvio](#blocchi-dopo-il-riavvio)); verificato con un riavvio reale su
+  macOS 27.0.1. Le modifiche fatte a mano con `pfctl` non finiscono nella lista salvata.
 - `SIGSTOP` su un'app GUI può lasciare finestre non responsive finché non si invia `SIGCONT`.
 
 ## Sviluppo
