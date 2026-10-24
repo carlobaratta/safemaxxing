@@ -2,10 +2,13 @@
 
 All notable changes are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
-[Semantic Versioning](https://semver.org/). No release has been tagged yet; everything so far
-is the first development line of 0.1.0.
+[Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
+
+## [0.1.0] - 2026-10-24
+
+First tagged release (alpha). Validated on macOS 27.0.1, Apple Silicon: see TESTLOG.md.
 
 ### Added
 
@@ -63,3 +66,6 @@ is the first development line of 0.1.0.
 - Without root, `doctor` now reports the pf checks and the socket snapshot as "needs root".
   It no longer reports a missing anchor. (bc5a019, 4d97f18)
 - Severity markup (`[high]`) was swallowed in the text output of `watch`. (071bdce)
+
+[Unreleased]: https://github.com/carlobaratta/safemaxxing/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/carlobaratta/safemaxxing/releases/tag/v0.1.0

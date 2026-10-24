@@ -8,8 +8,6 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Inbox
 
-- [ ] [P2] Tag `v0.1.0` on `main` (the screen-recording check is done); the `claude/*` branches stay as history (frozen at 40ed2b8) @process #release
-
 - [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design)
 
 ## Now (In Progress)
@@ -38,6 +36,7 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Completed
 
+- [x] [P2] Tagged `v0.1.0` on `main`; CHANGELOG `[Unreleased]` became `[0.1.0] - 2026-10-24`; the `claude/*` branches stay as history (frozen at 40ed2b8) @process #release (done: 2026-10-24)
 - [x] [P1] Screen *recording* live (Cmd+Shift+5, ~8 s inside a 25 s sample): replayd's own ScreenCapture requests plus `scr:com.apple.systemuiserver` on for 7.4 s = the recording; attributed to SIP system processes, so hidden without `--include-system` @sensors #tcc (done: 2026-10-24, Mac run 20:42, no code change)
 - [x] [P1] Reboot test of `boot install`: after a real restart the job rebuilt the table (`1 table created`, `1/1 addresses added`) and re-enabled pf; `boot status` saved 1 = live 1, `curl https://1.1.1.1` timed out; see TESTLOG 2026-10-24 20:38 @firewall #pf (done: 2026-10-24, Mac run)
 - [x] [P1] Blocks can survive a reboot: `block`/`unblock`/`flush` save to `/Library/Application Support/safemaxxing/blocklist`; `boot install|status|uninstall` manage a launchd job that waits for pf.conf, loads the anchor, `pfctl -T add -f` the list and `pfctl -E`, using only /bin/sh and /sbin/pfctl. Script tested under sh with a fake pfctl, then across a real reboot @firewall #pf (done: 2026-10-24 @2e55bba)
