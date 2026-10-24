@@ -8,28 +8,28 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Inbox
 
-- [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design)
 
 ## Now (In Progress)
 
+One Mac session with Google Meet in Brave (camera + mic on, then share a window), `sample` first, then `watch`:
+
+- [ ] [P2] Screen sharing from a third-party app via ScreenCaptureKit (e.g. Meet in Brave): does replayd send with `target_token={pid:app}`? The logging-pid rule would drop it; then only `scr:<bundle>` would catch it @sensors #tcc
+- [ ] [P3] coreaudiod's mic *preflight* for `screencapture` (`target_token={pid:3506}`, `preflight=true` only in tccd's REQUEST_MSG) became a `microphone` event with no `mic:` indicator; check against the Brave/Meet mic captures before dropping preflights @sensors #mic
 
 ## Next Up
 
-- [ ] [P3] One Cmd+Shift+5 recording gives 2 `scr:` events: a 24 ms `[scr:…]` → `[]` flicker comes before the real 7.4 s span (TESTLOG 2026-10-24 20:42) @sensors #indicator
-- [ ] [P3] coreaudiod's mic *preflight* for `screencapture` (`target_token={pid:3506}`, `preflight=true` only in tccd's REQUEST_MSG) became a `microphone` event with no `mic:` indicator; check against the Brave/Meet mic captures before dropping preflights @sensors #mic
-
-- [ ] [P2] Screen sharing from a third-party app via ScreenCaptureKit (e.g. Meet in Brave): does replayd send with `target_token={pid:app}`? The logging-pid rule would drop it; then only `scr:<bundle>` would catch it @sensors #tcc
-
-- [ ] [P2] Live `watch` with Photo Booth / Voice Memos: confirm they are hidden as system apps (`/System/Applications`) and shown with `--include-system` @correlation #macos
-- [ ] [P3] cmio `CMIODeviceStartStream backtrace N` lines count as extra camera events (32 for one start); cooldown collapses them, but `sample` counts are inflated @sensors #cmio
-
 - [ ] [P2] Grant Full Disk Access to the terminal and confirm the FDA check turns OK @cli #fda (System Settings → Privacy & Security → Full Disk Access)
 - [ ] [P2] Watch `sudo uv run safemaxxing tui` for freezes for a few minutes of normal browsing @network #dns
+- [ ] [P2] Live `watch` with Photo Booth / Voice Memos: confirm they are hidden as system apps (`/System/Applications`) and shown with `--include-system` @correlation #macos
+- [ ] [P3] One Cmd+Shift+5 recording gives 2 `scr:` events: a 24 ms `[scr:…]` → `[]` flicker comes before the real 7.4 s span (TESTLOG 2026-10-24 20:42) @sensors #indicator (fix together with the cmio item below, one commit, only if the Meet run shows inflated events)
+- [ ] [P3] cmio `CMIODeviceStartStream backtrace N` lines count as extra camera events (32 for one start); cooldown collapses them, but `sample` counts are inflated @sensors #cmio
+- [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design; proposal: keep it and say so in SECURITY.md)
+- [ ] [P2] launchd daemon for headless `watch` (the 0.2.0 feature; reuses the `boot` job's launchd setup) @packaging #launchd
 
 ## Backlog / Future
 
 - [ ] [P2] SNI / TLS ClientHello capture to name destinations without reverse DNS @network #sni
-- [ ] [P2] Packaging: signed, notarized build; launchd daemon for headless `watch` @packaging #release
+- [ ] [P2] Packaging: signed, notarized build @packaging #release
 - [ ] [P3] Menu-bar app (status, last alerts, one-click block) @ui #menubar
 - [ ] [P3] Read TCC.db (with Full Disk Access) to show which apps hold camera/mic grants @sensors #tcc
 - [ ] [P3] CI job on a macOS runner for the non-root parts of the live suite @ci #macos
