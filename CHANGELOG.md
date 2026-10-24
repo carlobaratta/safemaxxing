@@ -29,7 +29,7 @@ is the first development line of 0.1.0.
 - Blocks can survive a reboot. `block`, `unblock` and `flush` save each successful change to
   `/Library/Application Support/safemaxxing/blocklist`. `boot install` loads a launchd job
   that reapplies the list at boot with `/bin/sh` and `/sbin/pfctl` only. `boot status` and
-  `boot uninstall` show and remove it.
+  `boot uninstall` show and remove it. (2e55bba)
 
 ### Changed
 
