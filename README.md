@@ -302,6 +302,13 @@ testabile anche su Linux (la CI gira su macOS).
   mostra il nome solo se l'IP era già in cache; altrimenti mostra solo l'IP.
 - Il polling dei socket (default 200 ms) può perdere le connessioni brevissime. Un backend
   basato su Network Extension / Endpoint Security risolverebbe il problema.
+- **UDP non connesso**: i socket UDP mai `connect()`-ati non hanno un indirizzo remoto nella
+  tabella dei socket, quindi vengono scartati. Sono quelli di WebRTC e QUIC, usati per
+  esempio da una call Meet nel browser.
+  - Una call Meet in Brave non produce alert, perché il suo traffico non è visibile. Anche le
+    connessioni TCP verso Google sono già aperte e vengono riusate.
+  - Gli eventi sensore di Brave restano visibili e attribuiti correttamente (verificato il
+    2026-10-26, vedi [TESTLOG.md](TESTLOG.md)).
 - **SNI**: oggi il nome host arriva dal reverse DNS. Estrarre lo SNI dal ClientHello richiede
   la cattura dei pacchetti (pcap/NE) ed è nella roadmap ([TODO.md](TODO.md)).
 - I blocchi sopravvivono al riavvio solo con `boot install` (vedi

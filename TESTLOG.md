@@ -14,6 +14,41 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-26 13:27 +0100] - No Brave alert: Meet's traffic is on unconnected UDP (Mac)
+
+- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, sudo, branch `main` at b771031.
+  Brave 156.1.98.60, main process pid 6254.
+- **Goal:** TODO P2 in **Now**: get a live alert for Brave from a Meet share.
+- **Code changes:** none.
+- **Commands run:** `sudo uv run safemaxxing watch --events` while sharing in Meet. Then,
+  without root, during the call, a psutil `Process.net_connections(kind="inet")` count for
+  every Brave process, and `ps -o command= -p 6266` for the helper type.
+- **Result and raw data:** `watch` printed events only, no alert:
+  ```text
+  screen_capture com.brave.Browser pid=6254 (ScreenCapture)
+  camera         com.brave.Browser pid=None (indicator:cam)
+  screen_capture com.brave.Browser pid=None (indicator:scr)   ×5
+  ```
+  Brave's sockets during the call all belong to one helper process:
+  ```text
+  6266 Brave Browser Helper  utility-sub-type=network.mojom.NetworkService
+       tcp :443 with remote address  ×22
+       udp with NO remote address    ×12
+  ```
+  - Meet's media (WebRTC) and QUIC go over UDP sockets that are never `connect()`ed, so the
+    socket table has no remote address for them. `outbound_only` drops them by design: it
+    keeps only connected UDP. These flows cannot be seen, so nothing can be correlated.
+  - The TCP connections to Google were already open before the share and are reused.
+    Joining, sharing or turning on the camera opens no new TCP connection within the 2 s
+    window.
+  - So the attribution side is right (Brave pid 6254, `com.brave.Browser`). The alert cannot
+    happen with a socket-table egress source.
+- **Problems / regressions:** a known limit, not a bug. A browser-based call (WebRTC) does
+  not produce correlatable egress.
+- **Next steps:** the alert task leaves **Now**. Find out whether a per-process flow source
+  can see unconnected-UDP destinations, starting with `nettop` (NetworkStatistics), then pf
+  logging. Check this before designing anything.
+
 ## [2026-10-26 13:20 +0100] - Live `watch --events` during a Meet share in Brave (Mac)
 
 - **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, sudo, branch `main` at 5040508,

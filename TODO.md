@@ -11,7 +11,7 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Now (In Progress)
 
-- [ ] [P2] Live Brave alert from a share: open "Present" (or turn the camera on) in Meet *before* joining, then join while `sudo uv run safemaxxing watch --events` runs. A `screen_capture`/`camera` alert must name `com.brave.Browser` and a Brave helper's socket @correlation #macos (TESTLOG 2026-10-26 13:20: in a call already running, a share opens no new connection, so no alert)
+- [ ] [P2] Unconnected UDP egress: can a per-process flow source see the destinations of UDP sockets that are never `connect()`ed (WebRTC, QUIC)? Try `nettop` (NetworkStatistics) during a Meet call in Brave first, then pf logging. Only investigate: no design until a source shows Brave's NetworkService helper (`network.mojom.NetworkService`) with remote addresses @network #udp (TESTLOG 2026-10-26 13:27: 12 UDP sockets with no remote address, dropped by `outbound_only`)
 
 ## Next Up
 
@@ -34,6 +34,7 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Completed
 
+- [x] [P2] Live Brave alert from a Meet share: closed as not possible with the socket table. Meet's media/QUIC is on Brave's NetworkService helper (6266), on 12 UDP sockets with no remote address, and its TCP :443 connections are reused, so no new egress follows the event. Follow-up in **Now** @correlation #macos (done: 2026-10-26, Mac run 13:27, no code change)
 - [x] [P2] Live `watch --events` during a Meet share in Brave: `screen_capture com.brave.Browser pid=6254 (ScreenCapture)`, visible without `--include-system`; camera/mic attributed to Brave and its VideoCaptureService (6299) / AudioService (6298) helpers @sensors #tcc (done: 2026-10-26, Mac run 13:20 at 5040508, no code change)
 - [x] [P2] replayd's ScreenCapture requests attributed to the client from tccd's REQUEST_MSG `AUDIT_TOKEN_KEY={pid:N}`; `replayd` is a broker. Replay of the real samples: Brave 1761 ×540 and 6254 ×244, `screencapture` 3506 ×4, instead of `replayd`; Cmd+Shift+5 clients are still SIP binaries, so still hidden @sensors #tcc (done: 2026-10-26 @ff1c9f7, TESTLOG 10:41)
 - [x] [P2] Meet in Brave with a working window share (Brave restarted after the Screen Recording grant): all 244 replayd REQUEST_MSGs carry `AUDIT_TOKEN_KEY={pid:6254}` = Brave, none preflight; `scr:` shows as 10 short spans, not one continuous span @sensors #tcc (done: 2026-10-26, Mac run 10:30, no code change)
