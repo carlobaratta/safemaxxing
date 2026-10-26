@@ -6,6 +6,11 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-26
+
+Parser fixes from the Meet-in-Brave runs of 2026-10-26, checked by replaying every raw sample
+in `testlogs/` before and after each fix: see TESTLOG.md.
+
 ### Fixed
 
 - ScreenCaptureKit screen sharing is attributed to the app that captures, not to `replayd`.
@@ -14,6 +19,15 @@ All notable changes are listed here. The format follows
   system event, and only the `scr:` indicator named Brave. `replayd` now counts as a broker,
   so its own SEND lines and its mic preflights are no longer events. Its own non-sensor TCC
   checks are not reported either, which is the rule for other brokers. (ff1c9f7)
+- coreaudiod's TCC *preflights* (`preflight=true`) are no longer microphone or other TCC
+  events. Only tccd's `REQUEST_MSG` carries the flag, so the parser links every line of the
+  request through its `activityIdentifier` and drops them all. This removes the mic events
+  for `screencapture` (Cmd+Shift+5) and for Brave, which had no `mic:` indicator.
+  coreaudiod's real requests, such as a Voice Memos recording, still count. (1eb829f)
+- A Control Center attribution that comes back within 2 s of going off is now one use, not a
+  new event. Before, a Cmd+Shift+5 recording gave 2 `scr:` events, and a Brave window share
+  gave one per second. cmio's `CMIODeviceStartStream backtrace N` lines no longer count as
+  camera starts: Brave's single start gave 52 events, now 1. (7c7260c)
 
 ## [0.1.0] - 2026-10-24
 
@@ -76,5 +90,6 @@ First tagged release (alpha). Validated on macOS 27.0.1, Apple Silicon: see TEST
   It no longer reports a missing anchor. (34c9f53, fb802ee)
 - Severity markup (`[high]`) was swallowed in the text output of `watch`. (c6cdc44)
 
-[Unreleased]: https://github.com/carlobaratta/safemaxxing/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/carlobaratta/safemaxxing/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/carlobaratta/safemaxxing/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/carlobaratta/safemaxxing/releases/tag/v0.1.0

@@ -14,6 +14,54 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-26 13:54 +0100] - 0.1.1 parser fixes: coreaudiod preflights, indicator flicker, cmio backtraces (Mac)
+
+- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, branch `main` at 5fd92d0. The
+  fixes are 1eb829f and 7c7260c.
+- **Goal:** the three P3 parser items for 0.1.1, each fixed against the real samples.
+- **Code changes:** `sensors.py`.
+  - **coreaudiod preflights (1eb829f).** `SensorEventParser` links every line of a TCC request
+    through its `activityIdentifier`. One request's lines are coreaudiod's SEND, the
+    REQUEST_MSG in both tccds (system and user), FORWARD, Handling and Auth. coreaudiod's SEND
+    is held back. The whole request is dropped once tccd's REQUEST_MSG says `preflight=true`.
+    Lines with no activity id are judged one by one, as before.
+  - **Indicator flicker and cmio backtraces (7c7260c).**
+    - An indicator attribution that comes back within `INDICATOR_MERGE_S` = 2.0 s of going off
+      is not a new event. Short spans are kept: a blinking share is still detected.
+    - cmio lines containing `backtrace` no longer count as camera starts.
+- **Tests:** in `test_sensors.py`:
+  - three complete coreaudiod requests, rebuilt byte for byte from the samples (2026-10-24
+    screencapture preflight, 2026-10-26 Brave preflight, 2026-10-23 Voice Memos
+    `preflight=false`), plus the no-activity-id fallback and back-to-back requests;
+  - real indicator timelines with timestamps (Cmd+Shift+5 flicker, the 20-line Brave share,
+    the Voice Memos `loc:` 18 ms flap, two captures 11 s apart);
+  - Brave's cmio start line and two of its backtrace lines.
+
+  Two older indicator tests now carry their real timestamps. All new tests fail on the parser
+  before the fix.
+- **Commands run:** `ruff check .`, `ruff format --check .`, `mypy`, `pytest`, and a replay
+  of every raw `.jsonl` in `testlogs/` through `SensorEventParser` before and after each fix.
+- **Result and raw data:** ruff 0, mypy 0, 160 passed / 7 skipped. Replay, before → after:
+  ```text
+  coreaudiod preflights (1eb829f)
+    screen-recording   microphone 7 -> 0   (screencapture 3506 x4, systemuiserver 743, replayd 791 x2)
+    meet-brave         microphone 6 -> 1   (Brave 1761 x5 gone; the mic: indicator stays)
+    20261023-1424      microphone 42 -> 24, tcc 53 -> 43 (AudioCapture preflights); Photo Booth,
+                       Voice Memos, ring light still have TCC mic events
+    20261022-wide      microphone 33 -> 20, tcc 116 -> 111
+  indicator merge + cmio (7c7260c)
+    meet-brave         camera 55 -> 5, scr: indicator 13 -> 1
+    meet-brave-2       scr: indicator 10 -> 2   (two shares, 15 s apart)
+    screen-recording   scr: indicator 2 -> 1
+    20261023-1424      camera 40 -> 10, loc: indicator 2 -> 1 (18 ms flap)
+    20261022-wide      camera 42 -> 12
+  ```
+- **Problems / regressions:** none found. The re-add gaps in all samples are either at most
+  0.884 s (flicker) or at least 3.363 s (separate uses), so the 2 s merge window leaves
+  margin on both sides. The cost: two real uses of the same app and sensor less than 2 s
+  apart now give one indicator event.
+- **Next steps:** release 0.1.1.
+
 ## [2026-10-26 13:27 +0100] - No Brave alert: Meet's traffic is on unconnected UDP (Mac)
 
 - **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, sudo, branch `main` at b771031.

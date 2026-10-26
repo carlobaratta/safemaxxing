@@ -27,7 +27,7 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
      └── k  → SIGKILL 4242
 ```
 
-> **Stato:** alpha (0.1.0). Validato su macOS 27.0.1, Apple Silicon (vedi
+> **Stato:** alpha (0.1.1). Validato su macOS 27.0.1, Apple Silicon (vedi
 > [TESTLOG.md](TESTLOG.md)); test unitari in CI su macOS arm64 e Intel. Gira come root e
 > modifica pf: leggi [SECURITY.md](SECURITY.md) prima di usare le azioni automatiche.
 
@@ -62,6 +62,14 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
     condivide una finestra in Meet, non a `replayd`.
   - Sono scartati anche i controlli `com.apple.private.tcc.manager` che i daemon fanno per
     conto di altri.
+  - Sono scartati anche i *preflight* di `coreaudiod`, cioè le verifiche fatte quando un'app
+    apre l'audio senza usare il microfono. Solo il `REQUEST_MSG` di `tccd` dice
+    `preflight=true`, ma tutte le righe della stessa richiesta hanno lo stesso
+    `activityIdentifier`, quindi viene scartata la richiesta intera.
+  - Un'attribuzione dell'indicatore che si spegne e si riaccende entro 2 s conta come un solo
+    uso. Durante una condivisione di Brave l'indicatore lampeggia circa una volta al secondo.
+  - Le righe `CMIODeviceStartStream backtrace N` di cmio sono lo stack dell'avvio appena
+    loggato, non nuovi avvii della fotocamera.
 - **Socket mapper**: polling della tabella socket via `psutil`, con fallback `lsof -F`.
   - Tiene solo le connessioni *in uscita*: TCP `SYN_SENT`/`ESTABLISHED` non accettate su porte
     in ascolto, e UDP connessi.

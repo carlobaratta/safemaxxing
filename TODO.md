@@ -15,12 +15,9 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Next Up
 
-- [ ] [P3] Drop coreaudiod's mic *preflights* (`preflight=true` only in tccd's REQUEST_MSG): two runs show them with no real mic use (pid 3506 on 2026-10-24, Brave pid 1761 127 ms after the Screen Recording grant on 2026-10-26); the real Meet mic start had no TCC request, only `mic:` @sensors #mic
 - [ ] [P2] Grant Full Disk Access to the terminal and confirm the FDA check turns OK @cli #fda (System Settings → Privacy & Security → Full Disk Access)
 - [ ] [P2] Watch `sudo uv run safemaxxing tui` for freezes for a few minutes of normal browsing @network #dns
 - [ ] [P2] Live `watch` with Photo Booth / Voice Memos: confirm they are hidden as system apps (`/System/Applications`) and shown with `--include-system` @correlation #macos
-- [ ] [P3] One Cmd+Shift+5 recording gives 2 `scr:` events: a 24 ms `[scr:…]` → `[]` flicker comes before the real 7.4 s span (TESTLOG 2026-10-24 20:42) @sensors #indicator (fix together with the cmio item below, one commit: the Meet runs on 2026-10-26 showed inflated events. Merge spans less than about 1 s apart; do not drop short spans, because a working Brave window share shows as 101–147 ms spans once per second, TESTLOG 10:30)
-- [ ] [P3] cmio `CMIODeviceStartStream backtrace N` lines count as extra camera events (32 for one start; 52 for Brave's one start on 2026-10-26); cooldown collapses them, but `sample` counts are inflated @sensors #cmio
 - [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design; proposal: keep it and say so in SECURITY.md)
 - [ ] [P2] launchd daemon for headless `watch` (the 0.2.0 feature; reuses the `boot` job's launchd setup) @packaging #launchd
 
@@ -34,6 +31,9 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Completed
 
+- [x] [P2] Released `v0.1.1` (alpha) on `main`: CHANGELOG `[0.1.1] - 2026-10-26`, `__version__` 0.1.1, GitHub pre-release like 0.1.0 @process #release (done: 2026-10-26)
+- [x] [P3] Indicator flicker merged: an attribution back within 2 s (`INDICATOR_MERGE_S`) of going off is the same use; short spans are kept, so a blinking Brave share is one event per share. cmio `backtrace N` lines dropped. Replay: camera 55 → 5 (Brave), 40 → 10, 42 → 12; `scr:` 10 → 2, 13 → 1, 2 → 1 @sensors #indicator (done: 2026-10-26 @7c7260c, TESTLOG 13:54)
+- [x] [P3] coreaudiod TCC preflights dropped: the whole request is linked by `activityIdentifier` and dropped when tccd's REQUEST_MSG says `preflight=true`; real requests (Voice Memos, `preflight=false`) still count. Replay: no mic event left for `screencapture` 3506 or Brave 1761 @sensors #mic (done: 2026-10-26 @1eb829f, TESTLOG 13:54)
 - [x] [P2] Live Brave alert from a Meet share: closed as not possible with the socket table. Meet's media/QUIC is on Brave's NetworkService helper (6266), on 12 UDP sockets with no remote address, and its TCP :443 connections are reused, so no new egress follows the event. Follow-up in **Now** @correlation #macos (done: 2026-10-26, Mac run 13:27, no code change)
 - [x] [P2] Live `watch --events` during a Meet share in Brave: `screen_capture com.brave.Browser pid=6254 (ScreenCapture)`, visible without `--include-system`; camera/mic attributed to Brave and its VideoCaptureService (6299) / AudioService (6298) helpers @sensors #tcc (done: 2026-10-26, Mac run 13:20 at 5040508, no code change)
 - [x] [P2] replayd's ScreenCapture requests attributed to the client from tccd's REQUEST_MSG `AUDIT_TOKEN_KEY={pid:N}`; `replayd` is a broker. Replay of the real samples: Brave 1761 ×540 and 6254 ×244, `screencapture` 3506 ×4, instead of `replayd`; Cmd+Shift+5 clients are still SIP binaries, so still hidden @sensors #tcc (done: 2026-10-26 @ff1c9f7, TESTLOG 10:41)
