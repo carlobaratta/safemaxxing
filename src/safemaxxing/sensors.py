@@ -333,7 +333,9 @@ def parse_entry(entry: Mapping[str, object]) -> Event | None:
         ):
             return None
     elif subsystem.startswith(SUBSYSTEM_CMIO):
-        if not _contains_any(lowered, CAMERA_HINTS):
+        # "CMIODeviceStartStream backtrace N ..." dumps the stack of the start line before it:
+        # 30-50 lines per camera start on macOS 27.0.1, none of them a new start.
+        if not _contains_any(lowered, CAMERA_HINTS) or "backtrace" in lowered:
             return None
         sensor = SensorType.CAMERA
         pid, bundle = _attribute(message, log_pid, process_name)
@@ -394,6 +396,9 @@ INDICATOR_SENSORS: Mapping[str, SensorType] = {
     "scr": SensorType.SCREEN_CAPTURE,
 }
 _ATTRIBUTION_RE = re.compile(r'"(\w+):([^"]+)"')
+# An attribution back within this long after going off is the same use flickering (macOS 27.0.1:
+# a 24 ms gap before a Cmd+Shift+5 recording, gaps up to 0.884 s while Brave shares a window).
+INDICATOR_MERGE_S = 2.0
 
 
 def parse_attributions(message: str) -> frozenset[tuple[str, str]] | None:
@@ -410,8 +415,11 @@ class SensorEventParser:
     It also drops coreaudiod's TCC *preflights*. Only tccd's REQUEST_MSG says `preflight=true`,
     but every line of one request shares its activityIdentifier (macOS 27.0.1)."""
 
-    def __init__(self, max_requests: int = 1024) -> None:
+    def __init__(self, max_requests: int = 1024, merge_s: float = INDICATOR_MERGE_S) -> None:
         self._active: frozenset[tuple[str, str]] = frozenset()
+        # Attributions that went off, and when: one coming back within `merge_s` is not new.
+        self._off_since: dict[tuple[str, str], float] = {}
+        self._merge_s = merge_s
         # activityIdentifier of a coreaudiod request -> whether tccd said it is a preflight.
         self._requests: dict[int, bool] = {}
         self._max_requests = max_requests
@@ -452,8 +460,13 @@ class SensorEventParser:
         current = parse_attributions(message)
         if current is None:
             return []
-        added, self._active = current - self._active, current
         timestamp = parse_timestamp(_str(entry, "timestamp"))
+        for gone in self._active - current:
+            self._off_since[gone] = timestamp
+        horizon = timestamp - self._merge_s
+        added = [a for a in current - self._active if self._off_since.pop(a, horizon) <= horizon]
+        self._active = current
+        self._off_since = {k: t for k, t in self._off_since.items() if t > horizon}
         return [
             Event(
                 timestamp=timestamp,

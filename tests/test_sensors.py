@@ -417,7 +417,7 @@ def _entry(
     }
 
 
-def _indicator(message: str) -> dict[str, object]:
+def _indicator(message: str, timestamp: str | None = None) -> dict[str, object]:
     return _entry(
         "com.apple.controlcenter",
         "ControlCenter",
@@ -425,7 +425,20 @@ def _indicator(message: str) -> dict[str, object]:
         pid=500,
         category="sensor-indicators",
         messageType="Default",
+        **({} if timestamp is None else {"timestamp": timestamp}),
     )
+
+
+def _indicator_timeline(timeline: list[tuple[str, str]]) -> list[tuple[SensorType, str | None]]:
+    """(timestamp, attribution list) pairs through one parser -> (sensor, bundle) emitted."""
+    parser = SensorEventParser()
+    return [
+        (event.sensor, event.bundle_id)
+        for timestamp, attributions in timeline
+        for event in parser.parse(
+            _indicator(f"Active activity attributions changed to {attributions}", timestamp)
+        )
+    ]
 
 
 def test_control_center_indicator_emits_only_new_attributions() -> None:
@@ -440,34 +453,106 @@ def test_control_center_indicator_emits_only_new_attributions() -> None:
     assert (loc.sensor, loc.bundle_id) == (SensorType.LOCATION, "com.apple.VoiceMemos")
     assert parser.parse(_indicator("Active activity attributions changed to []")) == []
     (again,) = parser.parse(
-        _indicator('Active activity attributions changed to ["cam:com.apple.PhotoBooth"]')
+        _indicator(
+            'Active activity attributions changed to ["cam:com.apple.PhotoBooth"]',
+            "2026-10-22 13:00:05.000000+0200",
+        )
     )
     assert again.sensor is SensorType.CAMERA
 
 
 def test_real_indicator_sequence_with_camera_location_and_microphone() -> None:
     # Verbatim, in order, from macOS 27.0.1 (2026-10-23 14:24): Photo Booth opened, then a
-    # Voice Memos recording (location flaps while it tags the recording).
-    sequence = [
-        '["cam:com.apple.PhotoBooth"]',
-        '["cam:com.apple.PhotoBooth", "loc:com.apple.VoiceMemos"]',
-        '["cam:com.apple.PhotoBooth"]',
-        '["cam:com.apple.PhotoBooth", "loc:com.apple.VoiceMemos"]',
-        '["cam:com.apple.PhotoBooth", "loc:com.apple.VoiceMemos", "mic:com.apple.VoiceMemos"]',
-    ]
-    parser = SensorEventParser()
-    emitted = [
-        (event.sensor, event.bundle_id)
-        for attributions in sequence
-        for event in parser.parse(
-            _indicator(f"Active activity attributions changed to {attributions}")
-        )
-    ]
+    # Voice Memos recording. Location flaps off for 18 ms while it tags the recording: one use.
+    emitted = _indicator_timeline(
+        [
+            ("2026-10-23 14:25:32.641389+0200", '["cam:com.apple.PhotoBooth"]'),
+            (
+                "2026-10-23 14:25:40.034687+0200",
+                '["cam:com.apple.PhotoBooth", "loc:com.apple.VoiceMemos"]',
+            ),
+            ("2026-10-23 14:25:40.149396+0200", '["cam:com.apple.PhotoBooth"]'),
+            (
+                "2026-10-23 14:25:40.167351+0200",
+                '["cam:com.apple.PhotoBooth", "loc:com.apple.VoiceMemos"]',
+            ),
+            (
+                "2026-10-23 14:25:41.739172+0200",
+                '["cam:com.apple.PhotoBooth", "loc:com.apple.VoiceMemos", "mic:com.apple.VoiceMemos"]',
+            ),
+        ]
+    )
     assert emitted == [
         (SensorType.CAMERA, "com.apple.PhotoBooth"),
         (SensorType.LOCATION, "com.apple.VoiceMemos"),
-        (SensorType.LOCATION, "com.apple.VoiceMemos"),
         (SensorType.MICROPHONE, "com.apple.VoiceMemos"),
+    ]
+
+
+def test_cmd_shift_5_recording_flicker_is_one_event() -> None:
+    # Verbatim from macOS 27.0.1, 2026-10-24 20:42: a 24 ms flicker, then the 7.4 s recording.
+    emitted = _indicator_timeline(
+        [
+            ("2026-10-24 20:42:23.252423+0200", '["scr:com.apple.systemuiserver"]'),
+            ("2026-10-24 20:42:23.276718+0200", "[]"),
+            ("2026-10-24 20:42:23.640664+0200", '["scr:com.apple.systemuiserver"]'),
+            ("2026-10-24 20:42:31.037433+0200", "[]"),
+        ]
+    )
+    assert emitted == [(SensorType.SCREEN_CAPTURE, "com.apple.systemuiserver")]
+
+
+def test_brave_window_share_blinking_indicator_is_one_event_per_share() -> None:
+    # Verbatim from macOS 27.0.1, 2026-10-26 10:30: one share shows as ~130 ms spans once a
+    # second (gaps up to 0.884 s); a second share starts 15 s after the first ends.
+    on, off = '["scr:com.brave.Browser"]', "[]"
+    times = [
+        "10:30:56.146216", "10:30:56.293941", "10:30:57.148602", "10:30:57.279031",
+        "10:30:58.152232", "10:30:58.282264", "10:30:59.162421", "10:30:59.288096",
+        "10:31:14.467690", "10:31:14.612854", "10:31:15.488936", "10:31:15.612858",
+        "10:31:16.497026", "10:31:16.634499", "10:31:17.499273", "10:31:17.622472",
+        "10:31:18.484008", "10:31:18.585392", "10:31:18.624089", "10:31:18.652196",
+    ]  # fmt: skip
+    timeline = [(f"2026-10-26 {t}+0100", on if i % 2 == 0 else off) for i, t in enumerate(times)]
+    assert _indicator_timeline(timeline) == [(SensorType.SCREEN_CAPTURE, "com.brave.Browser")] * 2
+
+
+def test_cmio_start_stream_backtrace_lines_are_not_extra_camera_starts() -> None:
+    # Verbatim from macOS 27.0.1, 2026-10-26 10:23:40: Brave's camera start (pid 2526), then
+    # the first two of its backtrace lines (52 camera events in all before this fix).
+    helper = (
+        "/Applications/Brave Browser.app/Contents/Frameworks/Brave Browser Framework.framework/"
+        "Versions/155.1.97.59/Helpers/Brave Browser Helper.app/Contents/MacOS/Brave Browser Helper"
+    )
+    messages = [
+        "CMIOHardware.cpp:741:CMIODeviceStartStream (35 36)",
+        "CMIOHardware.cpp:747:CMIODeviceStartStream backtrace 0   CoreMediaIO                "
+        "         0x000000019f76411c CMIODeviceStartStream + 212    [0x19f6fa000 + 434460]",
+        "CMIOHardware.cpp:747:CMIODeviceStartStream backtrace 1   CMIOBaseUnits              "
+        "         0x00000001164d3400 CMIOUnitVideoToolboxCompressorEntry + 48672    "
+        "[0x116438000 + 635904]",
+    ]
+    events = [
+        parse_entry(_entry("com.apple.cmio", "", m, pid=2526, processImagePath=helper))
+        for m in messages
+    ]
+    start, *backtrace = events
+    assert start is not None and (start.sensor, start.pid) == (SensorType.CAMERA, 2526)
+    assert backtrace == [None, None]
+
+
+def test_indicator_flicker_merge_is_per_attribution() -> None:
+    # Constructed: Photo Booth's camera going off does not hide Voice Memos' camera coming on.
+    emitted = _indicator_timeline(
+        [
+            ("2026-10-22 13:00:00.000000+0200", '["cam:com.apple.PhotoBooth"]'),
+            ("2026-10-22 13:00:00.100000+0200", "[]"),
+            ("2026-10-22 13:00:00.200000+0200", '["cam:com.apple.VoiceMemos"]'),
+        ]
+    )
+    assert emitted == [
+        (SensorType.CAMERA, "com.apple.PhotoBooth"),
+        (SensorType.CAMERA, "com.apple.VoiceMemos"),
     ]
 
 
@@ -856,14 +941,14 @@ def _replayd_request(msg_id: str, subject_pid: int, prompt_policy: int = 2) -> s
 
 def test_real_screen_capture_indicator_and_replayd_request_for_client() -> None:
     # Verbatim from macOS 27.0.1, 2026-10-23: two Cmd+Shift+5 captures.
-    parser = SensorEventParser()
-    emitted = [
-        (event.sensor, event.bundle_id)
-        for attributions in ('["scr:com.apple.systemuiserver"]', "[]") * 2
-        for event in parser.parse(
-            _indicator(f"Active activity attributions changed to {attributions}")
-        )
-    ]
+    emitted = _indicator_timeline(
+        [
+            ("2026-10-23 14:34:56.458282+0200", '["scr:com.apple.systemuiserver"]'),
+            ("2026-10-23 14:34:56.465925+0200", "[]"),
+            ("2026-10-23 14:35:07.546127+0200", '["scr:com.apple.systemuiserver"]'),
+            ("2026-10-23 14:35:07.556026+0200", "[]"),
+        ]
+    )
     assert emitted == [(SensorType.SCREEN_CAPTURE, "com.apple.systemuiserver")] * 2
     # replayd asks on behalf of the capturing client: tccd names it in the subject audit token.
     request = _entry("com.apple.TCC", "tccd", _replayd_request("733.14", 37712), pid=407)
