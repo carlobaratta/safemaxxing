@@ -952,6 +952,189 @@ def test_audit_token_of_other_services_is_not_a_screen_capture() -> None:
     assert parse_entry(_entry("com.apple.TCC", "tccd", message, pid=399)) is None
 
 
+_COREAUDIOD = "/usr/sbin/coreaudiod"
+_TCCD = "/System/Library/PrivateFrameworks/TCC.framework/Support/tccd"
+
+
+def _mic_request(msg_id: str, client: int, preflight: str, forwarded: bool = False) -> str:
+    """tccd's REQUEST_MSG for a coreaudiod mic request, verbatim from macOS 27.0.1."""
+    forwarder = (
+        "\tTCCD_MSG_MESSAGE_OPTION_USAGE_STRING_POLICY_AUTHORIZED_BY_FORWARDER_KEY=false\n"
+        if forwarded
+        else ""
+    )
+    return (
+        f"REQUEST_MSG: msgID={msg_id}, msg={{\n{forwarder}\trequire_purpose=<xpc_null>\n"
+        '\tservice="kTCCServiceMicrophone"\n\tfunction="TCCAccessRequest"\n'
+        f"\tpreflight={preflight}\n\ttarget_token={{pid:{client}, auid:501, euid:501}}\n"
+        f'\tTCCD_MSG_ID="{msg_id}"\n\tbackground_session=false\n}}'
+    )
+
+
+def _mic_send(msg_id: str, client: int) -> str:
+    return (
+        f"SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID={msg_id}, "
+        "function=TCCAccessRequest, service=kTCCServiceMicrophone, "
+        f"target_token={{pid:{client}, auid:501, euid:501}},"
+    )
+
+
+def _manager(daemon_pid: int) -> str:
+    return (
+        f"<TCCDProcess: identifier=com.apple.audio.coreaudiod, pid={daemon_pid}> has the "
+        "com.apple.private.tcc.manager.check-by-audit-token entitlement for service "
+        "kTCCServiceMicrophone (composed to parent: (null))"
+    )
+
+
+_HANDLED = "system tccd handled entitlements check for: kTCCServiceMicrophone"
+
+# One coreaudiod mic request each, every line of it, verbatim from macOS 27.0.1. All lines of
+# one request share its activityIdentifier (coreaudiod's SEND, both tccds, the forward).
+COREAUDIOD_PREFLIGHT_FOR_SCREENCAPTURE = (  # 2026-10-24 20:42, Cmd+Shift+5, no mic input
+    167075,
+    [
+        (_COREAUDIOD, 591, _mic_send("591.81", 3506)),
+        (_TCCD, 399, _mic_request("591.81", 3506, "true")),
+        (_TCCD, 399, _manager(591)),
+        (
+            _TCCD,
+            399,
+            "<TCCDProcess: identifier=com.apple.screencapture, pid=3506> has the "
+            "com.apple.private.tcc.check-allow-on-responsible-process entitlement for service "
+            "kTCCServiceMicrophone (composed to parent: (null))",
+        ),
+        (
+            _TCCD,
+            399,
+            "<TCCDProcess: identifier=com.apple.systemuiserver, pid=743> has the "
+            "com.apple.private.tcc.allow entitlement for service kTCCServiceMicrophone "
+            "(composed to parent: (null))",
+        ),
+        (
+            _TCCD,
+            399,
+            "Auth:Allowed (Entitled) to kTCCServiceMicrophone because accessing process "
+            "TCCDProcess: identifier=com.apple.screencapture, pid=3506, auid=501, euid=501, "
+            "binary_path=/usr/sbin/screencapture has the check-allow-on-responsible-process "
+            "entitlement and responsible process TCCDProcess: identifier=com.apple.systemuiserver, "
+            "pid=743, auid=501, euid=501, responsible_path=/System/Library/CoreServices/"
+            "SystemUIServer.app/Contents/MacOS/SystemUIServer, binary_path=/System/Library/"
+            "CoreServices/SystemUIServer.app/Contents/MacOS/SystemUIServer has corresponding "
+            "allow entitlement",
+        ),
+        (_TCCD, 399, _HANDLED),
+    ],
+)
+COREAUDIOD_PREFLIGHT_FOR_BRAVE = (  # 2026-10-26 10:23:57, Screen Recording just granted
+    191760,
+    [
+        (_COREAUDIOD, 554, _mic_send("554.126", 1761)),
+        (_TCCD, 399, _mic_request("554.126", 1761, "true")),
+        (_TCCD, 399, _manager(554)),
+        (_TCCD, 399, _manager(554)),
+        (
+            _TCCD,
+            399,
+            "FORWARD: to=com.apple.tccd/501, request: "
+            + _mic_request("554.126", 1761, "true", forwarded=True).split("msg=", 1)[1],
+        ),
+        (_TCCD, 654, _mic_request("554.126", 1761, "true", forwarded=True)),
+        (
+            _TCCD,
+            654,
+            "AUTHREQ_CTX: msgID=554.126, function=<private>, service=kTCCServiceMicrophone, "
+            "preflight=yes, query=1, client_dict=(null), daemon_dict=<private>",
+        ),
+        (
+            _TCCD,
+            654,
+            "Handling access request to kTCCServiceMicrophone, from Sub:{com.brave.Browser}"
+            "Resp:{TCCDProcess: identifier=com.brave.Browser, pid=1761, auid=501, euid=501, "
+            "binary_path=/Applications/Brave Browser.app/Contents/MacOS/Brave Browser}, "
+            "ReqResult(Auth Right: Allowed (User Consent), promptType: 1,DB Action:None)",
+        ),
+    ],
+)
+COREAUDIOD_REQUEST_FOR_VOICE_MEMOS = (  # 2026-10-23 14:25:41, Voice Memos recording
+    966506,
+    [
+        (_COREAUDIOD, 525, _mic_send("525.376", 34399)),
+        (_TCCD, 407, _mic_request("525.376", 34399, "false")),
+        (_TCCD, 407, _manager(525)),
+        (
+            _TCCD,
+            407,
+            "<TCCDProcess: identifier=com.apple.VoiceMemos, pid=34399> has the "
+            "com.apple.private.tcc.allow entitlement for service kTCCServiceMicrophone "
+            "(composed to parent: (null))",
+        ),
+        (
+            _TCCD,
+            407,
+            "Auth:Allowed (Entitled) to kTCCServiceMicrophone for TCCDProcess: "
+            "identifier=com.apple.VoiceMemos, pid=34399, auid=501, euid=501, "
+            "binary_path=/System/Applications/VoiceMemos.app/Contents/MacOS/VoiceMemos; "
+            "checked by TCCDProcess: identifier=com.apple.audio.coreaudiod, pid=525, auid=202, "
+            "euid=202, binary_path=/usr/sbin/coreaudiod because: IsTCCManager",
+        ),
+        (_TCCD, 407, _HANDLED),
+    ],
+)
+
+
+def _request_entries(
+    request: tuple[int, list[tuple[str, int, str]]], activity: int | None = None
+) -> list[dict[str, object]]:
+    default, lines = request
+    return [
+        _entry(
+            "com.apple.TCC",
+            "",
+            message,
+            pid=pid,
+            processImagePath=path,
+            activityIdentifier=default if activity is None else activity,
+        )
+        for path, pid, message in lines
+    ]
+
+
+def _mic_pids(entries: list[dict[str, object]]) -> list[int | None]:
+    parser = SensorEventParser()
+    return [e.pid for entry in entries for e in parser.parse(entry)]
+
+
+@pytest.mark.parametrize(
+    "request_",
+    [COREAUDIOD_PREFLIGHT_FOR_SCREENCAPTURE, COREAUDIOD_PREFLIGHT_FOR_BRAVE],
+    ids=["screencapture", "brave"],
+)
+def test_coreaudiod_mic_preflight_is_not_a_mic_access(
+    request_: tuple[int, list[tuple[str, int, str]]],
+) -> None:
+    # Before: 4-5 microphone events per preflight, with no `mic:` indicator at all.
+    assert _mic_pids(_request_entries(request_)) == []
+
+
+def test_coreaudiod_real_mic_request_still_counts() -> None:
+    # preflight=false: Voice Memos recording. coreaudiod's SEND waits for tccd's REQUEST_MSG.
+    assert _mic_pids(_request_entries(COREAUDIOD_REQUEST_FOR_VOICE_MEMOS)) == [34399] * 3
+
+
+def test_coreaudiod_preflight_without_activity_id_falls_back_to_per_line() -> None:
+    # activityIdentifier 0 links nothing: every line is judged on its own, as before.
+    pids = _mic_pids(_request_entries(COREAUDIOD_PREFLIGHT_FOR_BRAVE, activity=0))
+    assert pids and set(pids) == {1761}
+
+
+def test_preflight_of_one_request_does_not_hide_the_next() -> None:
+    entries = _request_entries(COREAUDIOD_PREFLIGHT_FOR_BRAVE) + _request_entries(
+        COREAUDIOD_REQUEST_FOR_VOICE_MEMOS
+    )
+    assert _mic_pids(entries) == [34399] * 3
+
+
 def test_calaccessd_tcc_checks_on_behalf_of_others_are_not_accesses() -> None:
     # Verbatim from macOS 27.0.1 (2026-10-22 13:17): calaccessd checking Calendar for routined.
     send = _entry(

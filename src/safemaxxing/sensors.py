@@ -405,16 +405,47 @@ def parse_attributions(message: str) -> frozenset[tuple[str, str]] | None:
 
 class SensorEventParser:
     """Stateful wrapper around `parse_entry`: indicator lines carry the full active set, so an
-    event is emitted only for attributions that were not active in the previous update."""
+    event is emitted only for attributions that were not active in the previous update.
 
-    def __init__(self) -> None:
+    It also drops coreaudiod's TCC *preflights*. Only tccd's REQUEST_MSG says `preflight=true`,
+    but every line of one request shares its activityIdentifier (macOS 27.0.1)."""
+
+    def __init__(self, max_requests: int = 1024) -> None:
         self._active: frozenset[tuple[str, str]] = frozenset()
+        # activityIdentifier of a coreaudiod request -> whether tccd said it is a preflight.
+        self._requests: dict[int, bool] = {}
+        self._max_requests = max_requests
 
     def parse(self, entry: Mapping[str, object]) -> list[Event]:
-        if _str(entry, "subsystem") == SUBSYSTEM_CONTROLCENTER:
+        subsystem = _str(entry, "subsystem")
+        if subsystem == SUBSYSTEM_CONTROLCENTER:
             return self._indicator(entry)
+        if subsystem == SUBSYSTEM_TCC and self._in_broker_preflight(entry):
+            return []
         event = parse_entry(entry)
         return [] if event is None else [event]
+
+    def _in_broker_preflight(self, entry: Mapping[str, object]) -> bool:
+        """Whether `entry` belongs to a coreaudiod request that is only a preflight, i.e. a
+        check made when an app opens audio, not mic use (2026-10-24 screencapture, 2026-10-26
+        Brave: no `mic:` indicator). coreaudiod's own SEND is held back until tccd decides."""
+        activity = _int(entry, "activityIdentifier")
+        if not activity:
+            return False
+        message = _str(entry, "eventMessage")
+        if PurePosixPath(_str(entry, "processImagePath")).name == "coreaudiod":
+            if message.startswith("SEND:"):
+                if len(self._requests) >= self._max_requests:
+                    del self._requests[next(iter(self._requests))]
+                self._requests[activity] = False
+                return True
+            return False
+        preflight = self._requests.get(activity)
+        if preflight is None:
+            return False
+        if message.startswith("REQUEST_MSG:") and "preflight=true" in message:
+            self._requests[activity] = preflight = True
+        return preflight
 
     def _indicator(self, entry: Mapping[str, object]) -> list[Event]:
         message = _str(entry, "eventMessage")
