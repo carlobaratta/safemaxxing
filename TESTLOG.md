@@ -14,6 +14,49 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-26 13:20 +0100] - Live `watch --events` during a Meet share in Brave (Mac)
+
+- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, sudo, branch `main` at 5040508,
+  which includes the fix ff1c9f7. Brave 156.1.98.60, main process pid 6254.
+- **Goal:** TODO P2 in **Now**. Check live that the screen-capture event names Brave and
+  stays visible without `--include-system`.
+- **Code changes:** none.
+- **Commands run:** first `sudo uv run safemaxxing watch`, then
+  `sudo uv run safemaxxing watch --events`. During each run, in a Meet call already in
+  progress: "Present → A window", then camera on, then mic on. The time is approximate: the
+  terminal output has no timestamps. The helper pids were read afterwards with
+  `ps -o command= -p 6298,6299`.
+- **Result and raw data:** the first run printed one alert and nothing for Brave:
+  `ALERT #1 [medium] com.anthropic.claude-code used tcc then connected to
+  160.79.104.10:443 after 692 ms`. This is the Claude Code session itself: a TCC check, then
+  HTTPS to the Anthropic API. The `--events` run printed:
+  ```text
+  screen_capture com.brave.Browser pid=6254 (ScreenCapture)      <- replayd's request, now Brave's
+  screen_capture com.brave.Browser pid=None (indicator:scr)      ×4
+  tcc            com.avast.Antivirus.EndpointSecurity pid=1165 (SystemPolicyAllFiles)
+  camera         com.brave.Browser pid=6299 (Camera)             ×2  VideoCaptureService helper
+  camera         com.brave.Browser pid=6254 (Camera)             ×2
+  camera         com.brave.Browser pid=None (indicator:cam)      ×2
+  microphone     com.brave.Browser pid=6298 (Microphone)         ×3  AudioService helper
+  microphone     com.brave.Browser pid=6254 (Microphone)         ×3
+  microphone     com.brave.Browser pid=None (indicator:mic)      ×2
+  ```
+  - **The fix works live.** The share shows up as one `ScreenCapture` TCC event for Brave
+    pid 6254, visible without `--include-system`. Before ff1c9f7 it would have been
+    `replayd` and hidden. The listener's 1 s cooldown collapses replayd's ~30 requests/s into
+    one event.
+  - The `scr:` indicator gives 4 events for one share, because it flickers once per second
+    (TESTLOG 10:30).
+  - Camera and mic are attributed both to the main process and to Brave's helper for that
+    sensor: 6299 is `video_capture.mojom.VideoCaptureService`, 6298 is
+    `audio.mojom.AudioService`. All of them carry `com.brave.Browser`, so the bundle match in
+    `same_actor` correlates them with the sockets of any Brave helper.
+- **Problems / regressions:** none. There was no Brave alert, as expected: in a call already
+  in progress, starting a share, the camera or the mic opens no new outbound connection
+  within the 2 s window. So the correlation with Brave's sockets is not verified live yet.
+- **Next steps:** to get a Brave alert, open "Present" or turn the camera on *before*
+  joining the call, then join. The connections of the join come right after the event.
+
 ## [2026-10-26 10:41 +0100] - replayd's ScreenCapture requests go to the audit-token subject (Mac)
 
 - **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, branch `main` at 240eff1; the
