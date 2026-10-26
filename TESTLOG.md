@@ -14,6 +14,43 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-26 10:41 +0100] - replayd's ScreenCapture requests go to the audit-token subject (Mac)
+
+- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, branch `main` at 240eff1; the
+  fix is ff1c9f7.
+- **Goal:** TODO P2 in **Now**. Attribute replayd's ScreenCapture requests to the client
+  that tccd names in `TCCD_MSG_CREDENTIAL_AUTHENTICATOR_AUDIT_TOKEN_KEY={pid:N}`.
+- **Code changes:** `sensors.py`. `replayd` is added to `BROKER_PROCESSES`. A ScreenCapture
+  line that carries a subject audit token is attributed to that pid and is exempt from the
+  rule that the logging process must be the one that captures. Other services that carry
+  audit tokens (contactsd, sandboxd, calaccessd) are unchanged. Tests in `test_sensors.py`:
+  - five REQUEST_MSGs rebuilt byte for byte from the four real samples (709.1440, 709.2,
+    398.149, 791.2, 733.14);
+  - replayd's SEND and mic preflight;
+  - a listener test checking that Brave shows up and the WindowServer check of replayd is
+    hidden;
+  - an AddressBook audit-token guard.
+
+  All 6 new screen-capture tests fail on the parser at 240eff1.
+- **Commands run:** `ruff check .`, `ruff format --check .`, `mypy`, `pytest`. Each raw
+  `.jsonl` in `testlogs/` was also replayed through `SensorEventParser`, before and after
+  the fix.
+- **Result and raw data:** ruff 0, mypy 0, 151 passed / 7 skipped. Replay, before → after:
+  ```text
+  meet-brave-sample-2   screen_capture replayd 709 ×244      -> Brave 6254 ×244
+  meet-brave-sample     screen_capture replayd 709 ×540      -> Brave 1761 ×540, replayd 709 ×1 (WindowServer check)
+                        tcc 2463 -> 2461 (replayd's own SystemPolicyAllFiles check, now a broker line)
+  screen-recording      screen_capture replayd 791 ×4        -> screencapture 3506 ×4, replayd 791 ×1 (WindowServer check)
+                        microphone replayd 791 ×7            -> ×2 (coreaudiod's preflight for replayd, the P3 item)
+  screen-sample         screen_capture replayd 733 ×4        -> 37712 ×2, 37854 ×2 (the two Cmd+Shift+5 clients)
+  ```
+  Photo Booth / Voice Memos samples: unchanged.
+- **Problems / regressions:** none. The 2 events attributed to replayd come from
+  WindowServer checking replayd. replayd is a SIP binary, so the listener's enricher marks
+  them system and hides them, as the new listener test shows.
+- **Next steps:** live `watch` during a Meet share in Brave: the alert should name Brave.
+  The TCC event has a pid now, so it can correlate with Brave's sockets.
+
 ## [2026-10-26 10:30 +0100] - Google Meet in Brave: working window share after a restart (Mac)
 
 - **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, sudo, branch `main` at 62a07f4.

@@ -6,6 +6,15 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- ScreenCaptureKit screen sharing is attributed to the app that captures, not to `replayd`.
+  The pid comes from the subject audit token in tccd's `REQUEST_MSG`. Before this fix, a
+  window shared from Meet in Brave was attributed to `replayd`. It was then hidden as a
+  system event, and only the `scr:` indicator named Brave. `replayd` now counts as a broker,
+  so its own SEND lines and its mic preflights are no longer events. Its own non-sensor TCC
+  checks are not reported either, which is the rule for other brokers. (ff1c9f7)
+
 ## [0.1.0] - 2026-10-24
 
 First tagged release (alpha). Validated on macOS 27.0.1, Apple Silicon: see TESTLOG.md.

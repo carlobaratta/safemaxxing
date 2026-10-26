@@ -11,7 +11,7 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Now (In Progress)
 
-- [ ] [P2] Attribute replayd's ScreenCapture requests to the client: take the pid from tccd's REQUEST_MSG `AUDIT_TOKEN_KEY={pid:N}` (or "Notifying … responsiblePID[N]"), not from replayd's SEND. Today every Brave request goes to `replayd` pid 709 and is hidden as system: 540 with the grant denied, 244 during a working share. Then check with `watch` on a Meet share @sensors #tcc (TESTLOG 2026-10-26 10:23 and 10:30; on Cmd+Shift+5 the audit token is `screencapture` pid 3506, also a SIP binary, so it stays hidden)
+- [ ] [P2] Live `sudo uv run safemaxxing watch` during a Meet window share in Brave: the screen-capture event must name Brave (not `replayd`), stay visible without `--include-system`, and correlate with Brave's sockets @sensors #tcc (code side done 2026-10-26 @ff1c9f7, TESTLOG 10:41)
 
 ## Next Up
 
@@ -34,6 +34,7 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Completed
 
+- [x] [P2] replayd's ScreenCapture requests attributed to the client from tccd's REQUEST_MSG `AUDIT_TOKEN_KEY={pid:N}`; `replayd` is a broker. Replay of the real samples: Brave 1761 ×540 and 6254 ×244, `screencapture` 3506 ×4, instead of `replayd`; Cmd+Shift+5 clients are still SIP binaries, so still hidden @sensors #tcc (done: 2026-10-26 @ff1c9f7, TESTLOG 10:41)
 - [x] [P2] Meet in Brave with a working window share (Brave restarted after the Screen Recording grant): all 244 replayd REQUEST_MSGs carry `AUDIT_TOKEN_KEY={pid:6254}` = Brave, none preflight; `scr:` shows as 10 short spans, not one continuous span @sensors #tcc (done: 2026-10-26, Mac run 10:30, no code change)
 - [x] [P2] Third-party screen sharing (Meet in Brave): replayd sends on the app's behalf, Brave's pid only in tccd's REQUEST_MSG audit token; the parser gives the events to replayd, so they are hidden as system and only `scr:com.brave.Browser` remains. Fix task in **Next Up** @sensors #tcc (done: 2026-10-26, Mac run 10:23, no code change)
 - [x] [P3] coreaudiod mic preflights checked against Brave/Meet: preflight only, no real mic use; real mic seen only through `mic:`. Drop task in **Next Up** @sensors #mic (done: 2026-10-26, Mac run 10:23, no code change)
