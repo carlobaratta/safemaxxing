@@ -11,18 +11,18 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Now (In Progress)
 
-One Mac session with Google Meet in Brave (camera + mic on, then share a window), `sample` first, then `watch`:
-
-- [ ] [P2] Screen sharing from a third-party app via ScreenCaptureKit (e.g. Meet in Brave): does replayd send with `target_token={pid:app}`? The logging-pid rule would drop it; then only `scr:<bundle>` would catch it @sensors #tcc
-- [ ] [P3] coreaudiod's mic *preflight* for `screencapture` (`target_token={pid:3506}`, `preflight=true` only in tccd's REQUEST_MSG) became a `microphone` event with no `mic:` indicator; check against the Brave/Meet mic captures before dropping preflights @sensors #mic
+- [ ] [P2] Meet in Brave again with a *working* window share: first check that Brave is on in System Settings → Privacy & Security → Screen & System Audio Recording, then Cmd+Q Brave and reopen it. Does replayd's REQUEST_MSG still carry `AUDIT_TOKEN_KEY={pid:<Brave>}`? `sample` first, then `watch` @sensors #tcc (TESTLOG 2026-10-26 10:23: the share was denied, the grant came mid-run, Brave was not restarted)
 
 ## Next Up
+
+- [ ] [P2] Attribute replayd's ScreenCapture requests to the client: take the pid from tccd's REQUEST_MSG `AUDIT_TOKEN_KEY={pid:N}` (or "Notifying … responsiblePID[N]"), not from replayd's SEND. Today all 540 Brave requests went to `replayd` pid 709 and are hidden as system @sensors #tcc (TESTLOG 2026-10-26 10:23; on Cmd+Shift+5 the audit token is `screencapture` pid 3506, also a SIP binary, so it stays hidden)
+- [ ] [P3] Drop coreaudiod's mic *preflights* (`preflight=true` only in tccd's REQUEST_MSG): two runs show them with no real mic use (pid 3506 on 2026-10-24, Brave pid 1761 127 ms after the Screen Recording grant on 2026-10-26); the real Meet mic start had no TCC request, only `mic:` @sensors #mic
 
 - [ ] [P2] Grant Full Disk Access to the terminal and confirm the FDA check turns OK @cli #fda (System Settings → Privacy & Security → Full Disk Access)
 - [ ] [P2] Watch `sudo uv run safemaxxing tui` for freezes for a few minutes of normal browsing @network #dns
 - [ ] [P2] Live `watch` with Photo Booth / Voice Memos: confirm they are hidden as system apps (`/System/Applications`) and shown with `--include-system` @correlation #macos
-- [ ] [P3] One Cmd+Shift+5 recording gives 2 `scr:` events: a 24 ms `[scr:…]` → `[]` flicker comes before the real 7.4 s span (TESTLOG 2026-10-24 20:42) @sensors #indicator (fix together with the cmio item below, one commit, only if the Meet run shows inflated events)
-- [ ] [P3] cmio `CMIODeviceStartStream backtrace N` lines count as extra camera events (32 for one start); cooldown collapses them, but `sample` counts are inflated @sensors #cmio
+- [ ] [P3] One Cmd+Shift+5 recording gives 2 `scr:` events: a 24 ms `[scr:…]` → `[]` flicker comes before the real 7.4 s span (TESTLOG 2026-10-24 20:42) @sensors #indicator (fix together with the cmio item below, one commit: the Meet run on 2026-10-26 showed inflated events, 13 `scr:` flips in 10 s)
+- [ ] [P3] cmio `CMIODeviceStartStream backtrace N` lines count as extra camera events (32 for one start; 52 for Brave's one start on 2026-10-26); cooldown collapses them, but `sample` counts are inflated @sensors #cmio
 - [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design; proposal: keep it and say so in SECURITY.md)
 - [ ] [P2] launchd daemon for headless `watch` (the 0.2.0 feature; reuses the `boot` job's launchd setup) @packaging #launchd
 
@@ -36,6 +36,8 @@ One Mac session with Google Meet in Brave (camera + mic on, then share a window)
 
 ## Completed
 
+- [x] [P2] Third-party screen sharing (Meet in Brave): replayd sends on the app's behalf, Brave's pid only in tccd's REQUEST_MSG audit token; the parser gives the events to replayd, so they are hidden as system and only `scr:com.brave.Browser` remains. Fix task in **Next Up** @sensors #tcc (done: 2026-10-26, Mac run 10:23, no code change)
+- [x] [P3] coreaudiod mic preflights checked against Brave/Meet: preflight only, no real mic use; real mic seen only through `mic:`. Drop task in **Next Up** @sensors #mic (done: 2026-10-26, Mac run 10:23, no code change)
 - [x] [P2] Tagged `v0.1.0` on `main`; CHANGELOG `[Unreleased]` became `[0.1.0] - 2026-10-24`; the `claude/*` branches stay as history (frozen at fbc006a) @process #release (done: 2026-10-24)
 - [x] [P1] Screen *recording* live (Cmd+Shift+5, ~8 s inside a 25 s sample): replayd's own ScreenCapture requests plus `scr:com.apple.systemuiserver` on for 7.4 s = the recording; attributed to SIP system processes, so hidden without `--include-system` @sensors #tcc (done: 2026-10-24, Mac run 20:42, no code change)
 - [x] [P1] Reboot test of `boot install`: after a real restart the job rebuilt the table (`1 table created`, `1/1 addresses added`) and re-enabled pf; `boot status` saved 1 = live 1, `curl https://1.1.1.1` timed out; see TESTLOG 2026-10-24 20:38 @firewall #pf (done: 2026-10-24, Mac run)

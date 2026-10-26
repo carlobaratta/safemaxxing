@@ -14,6 +14,60 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-26 10:23 +0100] - Google Meet in Brave: camera, mic, window share denied by TCC (Mac)
+
+- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, sudo, branch `main` at 27a5cbf.
+- **Goal:** the two items in **Now** in TODO.md. When a third-party app shares the screen
+  through ScreenCaptureKit, which pid is logged? Are coreaudiod's mic preflights real mic
+  use?
+- **Code changes:** none.
+- **Commands run:** `sudo -v`, then
+  `sudo uv run safemaxxing sample --seconds 40 --out testlogs/meet-brave-sample.jsonl`.
+  During the sample, in a Meet call in Brave: camera on, mic on, then "Present → A window".
+  `watch` was not run. The raw `.jsonl` (14499 entries, 18 MB) is not committed. The
+  numbers below come from running `SensorEventParser` over it.
+- **Result and raw data:** TCC had 8319 entries (`tcc`×2463, `screen_capture`×545,
+  `microphone`×5, `camera`×2). cmio had 52 `camera`. Control Center had 15
+  (`screen_capture`×13, `camera`×1, `microphone`×1). locationd had 44 `location`.
+  ```text
+  10:23:40.000 Brave Browser Helper 2526  SEND camera msgID=2526.7 (preflight=true, target_token={NULL})
+  10:23:40.043 Brave Browser Helper 2526  CMIODeviceStartStream (35 36)
+  10:23:40.067 ControlCenter              ["mic:com.brave.Browser", "cam:com.brave.Browser"]
+  10:23:42.712 Brave Browser 1761         SEND ScreenCapture msgID=1761.5 (preflight=true)
+  10:23:42.728 tccd  REQUEST_MSG msgID=709.2 (replayd) ... AUDIT_TOKEN_KEY={pid:1761, auid:501, euid:501}
+  10:23:42.764 tccd  Notifying for access kTCCServiceScreenCapture for target PID[709], responsiblePID[1761]
+  10:23:42.764 tccd  Service kTCCServiceScreenCapture does not allow prompting; returning denied.
+  10:23:42.932 tccd  Update Access Record: kTCCServiceScreenCapture for com.brave.Browser to Denied (System Set)
+  10:23:57.289 tccd  Update Access Record: ... com.brave.Browser to Allowed (System Set)   <- toggled in Settings
+  10:23:57.416 coreaudiod 554  SEND kTCCServiceMicrophone target_token={pid:1761} (preflight=true)
+  10:23:59.089 ControlCenter   [scr:com.brave.Browser, ...]   then 12 more on/off flips until 10:24:09.728
+  10:24:09.850 replayd 709     last of 540 ScreenCapture SENDs (709.2 … 709.541)
+  ```
+  - **Screen sharing failed.** Brave had no Screen Recording grant, and tccd does not prompt
+    for it. The grant was turned on in System Settings at 10:23:57, but Brave was not
+    restarted. After that Brave kept retrying: the `scr:` indicator flipped on/off, staying
+    on for 0.2–1.2 s each time, and replayd sent about 20 requests per second.
+  - **Third-party screen sharing (TODO P2): replayd's pid wins.** replayd sends the
+    ScreenCapture requests on Brave's behalf. Brave's pid is in tccd's REQUEST_MSG
+    (`TCCD_MSG_CREDENTIAL_AUTHENTICATOR_AUDIT_TOKEN_KEY={pid:1761}`) and in "Notifying …
+    responsiblePID[1761]", but not in replayd's SEND line. The parser gave all 540
+    `screen_capture` events to `replayd` pid 709, a SIP binary, so `watch` would hide them
+    without `--include-system`. Only the 13 `scr:com.brave.Browser` indicator events point
+    at Brave.
+  - **coreaudiod mic preflights (TODO P3): again not real mic use.** Brave produced 4 TCC
+    `microphone` events (10:23:57.416–.458), all from coreaudiod's `preflight=true` request
+    for `{pid:1761}`. They came 127 ms after the Screen Recording grant. The real mic start at
+    10:23:40.067 had no TCC request at all, because Meet's mic was already granted; only the
+    `mic:` indicator caught it.
+  - **Inflated counts, as feared:** one camera start (10:23:40.043) gave 52 cmio `camera`
+    events because the `backtrace N` lines are counted, plus 13 `scr:` events in 10 s.
+- **Problems / regressions:** none in the code. Brave's screen capture is attributed to
+  replayd and hidden as a system event. This is an attribution gap, not a parser crash.
+- **Next steps:** run again after Cmd+Q on Brave, with the Screen Recording grant already
+  on, to see whether a working share still carries `{pid:Brave}` in replayd's REQUEST_MSG.
+  Then attribute replayd's requests to the audit-token pid, drop coreaudiod mic preflights,
+  and fix the `scr:` flicker together with the cmio backtrace lines.
+
 ## [2026-10-24 20:42 +0200] - Live screen *recording* with Cmd+Shift+5 (Mac)
 
 - **Environment:** macOS 27.0.1, arm64 Apple M4, sudo, branch `main` at 93417be.
