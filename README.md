@@ -57,6 +57,9 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
   - Screen Capture conta solo quando è il processo che cattura a registrare la propria
     richiesta: i preflight di WindowServer e `coreaudiod` per conto di altre app vengono
     scartati.
+  - Le richieste ScreenCaptureKit passano da `replayd`: vengono attribuite al client che
+    `tccd` indica nell'audit token del soggetto (`REQUEST_MSG`), per esempio Brave che
+    condivide una finestra in Meet, non a `replayd`.
   - Sono scartati anche i controlli `com.apple.private.tcc.manager` che i daemon fanno per
     conto di altri.
 - **Socket mapper**: polling della tabella socket via `psutil`, con fallback `lsof -F`.
@@ -291,7 +294,9 @@ testabile anche su Linux (la CI gira su macOS).
     e `scr:`. Uno screenshot con Cmd+Shift+5 viene attribuito a SystemUIServer
     (`scr:com.apple.systemuiserver`), non al tool che cattura. La registrazione video dello
     schermo con Cmd+Shift+5 è stata verificata il 2026-10-24, con la stessa attribuzione. La
-    condivisione via ScreenCaptureKit da app di terze parti non è ancora stata verificata.
+    condivisione di una finestra da Meet in Brave (ScreenCaptureKit) è stata verificata il
+    2026-10-26. La richiesta TCC viene attribuita a Brave. L'indicatore `scr:com.brave.Browser`
+    però non resta acceso: si accende per circa 130 ms una volta al secondo.
 - Il reverse DNS gira in background su un pool dedicato (4 thread) e il polling non lo
   aspetta mai. Il nome host compare nel pannello connessioni appena risolto. Un alert invece
   mostra il nome solo se l'IP era già in cache; altrimenti mostra solo l'IP.

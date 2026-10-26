@@ -839,7 +839,22 @@ def test_coreaudiod_mic_request_for_a_client_still_counts() -> None:
     assert event is not None and (event.sensor, event.pid) == (SensorType.MICROPHONE, 34389)
 
 
-def test_real_screen_capture_indicator_and_replayd_own_request() -> None:
+def _replayd_request(msg_id: str, subject_pid: int, prompt_policy: int = 2) -> str:
+    """tccd's REQUEST_MSG for a ScreenCaptureKit request, verbatim from macOS 27.0.1."""
+    return (
+        f'REQUEST_MSG: msgID={msg_id}, msg={{\n\tservice="kTCCServiceScreenCapture"\n'
+        '\tTCCD_MSG_SPI_VERSION=2 (0x2)\n\tfunction="TCCAccessRequest"\n'
+        "\tTCCD_MSG_REQUEST_TYPE_KEY=0 (0x0)\n"
+        "\tTCC_MSG_REQUEST_AUTHORIZATION_SUBJECT_CREDENTIAL_DICTIONARY_KEY={\n"
+        "\t\tTCCD_MSG_CREDENTIAL_AUTHENTICATOR_TYPE_KEY=1 (0x1)\n"
+        f"\t\tTCCD_MSG_CREDENTIAL_AUTHENTICATOR_AUDIT_TOKEN_KEY={{pid:{subject_pid}, auid:501, euid:501}}\n"
+        "\t}\n\tTCCD_MSG_MESSAGE_OPTION_REQUEST_USAGE_STRING_POLICY_KEY=0 (0x0)\n"
+        f"\tTCCD_MSG_MESSAGE_OPTION_REQUEST_PROMPT_POLICY_KEY={prompt_policy} ({prompt_policy:#x})\n"
+        f'\tTCCD_MSG_ID="{msg_id}"\n}}'
+    )
+
+
+def test_real_screen_capture_indicator_and_replayd_request_for_client() -> None:
     # Verbatim from macOS 27.0.1, 2026-10-23: two Cmd+Shift+5 captures.
     parser = SensorEventParser()
     emitted = [
@@ -850,16 +865,91 @@ def test_real_screen_capture_indicator_and_replayd_own_request() -> None:
         )
     ]
     assert emitted == [(SensorType.SCREEN_CAPTURE, "com.apple.systemuiserver")] * 2
-    # replayd logs its own request (no target_token): it is the capturing process, so it counts.
-    replayd = _entry(
+    # replayd asks on behalf of the capturing client: tccd names it in the subject audit token.
+    request = _entry("com.apple.TCC", "tccd", _replayd_request("733.14", 37712), pid=407)
+    event = parse_entry(request)
+    assert event is not None and (event.sensor, event.pid) == (SensorType.SCREEN_CAPTURE, 37712)
+
+
+def test_brave_window_share_is_attributed_to_brave_not_replayd() -> None:
+    # Verbatim from macOS 27.0.1, 2026-10-26 10:30: Meet in Brave (pid 6254) sharing a window.
+    # replayd (709) logs the SEND; only tccd's REQUEST_MSG names Brave, in the audit token.
+    send = _entry(
         "com.apple.TCC",
         "replayd",
-        "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=733.14, "
+        "SEND: 0/7 synchronous to com.apple.tccd.system: request: msgID=709.1440, "
         "function=TCCAccessRequest, service=kTCCServiceScreenCapture,",
-        pid=733,
+        pid=709,
     )
-    event = parse_entry(replayd)
-    assert event is not None and (event.sensor, event.pid) == (SensorType.SCREEN_CAPTURE, 733)
+    request = _entry("com.apple.TCC", "tccd", _replayd_request("709.1440", 6254), pid=399)
+    assert parse_entry(send) is None
+    event = parse_entry(request)
+    assert event is not None
+    assert (event.sensor, event.service, event.pid) == (
+        SensorType.SCREEN_CAPTURE,
+        "ScreenCapture",
+        6254,
+    )
+    assert (event.process_name, event.bundle_id, event.system) == ("", None, False)
+
+
+def test_denied_brave_share_is_attributed_to_brave() -> None:
+    # Verbatim from macOS 27.0.1, 2026-10-26 10:23: same request while Brave had no grant.
+    request = _entry("com.apple.TCC", "tccd", _replayd_request("709.2", 1761), pid=399)
+    event = parse_entry(request)
+    assert event is not None and (event.sensor, event.pid) == (SensorType.SCREEN_CAPTURE, 1761)
+
+
+def test_cmd_shift_5_recording_is_attributed_to_screencapture() -> None:
+    # Verbatim from macOS 27.0.1, 2026-10-24 20:42: replayd (791) records for screencapture
+    # (3506); its own mic preflight for the recording is not a mic access.
+    request = _entry("com.apple.TCC", "tccd", _replayd_request("791.2", 3506), pid=399)
+    event = parse_entry(request)
+    assert event is not None and (event.sensor, event.pid) == (SensorType.SCREEN_CAPTURE, 3506)
+    mic_preflight = _entry(
+        "com.apple.TCC",
+        "replayd",
+        "SEND: 0/7 synchronous to com.apple.tccd: request: msgID=791.6, "
+        "function=TCCAccessRequest, service=kTCCServiceMicrophone,",
+        pid=791,
+    )
+    assert parse_entry(mic_preflight) is None
+
+
+def test_window_server_check_of_replayd_names_replayd() -> None:
+    # Verbatim from macOS 27.0.1, 2026-10-26 10:23:57: WindowServer (398) checks replayd's
+    # own grant. The subject is replayd, a SIP binary the listener's enricher marks system.
+    request = _entry(
+        "com.apple.TCC", "tccd", _replayd_request("398.149", 709, prompt_policy=1), pid=399
+    )
+    event = parse_entry(request)
+    assert event is not None and (event.sensor, event.pid) == (SensorType.SCREEN_CAPTURE, 709)
+
+
+async def test_listener_shows_brave_share_and_hides_replayd_check(tmp_path: Path) -> None:
+    # The two 2026-10-26 subjects, 2 s apart so the cooldown keeps both.
+    brave = _entry("com.apple.TCC", "tccd", _replayd_request("709.1440", 6254), pid=399)
+    replayd = {
+        **_entry("com.apple.TCC", "tccd", _replayd_request("398.149", 709, 1), pid=399),
+        "timestamp": "2026-10-22 13:00:02.000000+0200",
+    }
+    data = tmp_path / "log.json"
+    data.write_text(json.dumps([brave, replayd]))
+    script = f"import sys; sys.stdout.write(open({str(data)!r}).read())"
+    processes = {
+        6254: ("Brave Browser", "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser"),
+        709: ("replayd", "/usr/libexec/replayd"),
+    }
+    listener = SensorListener(command=[sys.executable, "-c", script], process_lookup=processes.get)
+    events = [(e.pid, e.process_name, e.system) async for e in listener.events()]
+    assert events == [(6254, "Brave Browser", False), (709, "replayd", True)]
+
+
+def test_audit_token_of_other_services_is_not_a_screen_capture() -> None:
+    # Constructed from the ScreenCapture shape: contactsd/sandboxd checks carry audit tokens
+    # too (2026-10-26 10:23), but only ScreenCapture requests are attributed this way.
+    message = _replayd_request("789.12", 4242).replace("ScreenCapture", "AddressBook")
+    assert parse_entry(_entry("com.apple.TCC", "tccd", message, pid=399)) is None
 
 
 def test_calaccessd_tcc_checks_on_behalf_of_others_are_not_accesses() -> None:

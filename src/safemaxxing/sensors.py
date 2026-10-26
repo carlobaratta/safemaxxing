@@ -50,6 +50,8 @@ BROKER_PROCESSES = frozenset(
         "sandboxd",
         # Checks Calendar/Reminders TCC for EventKit clients (macOS 27.0.1: for routined).
         "calaccessd",
+        # Checks ScreenCapture for ScreenCaptureKit clients (macOS 27.0.1: Brave, screencapture).
+        "replayd",
     }
 )
 
@@ -136,6 +138,10 @@ _BLOCK_BINARY_RE = re.compile(r"\bbinary_path=([^,}>]+)")
 _TCC_PID_RES = (
     re.compile(r"\btarget_token=\{pid:(\d+)"),
     re.compile(r"\bsender_pid=(\d+)"),
+)
+# replayd's ScreenCapture requests name the client only here, in tccd's REQUEST_MSG.
+_SUBJECT_AUDIT_PID_RE = re.compile(
+    r"\bTCCD_MSG_CREDENTIAL_AUTHENTICATOR_AUDIT_TOKEN_KEY=\{pid:(\d+)"
 )
 _PID_RE = re.compile(r"\bpid[\s:=]+(\d+)", re.IGNORECASE)
 _BUNDLE_RE = re.compile(
@@ -263,6 +269,18 @@ def _tcc_actor(message: str, client_pid: int | None) -> tuple[int | None, str | 
     return pid, bundle, None
 
 
+def _screen_capture_subject(message: str) -> int | None:
+    """Pid of the client a ScreenCapture request is made for, from its subject audit token.
+
+    replayd sends these for ScreenCaptureKit clients (Brave sharing a window, `screencapture`
+    recording); WindowServer sends one when it checks replayd itself (macOS 27.0.1).
+    """
+    if "kTCCServiceScreenCapture" not in message:
+        return None
+    subject = _first(_SUBJECT_AUDIT_PID_RE, message)
+    return int(subject) if subject else None
+
+
 def _classify_tcc(
     message: str, client_pid: int | None
 ) -> tuple[SensorType, str, int | None, str | None, bool] | None:
@@ -271,6 +289,8 @@ def _classify_tcc(
         return None
     service = service_match.group(1)
     sensor = TCC_SERVICE_MAP.get(service, SensorType.TCC)
+    if sensor is SensorType.SCREEN_CAPTURE and (subject := _screen_capture_subject(message)):
+        return sensor, service, subject, None, False
     pid, bundle, binary = _tcc_actor(message, client_pid)
     # e.g. "identifier=com.apple.audio.coreaudiod ... entitlement for service kTCCServiceMicrophone"
     # is the daemon's own check on behalf of a client, reported separately via target_token.
@@ -304,8 +324,13 @@ def parse_entry(entry: Mapping[str, object]) -> Event | None:
         sensor, service, pid, bundle, system = classified
         # WindowServer and coreaudiod preflight ScreenCapture for every app that opens a window or
         # audio, and tccd echoes each request (macOS 27.0.1: Photo Booth, Voice Memos, ring light).
-        # Only a request logged by the capturing process itself counts as a screen capture.
-        if sensor is SensorType.SCREEN_CAPTURE and (pid is None or pid != log_pid):
+        # Only a request logged by the capturing process itself counts as a screen capture, or
+        # one whose subject audit token names it (replayd asking for a ScreenCaptureKit client).
+        if (
+            sensor is SensorType.SCREEN_CAPTURE
+            and (pid is None or pid != log_pid)
+            and _screen_capture_subject(message) is None
+        ):
             return None
     elif subsystem.startswith(SUBSYSTEM_CMIO):
         if not _contains_any(lowered, CAMERA_HINTS):
