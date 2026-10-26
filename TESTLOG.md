@@ -14,6 +14,49 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-26 14:04 +0100] - Unconnected UDP during a Meet call: `nettop` no, pktap yes (Mac)
+
+- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, branch `main` at 796a8ea
+  (v0.1.1). Brave restarted, so the NetworkService helper is now pid 16112.
+- **Goal:** TODO P2 in **Now**. Find a per-process flow source that sees the destinations
+  of UDP sockets that are never `connect()`ed. This is investigation only.
+- **Code changes:** none.
+- **Commands run:** during a Meet call in Brave with camera and mic on:
+  - a psutil `Process.net_connections(kind="inet")` dump for Brave, without root;
+  - `nettop -L 3 -s 1 -m udp -n -x`, without root;
+  - by the user, `sudo tcpdump -k -n -i pktap,en0 -c 30 udp and not port 5353`;
+  - `man tcpdump` for the metadata filter.
+- **Result and raw data:**
+  - **Socket table (psutil):** pid 16112 has UDP on `0.0.0.0:53266` and `[::]:50822`, both
+    with no remote address, plus mDNS on 5353 and 53 TCP connections to :443.
+  - **`nettop`: no.** It runs without root and counts bytes per socket. The call socket
+    showed `udp4 *:53266<->*:*` on en0, with bytes_out going 783040 → 849105 in 1 s (about
+    66 KB/s, the call's media), but still no remote address. Connected UDP shows its peer
+    (`cloudd` `10.243.5.87:57807<->17.248.209.46:443`); unconnected UDP never does.
+  - **pktap (`tcpdump -k`): yes.** Each packet carries the interface, process name and pid,
+    and direction, plus the real addresses. 30 packets in 0.2 s, all from the same flow:
+    ```text
+    14:04:51.457222 (en0, proc Brave Browser He:16112, svc BE, in, so) IP 74.125.250.240.3478 > 10.243.5.87.51784: UDP, length 68
+    14:04:51.457746 (en0, proc Brave Browser He:16112, svc BE, out, so) IP 10.243.5.87.51784 > 74.125.250.240.3478: UDP, length 722
+    ...
+    30 packets captured, 55 packets received by filter, 0 packets dropped by kernel
+    ```
+    That is Brave's NetworkService talking to Google's media relay 74.125.250.240:3478 (the
+    STUN/TURN port). The local port was 51784, a new socket for this call: ports change from
+    call to call. The process name is cut to 16 characters ("Brave Browser He"), so the pid
+    is the key to use.
+  - The tcpdump on macOS can filter on metadata with `-Q`, for example `-Q "pid = 16112"` or
+    `-Q "proc = 'Some App'"` (fields `proc`, `pid`, `eproc`, `epid`, `dir`, `if`). So a
+    capture can be limited to one process.
+- **Problems / regressions:** none (no code change).
+- **Next steps:** design a pktap egress source. Open questions:
+  - always on (about 150 packets/s for one video call) or started for a few seconds after a
+    sensor event, with `-Q "pid = N"`;
+  - parse tcpdump's text output or read BPF directly;
+  - the first `out` packet of each (pid, destination) counts as the "connection";
+  - cost in CPU;
+  - overlap with the SNI capture item in the Backlog, which needs packets too.
+
 ## [2026-10-26 13:54 +0100] - 0.1.1 parser fixes: coreaudiod preflights, indicator flicker, cmio backtraces (Mac)
 
 - **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, branch `main` at 5fd92d0. The
