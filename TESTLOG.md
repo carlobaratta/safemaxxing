@@ -14,6 +14,45 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-26 10:30 +0100] - Google Meet in Brave: working window share after a restart (Mac)
+
+- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, sudo, branch `main` at 62a07f4.
+- **Goal:** TODO P2 in **Now**. With the Screen Recording grant already on, does replayd's
+  REQUEST_MSG still carry Brave's pid during a share that actually works?
+- **Code changes:** none.
+- **Commands run:** Screen Recording grant for Brave checked in System Settings, Brave
+  quit with Cmd+Q and reopened, `sudo uv run safemaxxing sample --seconds 40 --out
+  testlogs/meet-brave-sample-2.jsonl`. During the sample, in Meet: "Present → A window".
+  The other side of the call saw the window. Camera and mic were off: no `cam:`/`mic:`
+  indicator appeared. `watch` was not run. The raw `.jsonl` (3078 entries) is not committed.
+- **Result and raw data:** TCC had 1464 entries, 244 parsed (`screen_capture`×244, all
+  `replayd` pid 709). Control Center had 20 (10 parsed `screen_capture`). locationd had 25
+  `location`. tccd logged no denial and no prompt.
+  ```text
+  10:30:55.745 tccd  REQUEST_MSG msgID=709.1440 ... AUDIT_TOKEN_KEY={pid:6254, ...}   (no preflight)
+  10:30:55.767 tccd  Handling access request to kTCCServiceScreenCapture, from Sub:{com.brave.Browser}Resp:{... pid=6254 ...}
+  10:30:56.146 ControlCenter ["scr:com.brave.Browser"]
+  10:30:56.293 ControlCenter []                         <- 147 ms
+  10:30:57.148 ControlCenter ["scr:com.brave.Browser"]   ... once per second until 10:30:59.288
+  10:31:14.467 ControlCenter ["scr:com.brave.Browser"]   ... once per second until 10:31:18.652
+  10:31:18.626 replayd 709   last ScreenCapture SEND (116 in the first burst, 128 in the second)
+  ```
+  - **replayd carries the client's pid even when the share works.** All 244
+    REQUEST_MSGs from replayd have `AUDIT_TOKEN_KEY={pid:6254}`, the restarted Brave, and
+    none is a preflight. The first run (10:23) showed the same thing with the grant denied.
+    The parser still gives every event to `replayd` pid 709, so a working third-party share
+    is hidden as system. Only the `scr:com.brave.Browser` indicator names Brave.
+  - **A live share does not keep `scr:` on.** The indicator came on 10 times, for 101–147
+    ms each time (the last one 28 ms), about once per second, in two bursts of about 4 s:
+    10:30:56–59 and 10:31:14–18. replayd's requests come in the same two bursts, with
+    nothing in between.
+- **Problems / regressions:** none in the code. The attribution gap from 10:23 is
+  confirmed. For the planned `scr:` flicker fix: dropping short spans would also drop this
+  real share, because every span here is 150 ms or shorter.
+- **Next steps:** attribute replayd's requests to the audit-token pid, then check with
+  `watch` on a Meet share. Fix the `scr:` flicker by merging spans less than about 1 s
+  apart, not by dropping short spans.
+
 ## [2026-10-26 10:23 +0100] - Google Meet in Brave: camera, mic, window share denied by TCC (Mac)
 
 - **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, sudo, branch `main` at 27a5cbf.
