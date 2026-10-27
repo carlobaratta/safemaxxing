@@ -34,6 +34,13 @@ class Protocol(StrEnum):
     UDP = "udp"
 
 
+class Direction(StrEnum):
+    """Direction of a packet relative to this host, as pktap's metadata reports it."""
+
+    OUTBOUND = "out"
+    INBOUND = "in"
+
+
 class Severity(IntEnum):
     """Alert level; ordered so levels compare and can be bumped with integer arithmetic."""
 
@@ -127,6 +134,72 @@ class NetworkConnection:
             return ipaddress.ip_address(self.remote_address).is_loopback
         except ValueError:
             return False
+
+
+@dataclass(frozen=True, slots=True)
+class PktapEvent:
+    """One packet seen on a pktap interface, with the kernel's per-packet process metadata.
+
+    `pid` is the socket owner; `process_name` is the kernel's name, cut to 16 characters
+    ("Brave Browser He"). `effective_pid` is set when the socket acts on another process's
+    behalf (pktap's `eproc`).
+    """
+
+    timestamp: float
+    interface: str
+    pid: int
+    process_name: str
+    protocol: Protocol
+    src_ip: str
+    src_port: int
+    dest_ip: str
+    dest_port: int
+    direction: Direction
+    length: int = 0
+    effective_pid: int | None = None
+    effective_process_name: str | None = None
+
+    @property
+    def flow_key(self) -> tuple[int, Protocol, str, int, str, int]:
+        """(pid, protocol, local and remote endpoints) of the flow, the same shape as
+        `NetworkConnection.key`; an inbound packet is keyed from this host's side."""
+        if self.direction is Direction.OUTBOUND:
+            return (
+                self.pid,
+                self.protocol,
+                self.src_ip,
+                self.src_port,
+                self.dest_ip,
+                self.dest_port,
+            )
+        return (self.pid, self.protocol, self.dest_ip, self.dest_port, self.src_ip, self.src_port)
+
+    def to_connection(
+        self,
+        process_name: str | None = None,
+        exe_path: str | None = None,
+        bundle_id: str | None = None,
+    ) -> NetworkConnection:
+        """The flow as a `NetworkConnection` first seen at this packet, so the correlation
+        engine treats it like a socket from the table; `process_name` replaces the cut name."""
+        _, protocol, local_ip, local_port, remote_ip, remote_port = self.flow_key
+        return NetworkConnection(
+            pid=self.pid,
+            process_name=process_name or self.process_name,
+            protocol=protocol,
+            local_address=local_ip,
+            local_port=local_port,
+            remote_address=remote_ip,
+            remote_port=remote_port,
+            status=PKTAP_STATUS,
+            first_seen=self.timestamp,
+            exe_path=exe_path,
+            bundle_id=bundle_id,
+        )
+
+
+# `NetworkConnection.status` of flows seen by pktap rather than in the socket table.
+PKTAP_STATUS = "PKTAP"
 
 
 @dataclass(frozen=True, slots=True)
