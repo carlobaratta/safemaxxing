@@ -26,6 +26,7 @@ from safemaxxing.firewall import (
     parse_pf_status,
 )
 from safemaxxing.network import PsutilSnapshot
+from safemaxxing.pktap import TCPDUMP_BINARY, pktap_command, pktap_unavailable
 from safemaxxing.sensors import (
     DISCOVERY_PREDICATE,
     LOG_BINARY,
@@ -257,6 +258,23 @@ def check_log_predicate(run: SyncRunner = run_sync) -> Check:
     return Check("log stream predicate", Status.FAIL, detail)
 
 
+def check_pktap(
+    run: SyncRunner = run_sync, euid: int | None = None, binary: str = TCPDUMP_BINARY
+) -> Check:
+    """Whether `--udp-flows` can capture: tcpdump still running after 2 s has opened pktap.
+
+    Never FAIL, the capture is optional: WARN without root or when tcpdump stops at once.
+    """
+    name = "pktap capture (--udp-flows)"
+    if problem := pktap_unavailable(binary, euid):
+        return Check(name, Status.WARN, problem)
+    res = run(pktap_command(), 2.0)
+    if res.returncode == -1:
+        return Check(name, Status.OK, "tcpdump capturing")
+    lines = res.stderr.strip().splitlines()
+    return Check(name, Status.WARN, lines[-1] if lines else f"exit {res.returncode}")
+
+
 def run_doctor(poll_interval_s: float = 0.2) -> list[Check]:
     """Run every check in order; on a non-macOS host return after the basic checks."""
     checks = [check_platform(), check_root(), *check_binaries()]
@@ -264,7 +282,7 @@ def run_doctor(poll_interval_s: float = 0.2) -> list[Check]:
         return checks
     checks += [check_pf_status(), *check_pf_anchor(), check_socket_visibility()]
     checks += [check_full_disk_access(), check_snapshot_latency(poll_interval_s)]
-    checks.append(check_log_predicate())
+    checks += [check_log_predicate(), check_pktap()]
     return checks
 
 

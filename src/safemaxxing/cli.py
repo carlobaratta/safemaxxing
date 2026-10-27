@@ -20,6 +20,7 @@ from safemaxxing.correlation import CorrelationConfig
 from safemaxxing.diagnostics import Status, collect_log_sample, run_doctor, summarize_sample
 from safemaxxing.firewall import BLOCKLIST, BlockList, PfFirewall, ProcessController, is_root
 from safemaxxing.models import ActionResult, Alert, Event, Severity
+from safemaxxing.pktap import pktap_unavailable
 from safemaxxing.sensors import (
     DISCOVERY_PREDICATE,
     WIDE_DISCOVERY_PREDICATE,
@@ -53,6 +54,14 @@ IncludeSystem = Annotated[
 IncludeDns = Annotated[
     bool, typer.Option("--include-dns", help="Also alert on DNS lookups (ports 53/853/5353).")
 ]
+UdpFlows = Annotated[
+    bool,
+    typer.Option(
+        "--udp-flows",
+        help="Also capture outbound UDP with pktap (tcpdump, needs root): finds where sockets "
+        "the socket table shows without a peer send, e.g. a WebRTC call.",
+    ),
+]
 Ignore = Annotated[
     list[str] | None,
     typer.Option("--ignore", help="Bundle id or process name to ignore (repeatable)."),
@@ -69,7 +78,11 @@ def _supervisor(
     ignore: list[str] | None,
     include_system: bool,
     include_dns: bool,
+    udp_flows: bool,
 ) -> Supervisor:
+    if udp_flows and (problem := pktap_unavailable()):
+        console.print(f"[bold red]--udp-flows:[/] {escape(problem)}")
+        raise typer.Exit(1)
     config = CorrelationConfig(
         window_s=window_ms / 1000,
         ignore=frozenset(ignore or ()),
@@ -81,6 +94,7 @@ def _supervisor(
         poll_interval_s=poll_ms / 1000,
         include_loopback=include_loopback,
         resolve_hostnames=not no_dns,
+        udp_flows=udp_flows,
     )
 
 
@@ -120,6 +134,7 @@ def tui(
     ignore: Ignore = None,
     include_system: IncludeSystem = False,
     include_dns: IncludeDns = False,
+    udp_flows: UdpFlows = False,
 ) -> None:
     """Interactive dashboard: alerts, active egress and sensor events.
 
@@ -130,7 +145,14 @@ def tui(
 
     _warn_if_not_root()
     supervisor = _supervisor(
-        window_ms, poll_ms, include_loopback, no_dns, ignore, include_system, include_dns
+        window_ms,
+        poll_ms,
+        include_loopback,
+        no_dns,
+        ignore,
+        include_system,
+        include_dns,
+        udp_flows,
     )
     SafemaxxingApp(supervisor).run()
 
@@ -152,6 +174,7 @@ def watch(
     ignore: Ignore = None,
     include_system: IncludeSystem = False,
     include_dns: IncludeDns = False,
+    udp_flows: UdpFlows = False,
     as_json: Annotated[bool, typer.Option("--json", help="Emit alerts as JSON lines.")] = False,
     show_events: Annotated[
         bool, typer.Option("--events", help="Also print sensor events (not with --json).")
@@ -177,7 +200,14 @@ def watch(
     if not as_json:
         _warn_if_not_root()
     supervisor = _supervisor(
-        window_ms, poll_ms, include_loopback, no_dns, ignore, include_system, include_dns
+        window_ms,
+        poll_ms,
+        include_loopback,
+        no_dns,
+        ignore,
+        include_system,
+        include_dns,
+        udp_flows,
     )
     firewall, processes = _firewall(), ProcessController()
 

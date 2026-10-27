@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ipaddress
+import os
 import re
+import time
 from collections.abc import AsyncGenerator, Callable, Sequence
 
 from safemaxxing.correlation import DNS_PORTS
@@ -143,7 +145,8 @@ class PktapFlowTracker:
     """Turns packets into connections: the first outbound packet of a flow is its connection.
 
     A flow with no packet in either direction for `idle_s` is forgotten, so it counts as new
-    when it resumes. Flows of the kernel and of SIP-protected binaries are dropped unless
+    when it resumes. Flows first seen before `mute_until` are tracked but not returned. Flows
+    of the kernel and of SIP-protected binaries are dropped unless
     `include_system`; the process is looked up once per new flow, never cached, so a reused
     pid is never mistaken for the process that held it before.
     """
@@ -164,12 +167,25 @@ class PktapFlowTracker:
         self._process_lookup = process_lookup
         self._bundle_lookup = bundle_lookup
         self._last_packet: dict[FlowKey, float] = {}
+        self._conns: dict[FlowKey, NetworkConnection] = {}
+        self._muted_until = 0.0
+
+    def mute_until(self, timestamp: float) -> None:
+        """Track flows first seen before `timestamp` without returning them: when a capture
+        starts, a flow that was already open looks new on its first packet."""
+        self._muted_until = timestamp
+
+    def active(self, now: float | None = None) -> tuple[NetworkConnection, ...]:
+        """Connections of the flows with a packet in the last `idle_s`, muted ones included."""
+        horizon = (time.time() if now is None else now) - self._idle_s
+        return tuple(c for k, c in self._conns.items() if self._last_packet.get(k, 0.0) >= horizon)
 
     def _prune(self, now: float) -> None:
         horizon = now - self._idle_s
         self._last_packet = {k: t for k, t in self._last_packet.items() if t >= horizon}
         if len(self._last_packet) >= self._max_flows:
             self._last_packet.clear()
+        self._conns = {k: c for k, c in self._conns.items() if k in self._last_packet}
 
     def feed(self, packet: PktapEvent) -> NetworkConnection | None:
         """The connection `packet` opens, or None if its flow is known, inbound or filtered."""
@@ -194,7 +210,9 @@ class PktapFlowTracker:
         if not self._include_system and system:
             return None
         bundle = self._bundle_lookup(exe) if exe else None
-        return packet.to_connection(process_name=name, exe_path=exe, bundle_id=bundle)
+        conn = packet.to_connection(process_name=name, exe_path=exe, bundle_id=bundle)
+        self._conns[key] = conn
+        return None if packet.timestamp < self._muted_until else conn
 
 
 class PktapError(RuntimeError):
@@ -226,20 +244,32 @@ class PktapCapture:
         command: Sequence[str] | None = None,
         tracker: PktapFlowTracker | None = None,
         stop_timeout_s: float = 1.0,
+        warmup_s: float = 2.0,
+        max_restarts: int = 5,
+        restart_backoff_s: float = 1.0,
+        max_backoff_s: float = 30.0,
     ) -> None:
         self._command = list(command) if command is not None else pktap_command()
         self.tracker = tracker or PktapFlowTracker()
         self._stop_timeout_s = stop_timeout_s
+        self._warmup_s = warmup_s
+        self._max_restarts = max_restarts
+        self._restart_backoff_s = restart_backoff_s
+        self._max_backoff_s = max_backoff_s
         self.unparsed = 0
+        self.restarts = 0
 
     async def lines(self) -> AsyncGenerator[str]:
         """Raw output lines; raises `PktapError` if tcpdump exits with an error (e.g. not root)."""
-        proc = await asyncio.create_subprocess_exec(
-            *self._command,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *self._command,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise PktapError(f"cannot run {self._command[0]}: {exc}") from exc
         assert proc.stdout is not None and proc.stderr is not None
         stderr_task = asyncio.create_task(_drain_tail(proc.stderr))
         try:
@@ -275,8 +305,50 @@ class PktapCapture:
                 yield packet
 
     async def connections(self) -> AsyncGenerator[NetworkConnection]:
-        """New outbound flows as connections, in the form `Supervisor` takes from the monitor."""
-        async with contextlib.aclosing(self.events()) as packets:
-            async for packet in packets:
-                if (conn := self.tracker.feed(packet)) is not None:
-                    yield conn
+        """New outbound flows as connections, in the form `Supervisor` takes from the monitor.
+
+        Flows first seen within `warmup_s` of a run's first packet were already open: they are
+        tracked, not yielded. When tcpdump stops (an error, or the end of its output) it is
+        started again, up to `max_restarts` times in a row, after `restart_backoff_s` doubled
+        each time up to `max_backoff_s`; a run longer than `max_backoff_s` resets the count.
+        Past that, the last error is raised, or iteration ends if tcpdump exited cleanly.
+        """
+        loop = asyncio.get_running_loop()
+        failures = 0
+        while True:
+            started = loop.time()
+            error: PktapError | None = None
+            try:
+                async with contextlib.aclosing(self.events()) as packets:
+                    first = True
+                    async for packet in packets:
+                        if first:
+                            self.tracker.mute_until(packet.timestamp + self._warmup_s)
+                            first = False
+                        if (conn := self.tracker.feed(packet)) is not None:
+                            yield conn
+            except PktapError as exc:
+                error = exc
+            if loop.time() - started > self._max_backoff_s:
+                failures = 0
+            if failures >= self._max_restarts:
+                if error is not None:
+                    raise error
+                return
+            failures += 1
+            self.restarts += 1
+            delay = self._restart_backoff_s * 2 ** (failures - 1)
+            await asyncio.sleep(min(delay, self._max_backoff_s))
+
+
+def pktap_unavailable(binary: str = TCPDUMP_BINARY, euid: int | None = None) -> str | None:
+    """Why a pktap capture cannot start here, as one sentence; None if it may.
+
+    Cheap checks only (tcpdump executable, root); a refused pktap device still shows up later
+    as `PktapError`.
+    """
+    if not os.access(binary, os.X_OK):
+        return f"{binary} is missing or not executable"
+    if (os.geteuid() if euid is None else euid) != 0:
+        return "capturing on pktap needs root: re-run with sudo"
+    return None

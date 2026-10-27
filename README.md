@@ -75,6 +75,16 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
     in ascolto, e UDP connessi.
   - Ricava il bundle id dall'`Info.plist` dell'app.
   - Fa il reverse DNS in background, con cache.
+- **Flussi UDP via pktap** (opzionale, `--udp-flows`, serve root): un `tcpdump -k` sempre
+  attivo sull'interfaccia pktap, solo UDP in uscita e senza porte DNS.
+  - Il kernel etichetta ogni pacchetto con il pid del processo e la direzione. Il primo
+    pacchetto in uscita di un flusso diventa una connessione con stato `PKTAP`.
+  - Così si vedono le destinazioni dei socket UDP mai `connect()`-ati, come i media di una
+    call Meet in Brave.
+  - Scarta il traffico link-local, multicast e broadcast, il kernel e i binari SIP (salvo
+    `--include-system`). I flussi già aperti all'avvio non contano come nuovi.
+  - Se tcpdump si ferma viene riavviato, fino a 5 volte di fila.
+  - Durante una call Meet costa circa lo 0,5% di un core.
 - **Correlazione**: buffer circolari in memoria per eventi e connessioni.
   - Fa il match per PID o per bundle id, inclusi gli helper (es. `com.google.Chrome.helper`).
   - La finestra è configurabile e tollera clock skew e righe di log arrivate in ritardo.
@@ -140,6 +150,7 @@ inviare segnali a processi altrui. Senza root safemaxxing funziona in modalità 
 | `--include-dns` | off | Alert anche sulle risoluzioni DNS (porte 53/853/5353) |
 | `--include-loopback` | off | Traccia anche `127.0.0.1` / `::1` |
 | `--no-dns` | off | Disattiva il reverse DNS |
+| `--udp-flows` | off | Cattura anche l'UDP in uscita con pktap (`tcpdump`, serve root): trova la destinazione dei socket UDP non connessi |
 
 Solo per `watch`:
 
@@ -175,9 +186,11 @@ Solo per `watch`:
 - la visibilità dei socket di altri utenti (via `lsof -FpL`);
 - il Full Disk Access del terminale (lettura del `TCC.db` di sistema; per ora facoltativo);
 - la latenza di uno snapshot dei socket rispetto a `--poll-ms`;
-- la validità del predicato di `log stream`.
+- la validità del predicato di `log stream`;
+- se `tcpdump` riesce a catturare su pktap (per `--udp-flows`; mai FAIL, solo WARN).
 
-Senza root, i tre controlli su pf e lo snapshot dei socket risultano "needs root".
+Senza root, i tre controlli su pf e lo snapshot dei socket risultano "needs root", e quello
+di pktap dice "needs root".
 
 `sudo uv run safemaxxing sample --seconds 5 --out sample.jsonl` cattura log reali. Per ogni
 sottosistema mostra:
@@ -253,6 +266,7 @@ src/safemaxxing/
 ├── models.py        Event, SensorType, NetworkConnection, Finding, Alert, ActionResult (frozen)
 ├── sensors.py       log stream → JsonStreamDecoder → SensorEventParser/parse_entry → cooldown → Event
 ├── network.py       psutil / lsof → outbound_only → NetworkMonitor (+ HostnameResolver)
+├── pktap.py         tcpdump -k → parse_pktap_line → PktapFlowTracker → PktapCapture (--udp-flows)
 ├── correlation.py   CorrelationEngine: buffer circolari, finestra temporale, severità
 ├── supervisor.py    unisce gli stream asincroni e alimenta l'engine
 ├── firewall.py      PfFirewall (pfctl), BlockList (lista salvata) e ProcessController (segnali)
@@ -313,8 +327,12 @@ testabile anche su Linux (la CI gira su macOS).
 - **UDP non connesso**: i socket UDP mai `connect()`-ati non hanno un indirizzo remoto nella
   tabella dei socket, quindi vengono scartati. Sono quelli di WebRTC e QUIC, usati per
   esempio da una call Meet nel browser.
-  - Una call Meet in Brave non produce alert, perché il suo traffico non è visibile. Anche le
-    connessioni TCP verso Google sono già aperte e vengono riusate.
+  - Senza `--udp-flows`, una call Meet in Brave non produce alert, perché il suo traffico non
+    è visibile. Anche le connessioni TCP verso Google sono già aperte e vengono riusate.
+  - Con `--udp-flows` la sorgente pktap vede il flusso della call: verificato come root
+    durante una call il 2026-10-27, vedi [TESTLOG.md](TESTLOG.md). L'alert completo, dalla
+    `tui` o da `watch`, non è ancora stato provato su una call reale.
+  - I flussi pktap non hanno ancora il nome host: l'alert mostra l'IP.
   - Gli eventi sensore di Brave restano visibili e attribuiti correttamente (verificato il
     2026-10-26, vedi [TESTLOG.md](TESTLOG.md)).
 - **SNI**: oggi il nome host arriva dal reverse DNS. Estrarre lo SNI dal ClientHello richiede

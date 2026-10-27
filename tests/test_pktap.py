@@ -19,6 +19,7 @@ from safemaxxing.pktap import (
     is_relevant_destination,
     parse_pktap_line,
     pktap_command,
+    pktap_unavailable,
     udp_filter,
 )
 
@@ -299,6 +300,25 @@ def test_flow_table_is_bounded() -> None:
     assert len(tracker._last_packet) <= 4
 
 
+def test_muted_flows_are_tracked_and_shown_but_not_returned() -> None:
+    tracker = make_tracker()
+    t = 1793026849.0
+    tracker.mute_until(t + 2)
+    assert tracker.feed(make_packet(timestamp=t)) is None
+    assert tracker.feed(make_packet(timestamp=t + 5)) is None  # same flow, still open
+    later = tracker.feed(make_packet(timestamp=t + 3, src_port=60000))
+    assert later is not None and later.local_port == 60000
+    assert {c.local_port for c in tracker.active(now=t + 5)} == {64316, 60000}
+
+
+def test_active_drops_idle_flows() -> None:
+    tracker = make_tracker(idle_s=10.0)
+    t = 1793026849.0
+    tracker.feed(make_packet(timestamp=t))
+    assert len(tracker.active(now=t + 9)) == 1
+    assert tracker.active(now=t + 11) == ()
+
+
 def test_meet_flow_correlates_with_brave_microphone() -> None:
     tracker = make_tracker()
     first = fixture_packets("meet.txt")[0]
@@ -366,7 +386,12 @@ async def test_capture_yields_connections_from_a_recorded_stream(tmp_path: Path)
         "sys.stdout.write(open(sys.argv[1]).read())\n"
         "sys.stdout.write('not a packet line\\n')\n",
     )
-    capture = PktapCapture([*command, str(FIXTURES / "meet.txt")], tracker=make_tracker())
+    capture = PktapCapture(
+        [*command, str(FIXTURES / "meet.txt")],
+        tracker=make_tracker(),
+        warmup_s=0,
+        max_restarts=0,
+    )
     conns = [c async for c in capture.connections()]
     assert [(c.pid, c.remote) for c in conns] == [(16112, "74.125.250.240:3478")]
     assert capture.unparsed == 1
@@ -403,7 +428,7 @@ async def test_cancelled_consumer_stops_and_reaps_tcpdump(tmp_path: Path) -> Non
     command = fake_tcpdump(
         tmp_path, f"import time\nprint({MEET_OUT!r}, flush=True)\ntime.sleep(60)\n"
     )
-    capture = PktapCapture(command, tracker=make_tracker())
+    capture = PktapCapture(command, tracker=make_tracker(), warmup_s=0)
     started = asyncio.Event()
 
     async def consume() -> None:
@@ -421,3 +446,59 @@ async def test_cancelled_consumer_stops_and_reaps_tcpdump(tmp_path: Path) -> Non
 
 def _child_pids() -> list[int]:
     return [c.pid for c in psutil.Process().children(recursive=True)]
+
+
+def run_counter_script(tmp_path: Path, body: str) -> list[str]:
+    """A fake tcpdump that knows how many times it has been started (`run`, from 1)."""
+    counter = tmp_path / "runs"
+    return fake_tcpdump(
+        tmp_path,
+        "import sys\n"
+        f"counter = {str(counter)!r}\n"
+        "try:\n    run = int(open(counter).read()) + 1\nexcept FileNotFoundError:\n    run = 1\n"
+        "open(counter, 'w').write(str(run))\n" + body,
+    )
+
+
+async def test_flows_open_at_startup_are_not_new(tmp_path: Path) -> None:
+    later = MEET_OUT.replace("1793026849.635980", "1793026852.700000").replace("64316", "60000")
+    command = fake_tcpdump(tmp_path, f"print({MEET_OUT!r})\nprint({later!r})\n")
+    capture = PktapCapture(command, tracker=make_tracker(), max_restarts=0)
+    conns = [c async for c in capture.connections()]
+    assert [c.local_port for c in conns] == [60000]
+    ports = {c.local_port for c in capture.tracker.active(now=1793026853.0)}
+    assert ports == {64316, 60000}
+
+
+async def test_tcpdump_restarted_after_it_stops(tmp_path: Path) -> None:
+    second = MEET_OUT.replace("64316", "60000")
+    command = run_counter_script(tmp_path, f"print({MEET_OUT!r} if run == 1 else {second!r})\n")
+    capture = PktapCapture(
+        command, tracker=make_tracker(), warmup_s=0, max_restarts=1, restart_backoff_s=0.01
+    )
+    conns = [c async for c in capture.connections()]
+    assert [c.local_port for c in conns] == [64316, 60000]
+    assert capture.restarts == 1
+
+
+async def test_repeated_failures_raise_the_last_error(tmp_path: Path) -> None:
+    command = run_counter_script(
+        tmp_path, "sys.stderr.write(f'tcpdump: run {run} failed\\n')\nsys.exit(1)\n"
+    )
+    capture = PktapCapture(command, max_restarts=2, restart_backoff_s=0.01)
+    with pytest.raises(PktapError, match="tcpdump: run 3 failed"):
+        [c async for c in capture.connections()]
+    assert capture.restarts == 2
+    assert (tmp_path / "runs").read_text() == "3"
+
+
+async def test_missing_binary_is_a_pktap_error(tmp_path: Path) -> None:
+    capture = PktapCapture([str(tmp_path / "no-tcpdump")], max_restarts=0)
+    with pytest.raises(PktapError, match="cannot run"):
+        [c async for c in capture.connections()]
+
+
+def test_pktap_unavailable(tmp_path: Path) -> None:
+    assert "missing" in (pktap_unavailable(str(tmp_path / "no-tcpdump"), euid=0) or "")
+    assert "needs root" in (pktap_unavailable("/bin/sh", euid=501) or "")
+    assert pktap_unavailable("/bin/sh", euid=0) is None

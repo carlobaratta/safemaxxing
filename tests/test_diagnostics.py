@@ -14,6 +14,7 @@ from safemaxxing.diagnostics import (
     check_log_predicate,
     check_pf_anchor,
     check_pf_status,
+    check_pktap,
     check_root,
     check_snapshot_latency,
     check_socket_visibility,
@@ -148,6 +149,31 @@ def test_log_predicate_check() -> None:
     assert check_log_predicate(streaming).status is Status.OK
     result = check_log_predicate(rejected)
     assert result.status is Status.FAIL and "Invalid predicate" in result.detail
+
+
+def test_pktap_check() -> None:
+    running = lambda argv, t: CommandResult(-1, "", "timeout")  # noqa: E731
+    refused = lambda argv, t: CommandResult(  # noqa: E731
+        1, "", "tcpdump: data link type PKTAP\ntcpdump: pktap,all: No such device exists"
+    )
+    assert check_pktap(running, euid=501, binary="/bin/sh").detail.endswith("re-run with sudo")
+    assert check_pktap(running, euid=0, binary="/bin/sh").status is Status.OK
+    result = check_pktap(refused, euid=0, binary="/bin/sh")
+    assert (result.status, result.detail) == (
+        Status.WARN,
+        "tcpdump: pktap,all: No such device exists",
+    )
+
+
+def test_udp_flows_without_root_exits_before_starting(monkeypatch: pytest.MonkeyPatch) -> None:
+    from typer.testing import CliRunner
+
+    from safemaxxing import cli
+
+    monkeypatch.setattr(cli, "pktap_unavailable", lambda: "capturing on pktap needs root")
+    result = CliRunner().invoke(cli.app, ["watch", "--json", "--udp-flows"])
+    assert result.exit_code == 1
+    assert "capturing on pktap needs root" in result.output
 
 
 def test_summarize_sample_reports_redaction_and_coverage() -> None:
