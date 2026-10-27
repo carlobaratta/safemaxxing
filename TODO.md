@@ -11,7 +11,7 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Now (In Progress)
 
-- [ ] [P2] Design a pktap egress source for unconnected UDP (`tcpdump -k -i pktap,…` gives proc, pid, direction and destination per packet). Decide: always-on vs a few seconds after a sensor event with `-Q "pid = N"`; tcpdump text vs BPF; first `out` packet per (pid, destination) = one connection; CPU cost; shared with the SNI item. Interfaces first (system-architect), no code before @network #udp (TESTLOG 2026-10-26 14:04)
+- [ ] [P2] pktap egress source, phase 2: wire `PktapCapture` into `Supervisor` (a second connection source), `doctor` and the CLI, then check a Meet call in Brave raises the alert end to end. Always-on (per-pid ruled out: TESTLOG 08:35); the interface design of 2026-10-26 (`AlwaysOnFlows`, `--udp-flows`, `pktap_unavailable`, restarts) is in that session's scratchpad, not in the repo @network #udp (phase 1 in Completed)
 
 ## Next Up
 
@@ -23,6 +23,7 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Backlog / Future
 
+- [ ] [P3] pktap: drop directed broadcasts from user processes (the interfaces' broadcast addresses via `psutil.net_if_addrs`); bundle id for `.systemextension` binaries (Avast's shows None) @network #udp
 - [ ] [P2] SNI / TLS ClientHello capture to name destinations without reverse DNS @network #sni
 - [ ] [P2] Packaging: signed, notarized build @packaging #release
 - [ ] [P3] Menu-bar app (status, last alerts, one-click block) @ui #menubar
@@ -31,6 +32,9 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Completed
 
+- [x] [P2] pktap measured during a Meet call: always-on tcpdump 0.45% of one core at 151 lines/s, parser 6.45 µs/line (~0.10%); `-Q pid=16105` (Brave main) caught 0 of 7458 packets, so per-pid capture is ruled out; `-Q` is applied in userspace. Command now has `--immediate-mode` and excludes DNS ports; proc-less `llw0` lines pinned @network #udp (done: 2026-10-27, Mac run 08:35 @298328d)
+- [x] [P2] pktap source run as root during a Meet call: the real output parses, and gives 1 connection `Brave Browser Helper 16112 → 74.125.250.248:3478` (bundle `com.brave.Browser`), plus Avast DNS (dropped later as port 53) and `kernel_task` NetBIOS broadcasts. pid 0 is now system @network #udp (done: 2026-10-27, Mac run 08:34 @298328d)
+- [x] [P2] pktap egress source, phase 1: `PktapEvent`/`Direction` in `models.py`; `safemaxxing/pktap.py` with the line parser (process names capped at 16 characters, so a name cannot forge the metadata fields), `PktapFlowTracker` (first outbound packet per flow = one `NetworkConnection`, status `PKTAP`, idle 60 s, bounded table, system/link-local filter, process looked up per flow and never cached) and `PktapCapture` (tcpdump stopped with SIGTERM, then SIGKILL, and always reaped; inner generators closed with `aclosing`). Fixtures cut from the 5 captures in `tests/fixtures/pktap/`; 47 new tests, suite 207 passed. Not yet run as root @network #udp (done: 2026-10-27 @298328d)
 - [x] [P2] Unconnected UDP egress source investigated during a Meet call in Brave: `nettop` (no root) counts bytes per socket but shows `*:*` as peer (`udp4 *:53266<->*:*`, ~66 KB/s out); pktap via `sudo tcpdump -k -i pktap,en0` names `proc Brave Browser He:16112`, `out`, and the destination `74.125.250.240:3478`. pf logging not needed @network #udp (done: 2026-10-26, Mac run 14:04, no code change)
 - [x] [P2] Released `v0.1.1` (alpha) on `main`: CHANGELOG `[0.1.1] - 2026-10-26`, `__version__` 0.1.1, GitHub pre-release like 0.1.0 @process #release (done: 2026-10-26)
 - [x] [P3] Indicator flicker merged: an attribution back within 2 s (`INDICATOR_MERGE_S`) of going off is the same use; short spans are kept, so a blinking Brave share is one event per share. cmio `backtrace N` lines dropped. Replay: camera 55 → 5 (Brave), 40 → 10, 42 → 12; `scr:` 10 → 2, 13 → 1, 2 → 1 @sensors #indicator (done: 2026-10-26 @7c7260c, TESTLOG 13:54)

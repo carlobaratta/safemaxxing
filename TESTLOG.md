@@ -14,6 +14,163 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-27 08:37 +0100] - pktap CPU and per-pid capture measured during a Meet call (Mac)
+
+- **Environment:** macOS 27.0.1, arm64 Apple M4, root. A Meet call in Brave: the
+  NetworkService helper is pid 16112, and the user's `-Q` filter targeted pid 16105.
+- **Goal:** answer two open design questions. Does a capture filtered by pid catch the call?
+  What does the capture cost in CPU?
+- **Commands run** (the `measure_pktap.sh` script from the 2026-10-26 design session). It
+  runs `tcpdump -i pktap,all -k -n -l -q -tt [--immediate-mode] -Q "dir=out <extra>" udp and
+  not port 53 and not port 853 and not port 5353` and reads the CPU time with `ps`:
+  ```sh
+  sudo sh measure_pktap.sh meet-main 20 "and pid=16105"
+  sudo sh measure_pktap.sh meet-buf 60 "" buffered
+  ```
+- **Result and raw data (verbatim):**
+  ```text
+  label=meet-main seconds=20 cpu_s=0.10 cpu_pct=0.50 lines=1 lines_per_s=0.1
+  7458 packets received by filter / 0 dropped by kernel / 7458 drops by metadata filter
+  label=meet-buf seconds=60 cpu_s=0.27 cpu_pct=0.45 lines=9076 lines_per_s=151.3
+  lines with ', out'=9075  lines with ', in'=0
+  20386 packets received by filter / 0 dropped by kernel / 10240 drops by metadata filter
+  ```
+  - **Per pid: no.** The `-Q` filter on pid 16105 kept 0 of 7458 packets during the call. All
+    the call's media comes from the helper, 16112, which is the case `actor_pids` in the
+    design covers. A capture started from `event.pid` alone would see nothing.
+  - **`-Q` is applied in tcpdump, not in the kernel.** Every packet still reaches tcpdump
+    ("drops by metadata filter"), so a pid filter saves parsing but not the copy. With
+    immediate mode and 0 lines printed, tcpdump used 0.50% of one core for about 373
+    packets/s.
+  - **CPU, always on:** 0.45% of one core for tcpdump, at 151 lines/s. On the same file,
+    `parse_pktap_line` takes 6.45 µs per line, about 0.10% of one core at 151 lines/s.
+  - **A new line shape:** 3150 of the 9076 lines (35%) are `(llw0, svc BE, out, ch)` with no
+    `proc`, sent between ULA addresses (`fdcb:…` → `fd0c:…`). They have no pid, so they
+    cannot be attributed, and the parser skips them. This is now pinned verbatim in
+    `test_rejects_other_lines`.
+  - In this capture: Brave Browser He:16112 → 74.125.250.248:3478, 5429 lines.
+- **Code changes:**
+  - `pktap_command()` adds `--immediate-mode`. On a pipe tcpdump buffers packets, up to about
+    1 s late, without it.
+  - The BPF filter is now `udp_filter()`, which excludes `DNS_PORTS` unless `include_dns`.
+    That removes the Avast DNS flows of the previous run.
+  - Suite: 209 passed, 7 skipped; ruff and mypy clean. As non-root, tcpdump accepts the new
+    command and stops at `SIOCIFCREATE`.
+- **Problems / regressions:** none. The CPU cost of `--immediate-mode` with a full Meet stream
+  (no pid filter) has not been measured. The 0.50% above was measured on the same packet
+  rate, but with nothing printed.
+- **Decision proposed:** the capture stays always on. It costs well under 1% of a core, and
+  a per-pid capture needs the whole process family and saves no kernel copy.
+
+## [2026-10-27 08:34 +0100] - pktap source live as root during a Meet call (Mac)
+
+- **Environment:** macOS 27.0.1, arm64 Apple M4, `main` at 90957d4 plus the uncommitted phase 1.
+  Root, via `sudo uv run`. The user ran it during a Meet call in Brave.
+- **Goal:** check that the real `pktap_command()` output matches the fixtures and gives
+  connections.
+- **Commands run:**
+  ```sh
+  sudo uv run python -c "import asyncio; from safemaxxing.pktap import PktapCapture
+  async def main():
+      async for c in PktapCapture().connections(): print(c.process_name, c.pid, c.remote, c.bundle_id)
+  asyncio.run(main())"
+  ```
+- **Result and raw data (verbatim):**
+  ```text
+  Brave Browser Helper 16112 74.125.250.248:3478 com.brave.Browser
+  com.avast.Antivirus.SystemExtension 30059 10.128.132.57:53 None
+  com.avast.Antivirus.SystemExtension 30059 10.128.132.57:53 None
+  kernel_task 0 10.244.255.255:137 None
+  ```
+  - **The format works live.** `-k -n -q -tt -l -i pktap,all -Q dir=out udp` prints the
+    lines the parser expects. The Meet call is a single connection for the NetworkService
+    helper (16112), and its full name comes from psutil. The bundle id is
+    `com.brave.Browser`, the outermost .app, so it matches Brave's sensor events exactly.
+  - **Avast's system extension (30059)** sends DNS to 10.128.132.57:53. Each query uses a
+    new source port, so each one is a new flow. The correlation engine drops them (port 53)
+    unless `include_dns`. Its bundle id is None because `enclosing_apps` looks only for `.app`
+    and the binary sits in a `.systemextension`.
+  - **kernel_task (pid 0)** sends NetBIOS (UDP 137) to the subnet's broadcast address
+    10.244.255.255. `is_relevant_destination` only knows 255.255.255.255, and pid 0 has no
+    executable path, so its flow was kept.
+- **Code changes:** `PktapFlowTracker` treats `pid == 0` (`KERNEL_PID`) as system: it is
+  dropped unless `include_system`. New test
+  `test_kernel_netbios_broadcast_dropped_as_system`. Suite: 208 passed, 7 skipped; ruff and
+  mypy clean.
+- **Problems / regressions:** none. Still open:
+  - a directed broadcast sent by a user process is still kept. It is rare, and it would need
+    the interfaces' broadcast addresses (`psutil.net_if_addrs`);
+  - a `.systemextension` gets no bundle id.
+- **Next steps:** wire it into `Supervisor` and the CLI; check that a Meet call raises the
+  alert end to end; measure CPU.
+
+## [2026-10-27 08:30 +0100] - pktap source, phase 1: parser, flow tracker, tcpdump wrapper (Mac, not root)
+
+- **Environment:** macOS 27.0.1, arm64 Apple M4, branch `main` at 90957d4 plus uncommitted
+  changes. Run as the user, not as root.
+- **Goal:** the first part of the pktap egress source from the **Now** task: the data model,
+  the tcpdump subprocess and the line parser, all tested offline on the recorded captures.
+- **Raw data used:** 5 pktap captures recorded by the user on 2026-10-26 15:57-16:01 and
+  2026-10-27 08:13-08:16. The exact commands are not recorded. Their stderr shows
+  `listening on pktap,all`, a metadata filter (`drops by metadata filter`), and only `out`
+  UDP packets:
+  | file | packets | span | outbound flows (proc, destination) |
+  |---|---|---|---|
+  | `pktap-idle.txt` | 2 | 0 s | WhatsApp:19122 → 57.144.249.32:443 |
+  | `pktap-meet.txt` | 5986 | 62.0 s | Brave Browser He:16112 → 74.125.250.240:3478 |
+  | `pktap-meet-pid.txt` | 2182 | 22.0 s | Brave Browser He:16112 → 74.125.250.252:3478 (another network) |
+  | `pktap-youtube.txt` | 68 | 45.7 s | amsaccountsd:808 → 17.253.122.199:443; replicatord:737 → 4 fe80:: peers on awdl0 |
+  | `pktap-youtube-buf.txt` | 299 | 6.0 s | replicatord:737 → fe80::3811:10ff:fedb:ad8a on awdl0 |
+
+  A Meet call is about 97 packets/s on a single flow. The YouTube captures have no Brave
+  packets at all. That is not explained yet: the filter used may have excluded Brave, or
+  the video was not using UDP at that moment.
+- **Code changes:**
+  - `models.py`: `Direction`, `PktapEvent` (with `flow_key` and `to_connection`) and
+    `PKTAP_STATUS`.
+  - New `safemaxxing/pktap.py`:
+    - `pktap_command()` builds `/usr/sbin/tcpdump -k -n -q -tt -l -i pktap,all -Q dir=out udp`;
+    - `parse_pktap_line()`;
+    - `is_relevant_destination()`;
+    - `PktapFlowTracker`;
+    - `PktapCapture`, with `lines()`, `events()` and `connections()`.
+  - New `tests/test_pktap.py` (47 tests). New `tests/fixtures/pktap/*.txt`: verbatim
+    excerpts (idle and youtube complete, the first 40 lines of the others).
+- **Commands run:**
+  ```sh
+  uv run ruff check src tests && uv run ruff format src tests
+  uv run mypy --strict
+  uv run pytest -q
+  /usr/sbin/tcpdump -k -n -q -tt -l -i pktap,all -Q dir=out -c 1 udp   # not root
+  ```
+- **Result and raw data:**
+  ```text
+  All checks passed!
+  Success: no issues found in 24 source files
+  207 passed, 7 skipped in 4.34s
+  tcpdump: ioctl(SIOCIFCREATE): Operation not permitted
+  ```
+  tcpdump accepted every option and stopped only when it tried to create the pktap
+  interface, which needs root. Offline replay of the fixtures through `PktapFlowTracker`:
+  - Meet: 1 connection, `Brave Browser Helper` → 74.125.250.240:3478 (UDP, status `PKTAP`);
+  - idle: 1 connection, WhatsApp;
+  - youtube and youtube-buf: 0 connections. amsaccountsd is dropped as a SIP binary,
+    replicatord's packets as link-local.
+
+  A mic event from Brave's main process (pid 6254) 1.1 s before the Meet flow gives the
+  alert `com.brave.Browser used microphone then connected to 74.125.250.240:3478 after
+  1100 ms`. The match is by bundle-id prefix, `com.brave.Browser.helper`.
+- **Problems / regressions:** one bug found and fixed while writing the tests. Leaving
+  `events()` early did not close the inner `lines()` generator, so tcpdump kept running.
+  `contextlib.aclosing` now closes it. Tests cover both cases: a child that ignores SIGTERM
+  is killed after `stop_timeout_s`, and a cancelled consumer still reaps the child.
+- **Next steps:**
+  - run `PktapCapture` as root during a Meet call and check that the real output matches
+    the fixtures (`-q` and `-Q dir=out` have not been seen on a live capture yet);
+  - wire it into `Supervisor` as a second connection source, with a CLI switch and a
+    `doctor` check;
+  - measure CPU.
+
 ## [2026-10-26 14:04 +0100] - Unconnected UDP during a Meet call: `nettop` no, pktap yes (Mac)
 
 - **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4, branch `main` at 796a8ea

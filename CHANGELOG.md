@@ -6,6 +6,18 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `safemaxxing.pktap`, the first part of a pktap egress source for UDP sockets that are never
+  `connect()`ed. These sockets have no remote address in the socket table, as with Meet's
+  media in Brave. The module has `PktapEvent` and `Direction` in `models.py`, a parser for
+  `tcpdump -k -n -q -tt` lines, and `PktapFlowTracker`. The tracker turns the first
+  outbound packet of each flow into a `NetworkConnection` with status `PKTAP`. It drops
+  link-local, multicast and broadcast destinations, and SIP binaries unless
+  `include_system`. `PktapCapture` runs tcpdump and always stops and reaps it. The source is
+  not wired into `Supervisor` or the CLI yet. The capture runs in `--immediate-mode` and
+  leaves out DNS ports. During a Meet call it costs about 0.5% of one core. (298328d)
+
 ## [0.1.1] - 2026-10-26
 
 Parser fixes from the Meet-in-Brave runs of 2026-10-26, checked by replaying every raw sample
