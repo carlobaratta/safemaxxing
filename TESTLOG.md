@@ -14,6 +14,60 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-27 08:47 +0100] - pktap phase 2: `--udp-flows`, Supervisor, doctor (Mac, not root, offline)
+
+- **Environment:** macOS 27.0.1, arm64 Apple M4, `main` at 8efa930 plus uncommitted
+  changes. Run as the user, not as root. No Meet call was available.
+- **Goal:** wire the pktap source into the tool. This follows the 2026-10-26 design: an
+  always-on capture, restarts, a root check and a doctor check.
+- **Code changes:**
+  - `pktap.py`:
+    - `PktapFlowTracker` gains `mute_until()` (flows first seen before it are tracked, not
+      returned) and `active()` (connections of the flows with a packet in the last
+      `idle_s`).
+    - `PktapCapture.connections()` mutes flows first seen within `warmup_s` (2 s) of each
+      run's first packet. It restarts tcpdump up to `max_restarts` (5) times in a row, with
+      a backoff of 1 s doubled each time up to 30 s, then raises the last `PktapError`.
+    - A spawn failure is now a `PktapError`.
+    - New `pktap_unavailable()`: the binary is missing, or the user is not root.
+  - `supervisor.py`:
+    - `Supervisor(pktap=...)` pumps the pktap connections next to the socket table.
+    - `active_connections()` adds pktap's active flows, and a key seen by both sources
+      appears once, because the TUI keys its rows on it.
+    - `Supervisor.default(udp_flows=True)` builds the capture from `include_system`,
+      `include_dns` and `include_loopback`.
+  - `cli.py`: `--udp-flows` on `tui` and `watch`. It exits 1 with the reason when
+    `pktap_unavailable()` gives one.
+  - `diagnostics.py`: `check_pktap`. It WARNs without root. As root it runs
+    `pktap_command()` for 2 s: still running means OK, otherwise it WARNs with the last
+    stderr line.
+  - README: the feature, the option table, doctor, the architecture and the known limits.
+- **Commands run:**
+  ```sh
+  uv run ruff check src tests && uv run ruff format src tests
+  uv run mypy --strict
+  uv run pytest -q
+  uv run safemaxxing watch --udp-flows; echo "exit=$?"
+  uv run safemaxxing doctor | tail -3
+  ```
+- **Result and raw data:**
+  ```text
+  All checks passed!
+  Success: no issues found in 24 source files
+  222 passed, 7 skipped in 4.47s
+  --udp-flows: capturing on pktap needs root: re-run with sudo
+  exit=1
+  ! pktap capture (--udp-flows): capturing on pktap needs root: re-run with sudo
+  ```
+  The pktap and supervisor tests ran 3 more times, all green, with no fake tcpdump left
+  running afterwards.
+- **Problems / regressions:**
+  - Two phase-1 tests needed `warmup_s=0` / `max_restarts=0` under the new defaults: a
+    recorded stream ends cleanly and would otherwise be restarted, and its first flow would
+    be muted.
+  - pktap flows have no hostname yet.
+- **Next steps:** the end-to-end check on a real Meet call as root (TODO **Now**).
+
 ## [2026-10-27 08:37 +0100] - pktap CPU and per-pid capture measured during a Meet call (Mac)
 
 - **Environment:** macOS 27.0.1, arm64 Apple M4, root. A Meet call in Brave: the

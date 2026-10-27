@@ -17,6 +17,12 @@ All notable changes are listed here. The format follows
   `include_system`. `PktapCapture` runs tcpdump and always stops and reaps it. The source is
   not wired into `Supervisor` or the CLI yet. The capture runs in `--immediate-mode` and
   leaves out DNS ports. During a Meet call it costs about 0.5% of one core. (298328d)
+- `--udp-flows` for `tui` and `watch` (root only) runs the pktap capture next to the socket
+  table, as a second connection source in `Supervisor`.
+  - Flows that are already open at start-up are tracked but are not new.
+  - tcpdump is restarted up to 5 times in a row, with a doubling backoff.
+  - pktap flows appear in the TUI's connections table with state `PKTAP`.
+  - `doctor` gains a `pktap capture (--udp-flows)` check: it WARNs, never FAILs. (d56aeef)
 
 ## [0.1.1] - 2026-10-26
 
