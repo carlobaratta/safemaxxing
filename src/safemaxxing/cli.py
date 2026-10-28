@@ -41,6 +41,15 @@ boot_app = typer.Typer(
 app.add_typer(boot_app, name="boot")
 
 WindowMs = Annotated[int, typer.Option("--window-ms", help="Correlation window in ms.", min=1)]
+DecayWindowMs = Annotated[
+    int,
+    typer.Option(
+        "--decay-window-ms",
+        help="Adaptive decay window in ms: still correlate a connection up to this long after a "
+        "sensor access (fading confidence, one severity step lower). 0 disables it.",
+        min=0,
+    ),
+]
 PollMs = Annotated[int, typer.Option("--poll-ms", help="Socket table poll interval in ms.", min=20)]
 Loopback = Annotated[bool, typer.Option("--include-loopback", help="Also track 127.0.0.1/::1.")]
 NoDns = Annotated[bool, typer.Option("--no-dns", help="Disable reverse DNS lookups.")]
@@ -62,6 +71,22 @@ UdpFlows = Annotated[
         "the socket table shows without a peer send, e.g. a WebRTC call.",
     ),
 ]
+TcpFlows = Annotated[
+    bool,
+    typer.Option(
+        "--tcp-flows",
+        help="Also capture outbound TCP SYNs with pktap (needs root): catches a socket that "
+        "opens and closes between two polls.",
+    ),
+]
+ThroughputOpt = Annotated[
+    bool,
+    typer.Option(
+        "--throughput",
+        help="Flag a pre-established connection when its outbound byte rate spikes (pktap, "
+        "needs root). Covers TCP only with --tcp-flows, else UDP flows.",
+    ),
+]
 Ignore = Annotated[
     list[str] | None,
     typer.Option("--ignore", help="Bundle id or process name to ignore (repeatable)."),
@@ -79,12 +104,17 @@ def _supervisor(
     include_system: bool,
     include_dns: bool,
     udp_flows: bool,
+    tcp_flows: bool = False,
+    throughput: bool = False,
+    decay_window_ms: int = 0,
 ) -> Supervisor:
-    if udp_flows and (problem := pktap_unavailable()):
-        console.print(f"[bold red]--udp-flows:[/] {escape(problem)}")
+    if (udp_flows or tcp_flows or throughput) and (problem := pktap_unavailable()):
+        flag = "--udp-flows" if udp_flows else "--tcp-flows" if tcp_flows else "--throughput"
+        console.print(f"[bold red]{flag}:[/] {escape(problem)}")
         raise typer.Exit(1)
     config = CorrelationConfig(
         window_s=window_ms / 1000,
+        decay_window_s=decay_window_ms / 1000,
         ignore=frozenset(ignore or ()),
         include_system=include_system,
         include_dns=include_dns,
@@ -95,6 +125,8 @@ def _supervisor(
         include_loopback=include_loopback,
         resolve_hostnames=not no_dns,
         udp_flows=udp_flows,
+        tcp_flows=tcp_flows,
+        throughput=throughput,
     )
 
 
@@ -128,6 +160,7 @@ def version() -> None:
 @app.command()
 def tui(
     window_ms: WindowMs = 2000,
+    decay_window_ms: DecayWindowMs = 0,
     poll_ms: PollMs = 200,
     include_loopback: Loopback = False,
     no_dns: NoDns = False,
@@ -135,6 +168,8 @@ def tui(
     include_system: IncludeSystem = False,
     include_dns: IncludeDns = False,
     udp_flows: UdpFlows = False,
+    tcp_flows: TcpFlows = False,
+    throughput: ThroughputOpt = False,
 ) -> None:
     """Interactive dashboard: alert feed, pf/pktap status, inspector and sensor events.
 
@@ -154,6 +189,9 @@ def tui(
         include_system,
         include_dns,
         udp_flows,
+        tcp_flows,
+        throughput,
+        decay_window_ms,
     )
     SafemaxxingApp(supervisor).run()
 
@@ -169,6 +207,7 @@ def _alert_json(alert: Alert) -> str:
 @app.command()
 def watch(
     window_ms: WindowMs = 2000,
+    decay_window_ms: DecayWindowMs = 0,
     poll_ms: PollMs = 200,
     include_loopback: Loopback = False,
     no_dns: NoDns = False,
@@ -176,6 +215,8 @@ def watch(
     include_system: IncludeSystem = False,
     include_dns: IncludeDns = False,
     udp_flows: UdpFlows = False,
+    tcp_flows: TcpFlows = False,
+    throughput: ThroughputOpt = False,
     as_json: Annotated[bool, typer.Option("--json", help="Emit alerts as JSON lines.")] = False,
     show_events: Annotated[
         bool, typer.Option("--events", help="Also print sensor events (not with --json).")
@@ -209,6 +250,9 @@ def watch(
         include_system,
         include_dns,
         udp_flows,
+        tcp_flows,
+        throughput,
+        decay_window_ms,
     )
     firewall, processes = _firewall(), ProcessController()
 

@@ -204,11 +204,22 @@ PKTAP_STATUS = "PKTAP"
 
 @dataclass(frozen=True, slots=True)
 class Finding:
-    """A sensor event causally linked to an outbound connection."""
+    """A sensor event causally linked to an outbound connection.
+
+    `weight` is the confidence the link is real, from the delay between the two: 1.0 inside
+    the hard correlation window, decaying toward 0.0 across the adaptive decay window (a late
+    upload after a local recording). It is 1.0 whenever decay is disabled.
+    """
 
     event: Event
     connection: NetworkConnection
     delta_s: float
+    weight: float = 1.0
+
+    @property
+    def late(self) -> bool:
+        """Whether the connection fell in the decay window rather than the hard window."""
+        return self.weight < 1.0
 
     @property
     def key(self) -> tuple[float, SensorType, int, Protocol, str, int, str, int]:

@@ -10,8 +10,10 @@ from typing import Final, TypeVar
 from safemaxxing.correlation import CorrelationConfig, CorrelationEngine
 from safemaxxing.models import Alert, Event, NetworkConnection
 from safemaxxing.network import HostnameResolver, NetworkMonitor
-from safemaxxing.pktap import PktapCapture, PktapFlowTracker, pktap_command, udp_filter
+from safemaxxing.pktap import PktapCapture, PktapFlowTracker, capture_filter, pktap_command
+from safemaxxing.process_tree import ProcessChainResolver
 from safemaxxing.sensors import SensorListener
+from safemaxxing.throughput import ThroughputDeltaMonitor
 
 type Update = Event | NetworkConnection | Alert
 
@@ -49,12 +51,21 @@ class Supervisor:
         include_loopback: bool = False,
         resolve_hostnames: bool = True,
         udp_flows: bool = False,
+        tcp_flows: bool = False,
+        throughput: bool = False,
+        attribute_children: bool = True,
     ) -> Supervisor:
         """Build a Supervisor on the real sensor listener and a polling NetworkMonitor.
 
-        Reverse-DNS hostname resolution is optional via `resolve_hostnames`. `udp_flows` adds
-        an always-on pktap capture (needs root) that follows `include_system`, `include_dns`
-        and `include_loopback` like the socket table does.
+        Reverse-DNS hostname resolution is optional via `resolve_hostnames`. Three pktap
+        sources (all needing root, all following `include_system`, `include_dns` and
+        `include_loopback` like the socket table) can be added: `udp_flows` for outbound UDP
+        the socket table shows without a peer; `tcp_flows` for outbound TCP SYNs, catching a
+        socket that opens and closes between two polls; and `throughput`, which re-surfaces a
+        pre-established flow when its outbound rate spikes (over TCP only when `tcp_flows` is
+        also on, since it needs the TCP packets). `attribute_children` links a socket back to
+        the app that spawned its owner or is responsible for it (off macOS, or without the
+        privilege to inspect a process, this resolves to a no-op).
         """
         config = config or CorrelationConfig()
         resolver = HostnameResolver() if resolve_hostnames else None
@@ -63,12 +74,18 @@ class Supervisor:
             include_loopback=include_loopback,
             resolver=resolver,
         )
+        actor_chain = ProcessChainResolver().chain if attribute_children else None
+        pktap = None
+        if udp_flows or tcp_flows or throughput:
+            pktap = _pktap_capture(
+                config, include_loopback, resolver, udp_flows, tcp_flows, throughput
+            )
         return cls(
             events=SensorListener().events(),
             connections=monitor.connections(),
-            engine=CorrelationEngine(config),
+            engine=CorrelationEngine(config, actor_chain=actor_chain),
             monitor=monitor,
-            pktap=_pktap_capture(config, include_loopback, resolver) if udp_flows else None,
+            pktap=pktap,
             resolver=resolver,
         )
 
@@ -128,11 +145,24 @@ class Supervisor:
 
 
 def _pktap_capture(
-    config: CorrelationConfig, include_loopback: bool, resolver: HostnameResolver | None
+    config: CorrelationConfig,
+    include_loopback: bool,
+    resolver: HostnameResolver | None,
+    udp_flows: bool,
+    tcp_flows: bool,
+    throughput: bool,
 ) -> PktapCapture:
     tracker = PktapFlowTracker(
         include_system=config.include_system, include_loopback=include_loopback
     )
-    command = pktap_command(bpf_filter=udp_filter(include_dns=config.include_dns))
+    bpf = capture_filter(
+        include_udp=udp_flows,
+        include_dns=config.include_dns,
+        # Throughput needs the data packets, so every TCP packet; otherwise only the SYNs.
+        tcp_syn=tcp_flows and not throughput,
+        tcp_data=tcp_flows and throughput,
+    )
+    command = pktap_command(bpf_filter=bpf)
+    monitor = ThroughputDeltaMonitor() if throughput else None
     # Shares the monitor's resolver: one cache, one thread pool, for both sources.
-    return PktapCapture(command=command, tracker=tracker, resolver=resolver)
+    return PktapCapture(command=command, tracker=tracker, resolver=resolver, throughput=monitor)

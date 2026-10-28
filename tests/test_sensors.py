@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import plistlib
 import sys
 import time
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import psutil
@@ -21,6 +23,7 @@ from safemaxxing.sensors import (
     SensorError,
     SensorEventParser,
     SensorListener,
+    is_candidate_subsystem,
     log_stream_command,
     parse_entry,
     parse_timestamp,
@@ -1335,3 +1338,71 @@ def test_possible_exes_for_bundle_counts_every_way_to_claim_an_id(
     monkeypatch.setattr(psutil, "process_iter", lambda attrs: map(Proc, exes))
     assert possible_exes_for_bundle("com.example.spy") == [spy, nested, moved]
     assert possible_exes_for_bundle("com.example.missing") == [moved]
+
+
+# --- M1.5: log-stream backpressure and pre-filtering ----------------------------------------
+
+
+def test_decoder_handles_a_burst_and_keeps_a_trailing_partial() -> None:
+    decoder = JsonStreamDecoder()
+    burst = "[" + ",".join(f'{{"subsystem":"com.apple.TCC","i":{i}}}' for i in range(5000))
+    entries = decoder.feed(burst)
+    assert len(entries) == 5000
+    assert entries[0]["i"] == 0 and entries[-1]["i"] == 4999
+    # A partial object at the tail is held until the next chunk completes it.
+    assert decoder.feed(',{"subsystem":"com.apple.cmio","i":5') == []
+    (tail,) = decoder.feed("000}")
+    assert tail["i"] == 5000
+
+
+def test_is_candidate_subsystem_matches_sensor_subsystems_only() -> None:
+    assert is_candidate_subsystem("com.apple.TCC")
+    assert is_candidate_subsystem("com.apple.cmio.AVCaptureSession")
+    assert is_candidate_subsystem("com.apple.controlcenter")
+    assert not is_candidate_subsystem("com.apple.WindowServer")
+    assert not is_candidate_subsystem("")
+
+
+class _StubListener(SensorListener):
+    """A listener whose `entries` replays a fixed sequence instead of reading `log stream`."""
+
+    def __init__(self, entries: list[dict[str, object]], **kwargs: object) -> None:
+        super().__init__(command=["unused"], **kwargs)  # type: ignore[arg-type]
+        self._stub = entries
+
+    async def entries(self) -> AsyncIterator[dict[str, object]]:
+        for entry in self._stub:
+            yield entry
+
+
+async def test_reader_filters_non_sensor_subsystems() -> None:
+    listener = _StubListener(
+        [
+            {"subsystem": "com.apple.TCC", "eventMessage": "kTCCServiceCamera"},
+            {"subsystem": "com.apple.WindowServer", "eventMessage": "noise"},
+        ]
+    )
+    queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue(maxsize=10)
+    await listener._read_into(queue)
+    assert listener.filtered == 1
+    assert listener.dropped == 0
+    first = queue.get_nowait()
+    assert first is not None and first["subsystem"] == "com.apple.TCC"
+    assert queue.get_nowait() is None
+
+
+async def test_reader_drops_oldest_under_backpressure_without_blocking() -> None:
+    listener = _StubListener(
+        [
+            {"subsystem": "com.apple.TCC", "eventMessage": "kTCCServiceCamera", "i": i}
+            for i in range(50)
+        ]
+    )
+    # A tiny queue and no consumer: the reader must still finish (never block), shedding load.
+    queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue(maxsize=4)
+    await asyncio.wait_for(listener._read_into(queue), timeout=1.0)
+    assert listener.dropped >= 40
+    drained = []
+    while not queue.empty():
+        drained.append(queue.get_nowait())
+    assert drained[-1] is None  # the stop marker is always delivered last

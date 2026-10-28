@@ -39,6 +39,11 @@ class CorrelationConfig:
     # Measured on macOS 27: Google Meet in Brave opened its media socket 1.1 s after the
     # microphone permission check, so 0.5 s missed it.
     window_s: float = 2.0
+    # Adaptive decay window: a connection arriving after `window_s` but within `decay_window_s`
+    # of a sensor access still correlates, with a confidence that fades linearly from 1.0 to 0.0
+    # across the gap and drops the alert one severity step. This catches record-locally-then-
+    # upload exfiltration that outlasts the hard window. 0.0 (or <= window_s) disables it.
+    decay_window_s: float = 0.0
     # The socket can be observed slightly before the log line's timestamp (clock/poll jitter).
     clock_skew_s: float = 0.05
     # `log stream` may deliver entries late; keep items long enough to match out-of-order input.
@@ -52,9 +57,15 @@ class CorrelationConfig:
     include_dns: bool = False
 
     @property
+    def horizon_s(self) -> float:
+        """The furthest a connection can trail an event and still match: the decay window when
+        it is enabled, otherwise the hard window."""
+        return max(self.window_s, self.decay_window_s)
+
+    @property
     def retention_s(self) -> float:
-        """How long events and connections stay buffered: the window plus late-arrival slack."""
-        return self.window_s + self.late_arrival_s
+        """How long events and connections stay buffered: the horizon plus late-arrival slack."""
+        return self.horizon_s + self.late_arrival_s
 
 
 # A DNS lookup is the prelude to a connection, not the exfiltration itself.
@@ -90,15 +101,24 @@ class CorrelationEngine:
     """
 
     def __init__(
-        self, config: CorrelationConfig | None = None, clock: Callable[[], float] = time.time
+        self,
+        config: CorrelationConfig | None = None,
+        clock: Callable[[], float] = time.time,
+        actor_chain: Callable[[int], frozenset[int]] | None = None,
     ) -> None:
         self.config = config or CorrelationConfig()
         self._clock = clock
+        # Maps a connection's owning pid to the pids accountable for it (the app that spawned a
+        # helper, or delegated to a daemon). None disables it, leaving matching on pid/bundle.
+        self._actor_chain = actor_chain
         self._events: deque[Event] = deque(maxlen=self.config.buffer_size)
         self._connections: deque[NetworkConnection] = deque(maxlen=self.config.buffer_size)
         self._seen: set[tuple[object, ...]] = set()
         self._last_alert: dict[tuple[int, SensorType, str], float] = {}
         self._alerted: dict[tuple[object, ...], Alert] = {}
+        # pid -> accountable pids, memoised within a retention window and dropped by `_advance`
+        # before pids can be reused, so a resolved chain is never attributed to a new process.
+        self._chains: dict[int, frozenset[int]] = {}
         self._ids = itertools.count(1)
         self._horizon = 0.0
 
@@ -121,22 +141,45 @@ class CorrelationEngine:
             self._connections.popleft()
         if len(self._seen) > self.config.buffer_size * 8:
             self._seen.clear()
+        if len(self._chains) > self.config.buffer_size:
+            self._chains.clear()
         if len(self._alerted) > 256:
             self._alerted = {
                 k: a for k, a in self._alerted.items() if a.finding.connection.first_seen >= cutoff
             }
 
+    def _chained(self, event: Event, conn: NetworkConnection) -> bool:
+        """Whether `event`'s process is accountable for `conn`'s owner (spawned it, or is its
+        responsible process). Looks up the owner's chain once, memoised for the window."""
+        if self._actor_chain is None or event.pid is None or event.pid == conn.pid:
+            return False
+        chain = self._chains.get(conn.pid)
+        if chain is None:
+            chain = self._actor_chain(conn.pid)
+            self._chains[conn.pid] = chain
+        return event.pid in chain
+
+    def _weight(self, delta: float) -> float:
+        """Confidence for a delay of `delta` seconds: 1.0 within the hard window, fading
+        linearly to 0.0 at the decay window's edge. Always 1.0 when decay is disabled."""
+        if delta <= self.config.window_s or self.config.decay_window_s <= self.config.window_s:
+            return 1.0
+        span = self.config.decay_window_s - self.config.window_s
+        return max(0.0, 1.0 - (delta - self.config.window_s) / span)
+
     def _matches(self, event: Event, conn: NetworkConnection) -> Finding | None:
         delta = conn.first_seen - event.timestamp
-        if not -self.config.clock_skew_s <= delta <= self.config.window_s:
+        if not -self.config.clock_skew_s <= delta <= self.config.horizon_s:
             return None
-        if not same_actor(event, conn):
+        if not (same_actor(event, conn) or self._chained(event, conn)):
             return None
-        return Finding(event=event, connection=conn, delta_s=max(delta, 0.0))
+        return Finding(
+            event=event, connection=conn, delta_s=max(delta, 0.0), weight=self._weight(delta)
+        )
 
-    def _sensors_for(self, conn: NetworkConnection) -> frozenset[SensorType]:
+    def _findings_for(self, conn: NetworkConnection) -> list[Finding]:
         # Same bounds as `_matches`: an event a few ms after the socket (clock skew) counts.
-        return frozenset(e.sensor for e in self._events if self._matches(e, conn) is not None)
+        return [f for e in self._events if (f := self._matches(e, conn)) is not None]
 
     @staticmethod
     def _severity(sensors: frozenset[SensorType]) -> Severity:
@@ -170,11 +213,17 @@ class CorrelationEngine:
                 last = self._last_alert.get((conn.pid, ev.sensor, conn.remote_address))
                 if last is not None and now - last < self.config.alert_cooldown_s:
                     continue
-                sensors = self._sensors_for(conn) | {ev.sensor}
+                findings = self._findings_for(conn)
+                sensors = frozenset(f.event.sensor for f in findings) | {ev.sensor}
+                severity = self._severity(sensors)
+                # A connection backed only by decayed (late) matches is a weaker signal: drop
+                # one severity step, floored at low, so a late upload still alerts quietly.
+                if finding.late and all(f.late for f in findings):
+                    severity = Severity(max(Severity.LOW, severity - 1))
                 alert = Alert(
                     id=next(self._ids),
                     finding=finding,
-                    severity=self._severity(sensors),
+                    severity=severity,
                     created_at=now,
                     sensors=sensors,
                 )

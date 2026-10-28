@@ -160,22 +160,29 @@ class JsonStreamDecoder:
     def feed(self, chunk: str) -> list[dict[str, object]]:
         self._buffer += chunk
         out: list[dict[str, object]] = []
+        # Walk a read offset and slice the buffer once at the end, rather than re-slicing (and
+        # re-scanning from zero) per object: under a burst of thousands of entries that keeps
+        # the pass linear instead of quadratic in the buffer length.
+        pos = 0
         while True:
-            start = self._buffer.find("{")
+            start = self._buffer.find("{", pos)
             if start < 0:
-                self._buffer = ""
+                pos = len(self._buffer)
                 break
             try:
                 value, end = self._decoder.raw_decode(self._buffer, start)
             except json.JSONDecodeError:
+                # A partial object at the tail: keep it for the next chunk. If it has grown past
+                # the cap it is not valid JSON we will ever complete, so skip one char to resync.
                 if len(self._buffer) - start > self._max_buffer:
-                    self._buffer = self._buffer[start + 1 :]
+                    pos = start + 1
                     continue
-                self._buffer = self._buffer[start:]
+                pos = start
                 break
-            self._buffer = self._buffer[end:]
+            pos = end
             if isinstance(value, dict):
                 out.append(value)
+        self._buffer = self._buffer[pos:]
         return out
 
 
@@ -566,6 +573,25 @@ class _ProcessEnricher:
         )
 
 
+# Subsystems the parser can turn into events. A cheap gate on each decoded entry drops anything
+# else before the stateful parse and the Control Center process-table walk, so a wide predicate
+# or a log flood cannot bury the sensor entries. It is a prefix superset of what `parse` accepts
+# (which matches `com.apple.TCC` and `com.apple.controlcenter` exactly and the rest by prefix),
+# so it can never discard a real sensor event.
+_CANDIDATE_SUBSYSTEMS = (
+    SUBSYSTEM_TCC,
+    SUBSYSTEM_CONTROLCENTER,
+    SUBSYSTEM_LOCATION,
+    SUBSYSTEM_AUDIO,
+    SUBSYSTEM_CMIO,
+)
+
+
+def is_candidate_subsystem(subsystem: str) -> bool:
+    """Whether an entry from `subsystem` could classify, so is worth parsing."""
+    return subsystem.startswith(_CANDIDATE_SUBSYSTEMS)
+
+
 class SensorListener:
     """Async wrapper around `log stream` yielding classified sensor events."""
 
@@ -576,12 +602,18 @@ class SensorListener:
         process_lookup: ProcessInfo = process_info,
         bundle_exes: BundleExes = possible_exes_for_bundle,
         bundle_lookup_timeout_s: float = 1.0,
+        buffer_entries: int = 1024,
     ) -> None:
         self._command = list(command) if command is not None else log_stream_command()
         self._cooldown = _Cooldown(cooldown_s)
         self._enrich = _ProcessEnricher(process_lookup)
         self._bundle_exes = bundle_exes
         self._bundle_lookup_timeout_s = bundle_lookup_timeout_s
+        self._buffer_entries = buffer_entries
+        # Observability counters: entries skipped before parse by the subsystem gate, and entries
+        # lost to a full buffer under flood. Public so a caller can report load-shedding.
+        self.filtered = 0
+        self.dropped = 0
 
     async def entries(self) -> AsyncIterator[dict[str, object]]:
         """Raw unified-log entries; raises `SensorError` if `log` exits with an error."""
@@ -623,18 +655,68 @@ class SensorListener:
             return dataclasses.replace(event, system=True)
         return event
 
-    async def events(self) -> AsyncIterator[Event]:
-        parser = SensorEventParser()
-        async for entry in self.entries():
-            for event in parser.parse(entry):
-                if not self._cooldown.accept(event):
+    async def _read_into(self, queue: asyncio.Queue[dict[str, object] | None]) -> None:
+        """Drain stdout into `queue`, dropping the oldest entry when it is full.
+
+        Reading is decoupled from the classification below so a burst never blocks the reader:
+        if the consumer cannot keep up, the bounded queue sheds its oldest entries (counted)
+        rather than letting the `log` pipe back up and age out the correlation clock. The
+        subsystem gate keeps irrelevant entries from taking a slot at all. A `None` is always
+        queued last so the consumer can stop; an error from `entries()` is raised there.
+        """
+        try:
+            async for entry in self.entries():
+                if not is_candidate_subsystem(_str(entry, "subsystem")):
+                    self.filtered += 1
                     continue
-                if event.subsystem == SUBSYSTEM_CONTROLCENTER:
-                    # Walks the process table (~60-100 ms cold): keep it off the event loop, and
-                    # leave the event visible if it takes too long.
-                    with contextlib.suppress(TimeoutError):
-                        event = await asyncio.wait_for(
-                            asyncio.to_thread(self._mark_indicator_system, event),
-                            self._bundle_lookup_timeout_s,
-                        )
-                yield self._enrich(event)
+                try:
+                    queue.put_nowait(entry)
+                except asyncio.QueueFull:
+                    with contextlib.suppress(asyncio.QueueEmpty):
+                        queue.get_nowait()
+                        self.dropped += 1
+                    queue.put_nowait(entry)
+        finally:
+            # A helper, not an inline loop: a `return`/`break` in a `finally` would swallow a
+            # `SensorError` raised by `entries()`, which the consumer re-raises after draining.
+            self._enqueue_done(queue)
+
+    @staticmethod
+    def _enqueue_done(queue: asyncio.Queue[dict[str, object] | None]) -> None:
+        """Queue the `None` stop marker, making room by dropping an entry if the queue is full."""
+        while True:
+            try:
+                queue.put_nowait(None)
+                return
+            except asyncio.QueueFull:
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return
+
+    async def events(self) -> AsyncIterator[Event]:
+        queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue(maxsize=self._buffer_entries)
+        reader = asyncio.create_task(self._read_into(queue))
+        parser = SensorEventParser()
+        try:
+            while True:
+                entry = await queue.get()
+                if entry is None:
+                    break
+                for event in parser.parse(entry):
+                    if not self._cooldown.accept(event):
+                        continue
+                    if event.subsystem == SUBSYSTEM_CONTROLCENTER:
+                        # Walks the process table (~60-100 ms cold): keep it off the event loop,
+                        # and leave the event visible if it takes too long.
+                        with contextlib.suppress(TimeoutError):
+                            event = await asyncio.wait_for(
+                                asyncio.to_thread(self._mark_indicator_system, event),
+                                self._bundle_lookup_timeout_s,
+                            )
+                    yield self._enrich(event)
+            await reader  # propagate a SensorError from `log` once the queue has drained
+        finally:
+            reader.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reader
