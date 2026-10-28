@@ -29,6 +29,10 @@ dependencies = [
     "psutil>=6.0.0",
 ]
 
+[project.optional-dependencies]
+# The menu-bar companion (`safemaxxing menubar`); macOS only. Everything else is headless.
+menubar = ["rumps>=0.4.0"]
+
 [project.scripts]
 safemaxxing = "safemaxxing.cli:app"
 
@@ -81,6 +85,11 @@ warn_unused_ignores = true
 disallow_any_generics = true
 files = ["src", "tests"]
 mypy_path = "tests"
+
+# rumps (the optional `menubar` extra) ships no type stubs and is absent on Linux/CI.
+[[tool.mypy.overrides]]
+module = ["rumps"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

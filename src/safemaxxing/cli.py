@@ -196,6 +196,40 @@ def tui(
     SafemaxxingApp(supervisor).run()
 
 
+@app.command()
+def menubar(
+    window_ms: WindowMs = 2000,
+    poll_ms: PollMs = 200,
+    include_loopback: Loopback = False,
+    no_dns: NoDns = False,
+    ignore: Ignore = None,
+    include_system: IncludeSystem = False,
+    include_dns: IncludeDns = False,
+    udp_flows: UdpFlows = False,
+) -> None:
+    """macOS menu-bar companion: a live status icon, the last alerts with quick actions, the
+    Auto-Block/Auto-Suspend toggles and the blocked-IP list. Needs the `menubar` extra (rumps)
+    and root for full visibility.
+    """
+    from safemaxxing.menubar import MENUBAR_HINT, menubar_available, run_menubar
+
+    if not menubar_available():
+        console.print(f"[bold red]menubar:[/] {escape(MENUBAR_HINT)}")
+        raise typer.Exit(1)
+    _warn_if_not_root()
+    supervisor = _supervisor(
+        window_ms,
+        poll_ms,
+        include_loopback,
+        no_dns,
+        ignore,
+        include_system,
+        include_dns,
+        udp_flows,
+    )
+    run_menubar(supervisor, _firewall(), ProcessController())
+
+
 def _alert_json(alert: Alert) -> str:
     payload = dataclasses.asdict(alert)
     payload["severity"] = alert.severity.label
