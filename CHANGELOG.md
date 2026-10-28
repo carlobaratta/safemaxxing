@@ -23,6 +23,12 @@ All notable changes are listed here. The format follows
   - tcpdump is restarted up to 5 times in a row, with a doubling backoff.
   - pktap flows appear in the TUI's connections table with state `PKTAP`.
   - `doctor` gains a `pktap capture (--udp-flows)` check: it WARNs, never FAILs. (d56aeef)
+- pktap flows take their hostname from the reverse-DNS cache that the socket table also
+  uses. Each new destination is prefetched, and nothing waits on the lookup.
+- pktap drops flows to an interface's IPv4 broadcast address, for example 10.243.255.255 on
+  a /16.
+- A binary inside a `.systemextension` that is in no `.app`, such as Avast's network
+  extension, now gets that extension's bundle id. Before, it got none. (c8edaa9)
 
 ## [0.1.1] - 2026-10-26
 

@@ -14,6 +14,32 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-28 11:05 +0100] - pktap leftovers: hostnames, directed broadcasts, system-extension bundle ids (Mac, offline)
+
+- **Environment:** macOS 27.0.1, arm64 Apple M4, `main` at 6bd75f7 plus uncommitted
+  changes, not root.
+- **Goal:** the three pktap Backlog items found in the live runs of 2026-10-27/28.
+- **Code changes:**
+  - **Hostnames.** `PktapCapture(resolver=...)` prefetches each new flow's destination and
+    names flows from the cache. `PktapCapture.active()` returns named flows, and
+    `Supervisor.active_connections()` uses it. `Supervisor.default` gives the monitor and
+    pktap one shared `HostnameResolver`.
+  - **Directed broadcasts.** `interface_broadcasts()` lists each interface's IPv4 broadcast
+    from `psutil.net_if_addrs()`. It takes 1.14 ms here and gave en0 `10.243.255.255`, a /16.
+    `PktapFlowTracker` reads it per new flow, because the network can change under a running
+    capture, and drops flows sent there.
+  - **System extensions.** `bundle_id_for_exe` falls back to the innermost `.systemextension`
+    when no `.app` encloses the binary. An enclosing `.app` still wins. This also gives the
+    bundle id to pid-only sensor events from such binaries, through `_ProcessEnricher`.
+    `possible_exes_for_bundle` is unchanged.
+- **Commands run:** `uv run ruff check src tests`, `uv run mypy --strict`, `uv run pytest -q`.
+- **Result:** `All checks passed!`, `Success: no issues found in 24 source files`,
+  `227 passed, 7 skipped in 4.36s`. The hostname test passed 3 times in a row: the yielded
+  connection is unnamed until the lookup lands in the cache, and named once it has.
+- **Problems / regressions:** none. Not run live: the end-to-end alert of 2026-10-28 already
+  covers the path the changes touch.
+- **Next steps:** none for pktap. The `Next Up` items need the Mac and the user.
+
 ## [2026-10-28 11:01 +0100] - `--udp-flows` end to end: a Meet call in Brave raises a critical alert (Mac)
 
 - **Environment:** macOS 27.0.1, arm64 Apple M4, root, `main` at 74b4c14 (code unchanged since
