@@ -59,6 +59,7 @@ dev = [
     "ruff>=0.6.0",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
+    "pytest-timeout>=2.3.0",
     "types-psutil>=6.0.0",
 ]
 
@@ -85,3 +86,8 @@ mypy_path = "tests"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = ["live: needs a real Mac, root and SAFEMAXXING_LIVE=1"]
+# Fail a hung test in seconds instead of letting it burn the whole CI job to its 15-minute
+# timeout: the suite runs in a few seconds, so 60 s only ever fires on a real deadlock, and the
+# thread method prints the stack of the stuck test (safe with the asyncio and subprocess tests).
+timeout = 60
+timeout_method = "thread"
