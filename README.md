@@ -414,12 +414,13 @@ Per una validazione completa con raccolta delle evidenze in `testlogs/` c'è
 
 | File | Contenuto |
 |------|-----------|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Architettura, diagrammi Mermaid (correlazione, iniezione delle dipendenze, severità) |
 | [CHANGELOG.md](CHANGELOG.md) | Modifiche visibili all'utente |
 | [TODO.md](TODO.md) | Task aperti, in corso e completati (con commit) |
 | [TESTLOG.md](TESTLOG.md) | Ogni sessione di test, con ambiente, comandi e risultati grezzi |
 | [testlogs/](testlogs/) | Log grezzi di `scripts/macos_validate.sh` dal Mac |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Ciclo di sviluppo, test live, convenzioni |
-| [SECURITY.md](SECURITY.md) | Segnalazione vulnerabilità, cosa safemaxxing modifica sul sistema |
+| [SECURITY.md](SECURITY.md) | Threat model, segnalazione vulnerabilità, pf/token, cosa modifica sul sistema |
 
 ## Licenza
 

@@ -19,6 +19,35 @@ anything personal from logs: raw `log stream` captures contain app activity and 
 safemaxxing is alpha (0.1.x). Only the latest commit on `main` receives fixes.
 Validation so far has been on macOS 27.0.1, Apple Silicon (see [TESTLOG.md](TESTLOG.md)).
 
+## Threat model
+
+safemaxxing is a user-space privacy supervisor, not a kernel security product. It assumes a
+sound kernel and a trusted root, and it reasons only about what macOS already reports.
+
+What it defends against:
+
+- a local app or malware that uses a sensor and then exfiltrates over a *new* socket or an
+  unconnected UDP flow — it surfaces the sensor → egress correlation and lets you block the
+  destination (pf) or stop the process (SIGSTOP / SIGKILL);
+- after the fact, keeping a record of which process reached which address, and which sensor
+  access preceded it.
+
+Explicit non-goals (out of scope by design):
+
+- a kernel rootkit, a compromised kernel, or anything that subverts the unified log, the socket
+  table or pktap themselves — safemaxxing trusts those sources;
+- a compromise of pf itself, or another root process rewriting the anchor or the block table;
+- a malicious or already-compromised root user: safemaxxing runs as root and offers no defence
+  against code that is already root;
+- physical access, firmware, or the Secure Enclave;
+- exfiltration that reuses an already-open socket, is relayed by a system daemon, or completes
+  inside one poll interval (see the README's known limits).
+
+This is the line between a user-space / pf supervisor and a kernel extension or an Endpoint
+Security Framework client: the latter sees every exec and socket from the kernel and can block
+inline, at the cost of a system extension, special entitlements and far more privilege.
+safemaxxing deliberately stays in user space and leans on pf.
+
 ## Scope
 
 In scope:
@@ -64,3 +93,42 @@ running as that user execute code as root. The only input the job reads is the r
 
 `--auto-block` and `--auto-suspend` act on a heuristic (a sensor event followed by egress in
 the correlation window). Try them on a test machine before relying on them.
+
+## pf: enabling, the reference token and `flush`
+
+pf on macOS is reference-counted. `pfctl -E` enables it *and* takes a reference, so pf is not
+disabled while any holder — safemaxxing, Internet Sharing, a VPN — still holds one; `pfctl -e`
+is the plain enable without a reference. safemaxxing enables pf with `pfctl -E` and falls back
+to `-e`, and it **never releases its reference** (it does not run `pfctl -X <token>`): pf, and
+the blocks loaded in the anchor, are meant to outlive the process. The cost is a small,
+deliberate reference leak — pf stays enabled after safemaxxing exits, which is the safe
+direction to err in.
+
+`safemaxxing flush` empties the `safemaxxing_block` table (`pfctl -T flush`) and clears the
+saved blocklist. It deliberately does **not** run `pfctl -d`: disabling pf is global and would
+take the firewall down for every other user of it. It also leaves the anchor rule loaded — a
+`block drop out quick ... to <safemaxxing_block>` rule over an empty table matches nothing, so
+it is inert until the next block and removing it is neither necessary nor worth risking the
+ruleset. `/etc/pf.conf` is never touched; rules live only in the `com.apple/safemaxxing`
+sub-anchor, which the stock ruleset already evaluates through `anchor "com.apple/*"`.
+
+## Running as root, pktap and SIGSTOP
+
+**Root.** Reading other users' sockets, driving pfctl and signalling foreign processes all need
+root, so safemaxxing runs under `sudo`. Every parser therefore runs as root over untrusted
+input — crafted log lines, socket tables, a running app's `Info.plist` — so those paths read
+bounded amounts, never evaluate their input, and treat each field as hostile. Run it from a
+root-owned location: a root process launched from a user-writable virtualenv would let any code
+running as that user execute as root (the boot job avoids this by running only `/bin/sh` and
+`/sbin/pfctl`, never safemaxxing itself).
+
+**pktap.** `tcpdump -k` on a pktap interface is a system-wide packet capture: it exposes
+per-packet process metadata for every process, not only the one under suspicion. It is
+read-only — safemaxxing observes, it never injects — but it is privileged visibility, so the
+capture is scoped to outbound packets and the data never leaves the machine.
+
+**SIGSTOP on GUI processes.** `SIGSTOP` cannot be caught or ignored, which is what makes it a
+reliable freeze — but stopping an AppKit process that holds a WindowServer resource can wedge
+its windows or briefly stall the UI until `SIGCONT` (TUI `r` / `thaw`). `SIGKILL` on a stopped
+GUI app can leave orphaned windows that clear on relaunch. Prefer freeze-then-inspect over kill,
+and rehearse the automatic responses on a spare machine first.
