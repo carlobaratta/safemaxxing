@@ -266,7 +266,7 @@ class SafemaxxingApp(App[None]):
 
     def flush_log(self) -> None:
         """Write the queued lines in one go, noting how many were dropped since the last flush."""
-        if not self._pending_total:
+        if not self._pending_total or not self.is_running:
             return
         log = self.query_one("#events", RichLog)
         dropped = self._pending_total - len(self._pending)
@@ -497,6 +497,9 @@ class SafemaxxingApp(App[None]):
 
     def tick(self) -> None:
         """Once a second: egress table, feed cells, counters, panels and status bar."""
+        # Textual stops app timers only after removing the screens: a late tick finds no widgets.
+        if not self.is_running:
+            return
         self.refresh_connections()
         self._refresh_feed_rows()
         self.stats = self._sample_stats()
@@ -519,6 +522,9 @@ class SafemaxxingApp(App[None]):
             else:
                 self.pf_status = PfStatus(enabled, loaded, blocked)
                 self.blocked = {_normal_ip(ip) for ip in blocked}
+        # pfctl can outlast the app: it may have shut down while we awaited.
+        if not self.is_running:
+            return
         self.query_one(FirewallPanel).show(self.pf_status, self.stats)
         self._refresh_feed_rows()
 

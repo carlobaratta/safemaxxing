@@ -5,6 +5,7 @@ import dataclasses
 import io
 from collections.abc import Callable, Sequence
 
+import pytest
 from conftest import T0, make_conn, make_event
 from rich.console import Console, ConsoleRenderable
 from rich.text import Text
@@ -337,3 +338,20 @@ async def test_inspector_reads_the_signature_once() -> None:
         await pilot.pause()
         assert calls == [exe]
         assert "Software Signing" in plain(app.query_one("#inspector", Static).content)
+
+
+async def test_timers_firing_during_shutdown_do_not_crash(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Textual stops the app's timers only after removing its screens; on a slow runner
+    # (macos-15-intel, 2026-10-28) `tick` and `flush_log` fired in between.
+    app = make_app()
+    close_all = app._close_all
+
+    async def close_then_tick() -> None:
+        await close_all()
+        app.log_line(Text("late line"))
+        app.tick()
+        app.flush_log()
+
+    async with app.run_test() as pilot:
+        await wait_for(pilot, lambda: bool(app.alerts))
+        monkeypatch.setattr(app, "_close_all", close_then_tick)
