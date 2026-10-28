@@ -312,3 +312,42 @@ def test_pktap_syn_and_socket_poll_of_one_flow_alert_once() -> None:
     alerts = eng.ingest_connection(syn) + eng.ingest_connection(polled)
     assert len(alerts) == 1
     assert round(alerts[0].finding.delta_s, 3) == 0.02
+
+
+def _chain_engine(chains: dict[int, frozenset[int]]) -> CorrelationEngine:
+    return CorrelationEngine(
+        CorrelationConfig(),
+        clock=lambda: T0,
+        actor_chain=lambda pid: chains.get(pid, frozenset({pid})),
+    )
+
+
+def test_system_delegate_socket_caught_via_chain_without_include_system() -> None:
+    # The app (4242, non-system) used the camera; the upload is owned by /usr/bin/curl (5001),
+    # a system binary. The chain attributes it, so it alerts even with include_system off.
+    eng = _chain_engine({5001: frozenset({5001, 4242})})
+    eng.ingest_event(make_event(pid=4242, bundle_id=None, process_name="app"))
+    conn = make_conn(pid=5001, process_name="curl", exe_path="/usr/bin/curl", first_seen=T0 + 0.1)
+    (alert,) = eng.ingest_connection(conn)
+    assert alert.severity is Severity.HIGH
+
+
+def test_system_socket_without_an_accountable_sensor_user_is_dropped() -> None:
+    # nsurlsessiond's socket with no accountable sensor user stays Apple's own traffic: dropped.
+    eng = _chain_engine({5001: frozenset({5001})})
+    eng.ingest_event(make_event(pid=4242, bundle_id=None, process_name="app"))
+    conn = make_conn(
+        pid=5001,
+        process_name="nsurlsessiond",
+        exe_path="/usr/libexec/nsurlsessiond",
+        first_seen=T0 + 0.1,
+    )
+    assert eng.ingest_connection(conn) == []
+
+
+def test_system_socket_dropped_when_attribution_disabled() -> None:
+    # Backward compatible: with no actor chain, a system-path socket is dropped as before.
+    eng = engine()
+    eng.ingest_event(make_event(pid=4242, bundle_id=None, process_name="app"))
+    conn = make_conn(pid=5001, exe_path="/usr/bin/curl", first_seen=T0 + 0.1)
+    assert eng.ingest_connection(conn) == []

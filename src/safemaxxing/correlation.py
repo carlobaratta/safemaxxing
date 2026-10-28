@@ -253,18 +253,26 @@ class CorrelationEngine:
     def ingest_connection(self, conn: NetworkConnection) -> list[Alert]:
         """Buffer an outbound connection and return alerts for buffered events preceding it.
 
-        Ignored processes, system-path binaries (unless `include_system`) and DNS ports
-        (unless `include_dns`) are dropped. Severity starts from the sensor's base level
-        (high for camera, microphone, location and screen; medium for other TCC) and rises one
-        step, up to critical, when several distinct sensors precede the same connection.
+        Ignored processes and DNS ports (unless `include_dns`) are dropped. A system-path
+        binary's socket is dropped too (unless `include_system`) -- except when a non-system
+        process accountable for it used a sensor, see below. Severity starts from the sensor's
+        base level (high for camera, microphone, location and screen; medium for other TCC) and
+        rises one step, up to critical, when several distinct sensors precede the same connection.
         """
         if self._ignored(conn.bundle_id, conn.process_name):
-            return []
-        if not self.config.include_system and is_system_path(conn.exe_path):
             return []
         if not self.config.include_dns and conn.remote_port in DNS_PORTS:
             return []
         self._advance(conn.first_seen)
-        self._connections.append(conn)
         found = [f for e in self._events if (f := self._matches(e, conn)) is not None]
+        if not self.config.include_system and is_system_path(conn.exe_path):
+            # A system-path binary's socket is Apple's own traffic by default and dropped --
+            # unless a non-system process accountable for it (one it was spawned by, or is the
+            # responsible process of) just used a sensor. That is the delegate-the-egress case
+            # (an app handing the upload to curl, nsurlsessiond or an XPC service) the actor
+            # chain exists to catch, so the socket is kept only on its chained matches.
+            found = [f for f in found if self._chained(f.event, conn)]
+            if not found:
+                return []
+        self._connections.append(conn)
         return self._emit(found)

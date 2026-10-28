@@ -30,17 +30,14 @@ def test_screencapture_is_hidden_unless_system_is_included() -> None:
     assert alert.sensors == {SensorType.SCREEN_CAPTURE}
 
 
-def test_camera_then_curl_upload_needs_both_chain_and_include_system() -> None:
-    # curl (5001) owns the socket and is a different actor from the app (4242). Two things stand
-    # between this and an alert: the process chain (to attribute curl's socket to the app) and
-    # --include-system (because /usr/bin/curl is a system binary, so its socket is otherwise
-    # dropped before correlation). Both are needed; neither alone suffices.
+def test_camera_then_curl_upload_caught_by_the_process_chain() -> None:
+    # curl (5001, /usr/bin/curl) owns the socket: a different actor from the app (4242) and a
+    # system binary. Without the chain it is dropped. With the chain, the app that used the
+    # camera is accountable for curl's socket, so it is caught -- the chain overrides the
+    # system-path filter for an accountable delegate, no --include-system needed.
     scenario = scenarios.camera_then_curl_upload()
-    chain = {5001: frozenset({5001, 4242})}
     assert replay(scenario) == []
-    assert replay(scenario, actor_chain=chain) == []  # chain alone: curl's socket still filtered
-    assert replay(scenario, CorrelationConfig(include_system=True)) == []  # system alone: no actor
-    (alert,) = replay(scenario, CorrelationConfig(include_system=True), actor_chain=chain)
+    (alert,) = replay(scenario, actor_chain={5001: frozenset({5001, 4242})})
     assert alert.severity is Severity.HIGH
     assert alert.sensors == {SensorType.CAMERA}
     assert round(alert.finding.delta_s, 3) == 0.45
