@@ -11,7 +11,7 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Now (In Progress)
 
-- [ ] [P2] pktap phase 3: end-to-end check on a real Meet call: `sudo uv run safemaxxing watch --udp-flows --events`, then join (or leave and rejoin) a call. Expect an alert `com.brave.Browser used microphone/camera then connected to 74.125.250.x:3478`; also `tui --udp-flows` shows the flow with state `PKTAP`, and `sudo uv run safemaxxing doctor` gives OK for pktap @network #udp
+
 
 ## Next Up
 
@@ -23,6 +23,7 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Backlog / Future
 
+- [ ] [P3] Meet on a network that blocks UDP (seen on `Host-001`, 2026-10-27): the call goes over TCP inside a connection already open, and neither source sees it. Probe that network with `pktap_probe.sh` to confirm @network #udp
 - [ ] [P3] pktap: reverse-DNS hostnames for pktap flows (prefetch through the shared `HostnameResolver`); drop directed broadcasts from user processes (the interfaces' broadcast addresses via `psutil.net_if_addrs`); bundle id for `.systemextension` binaries (Avast's shows None) @network #udp
 - [ ] [P2] SNI / TLS ClientHello capture to name destinations without reverse DNS @network #sni
 - [ ] [P2] Packaging: signed, notarized build @packaging #release
@@ -32,6 +33,7 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Completed
 
+- [x] [P2] pktap phase 3, end to end: a Meet call in Brave with `--udp-flows` (same `Supervisor.default` as `watch`) raised `ALERT #1 [critical] com.brave.Browser used camera+microphone then connected to 74.125.250.248:3478 after 188 ms`; the socket table alone saw only DNS. Control+C leaves no tcpdump behind under sudo. On `Host-001` (2026-10-27) no UDP left at all: see Backlog @network #udp (done: 2026-10-28, Mac run 10:57, no code change)
 - [x] [P2] pktap phase 2: `--udp-flows` on `tui`/`watch` (exits early without root via `pktap_unavailable`); `Supervisor(pktap=...)` pumps `PktapCapture.connections()` as a second source and merges its active flows into `active_connections()` (a socket seen by both is listed once); 2 s warm-up mutes flows already open; up to 5 restarts with doubling backoff; `doctor` check `pktap capture (--udp-flows)`. 222 passed. Not yet run as root @network #udp (done: 2026-10-27 @d56aeef)
 - [x] [P2] pktap measured during a Meet call: always-on tcpdump 0.45% of one core at 151 lines/s, parser 6.45 µs/line (~0.10%); `-Q pid=16105` (Brave main) caught 0 of 7458 packets, so per-pid capture is ruled out; `-Q` is applied in userspace. Command now has `--immediate-mode` and excludes DNS ports; proc-less `llw0` lines pinned @network #udp (done: 2026-10-27, Mac run 08:35 @298328d)
 - [x] [P2] pktap source run as root during a Meet call: the real output parses, and gives 1 connection `Brave Browser Helper 16112 → 74.125.250.248:3478` (bundle `com.brave.Browser`), plus Avast DNS (dropped later as port 53) and `kernel_task` NetBIOS broadcasts. pid 0 is now system @network #udp (done: 2026-10-27, Mac run 08:34 @298328d)

@@ -14,6 +14,88 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-28 11:01 +0100] - `--udp-flows` end to end: a Meet call in Brave raises a critical alert (Mac)
+
+- **Environment:** macOS 27.0.1, arm64 Apple M4, root, `main` at 74b4c14 (code unchanged since
+  d56aeef). Network 10.243.5.87, the one where the probe saw UDP.
+- **Goal:** the end-to-end check in TODO **Now**.
+- **Commands run:** while the script ran, the user left and rejoined a Meet call in Brave:
+  ```sh
+  sudo uv run python <scratchpad>/pktap_e2e.py | tee testlogs/pktap-e2e-2.txt
+  ```
+  The script uses `Supervisor.default(udp_flows=True)`, so the same sources and engine as
+  `watch --udp-flows`, with timestamps. It was stopped with Control+C.
+- **Result and raw data (verbatim, `testlogs/pktap-e2e-2.txt`):**
+  ```text
+  10:57:30.288 start (pktap flows in the first 2 s are muted)
+  10:57:41.851 event microphone  com.brave.Browser pid=16296 (Microphone)
+  10:57:45.809 event microphone  com.brave.Browser pid=16296 (Microphone)
+  10:57:45.964 event camera      com.brave.Browser pid=19819 (Camera)
+  10:57:45.997 conn  PKTAP       udp Brave Browser Helper pid=16112 74.125.250.248:3478 bundle=com.brave.Browser
+  10:57:46.014 ALERT #1 [critical] com.brave.Browser used camera+microphone then connected to 74.125.250.248:3478 after 188 ms
+  10:57:46.173 conn  PKTAP       udp Brave Browser Helper pid=16112 74.125.250.248:19305 bundle=com.brave.Browser
+  ```
+  - **The alert works end to end.** The first UDP packet left 188 ms after Brave's
+    microphone event, from the NetworkService helper (16112). It matches Brave's audio
+    (16296) and video (19819) helpers by bundle id. Two sensors precede the same flow, so
+    the severity is `critical`. The alert was printed 17 ms after the packet's timestamp.
+  - The STUN flow to :19305, 176 ms later, raised no second alert: the 30 s cooldown applies
+    per pid, sensor and remote IP.
+  - The socket table showed only Brave's DNS to 10.128.132.57:53, which is dropped as DNS.
+    So without pktap, this call raises no alert.
+  - **Stopping works.** After Control+C, no `tcpdump`, `python` or `sudo` process was left
+    (`pgrep`). This holds under `sudo` with its pty and `uv` in between. The script's last
+    `stop:` line is missing because `tee` had already exited on the same Control+C. Earlier,
+    Command+C had done nothing: on macOS it copies text and sends no signal.
+- **Code changes:** none.
+- **Problems / regressions:** none.
+- **Next steps:** none for this task. Open: the Backlog items for pktap hostnames, directed
+  broadcasts and `.systemextension` bundle ids, and networks that block UDP.
+
+## [2026-10-28 10:56 +0100] - `--udp-flows` live: no flow on another network, the probe shows UDP works here (Mac)
+
+- **Environment:** macOS 27.0.1, arm64 Apple M4, root, `main` at 74b4c14. Two networks:
+  - 2026-10-27 15:07: hostname `Host-001`, router 192.168.1.1;
+  - 2026-10-28: hostname `MacBook-Air-di-Carlo-2`, local address 10.243.5.87.
+- **Goal:** the end-to-end check in TODO **Now**, a Meet call in Brave raising an alert with
+  `--udp-flows`.
+- **Commands run:**
+  - On `Host-001`, `sudo uv run safemaxxing watch --udp-flows --events`. Then a scratchpad
+    script, `pktap_e2e.py`, built on the same `Supervisor.default(udp_flows=True)`, which
+    prints events, every pktap flow, Brave's socket-table connections and alerts, all with
+    timestamps, into `testlogs/pktap-e2e.txt`. The call was rejoined while it ran.
+  - On 10.243.5.87, during a call, `pktap_probe.sh` ran two raw tcpdumps for 15 s:
+    - A, the exact `pktap_command()`;
+    - B, `-Q "dir=out and pid=16112"`, any protocol.
+- **Result and raw data:**
+  - **`Host-001`: no alert and no pktap flow at all.** Events came in (verbatim):
+    ```text
+    15:07:22.647 event microphone  com.brave.Browser pid=16296 (Microphone)
+    15:07:26.331 event camera      com.brave.Browser pid=19819 (Camera)
+    15:07:22.202 conn  NONE        udp Brave Browser Helper pid=16112 192.168.1.1:53 bundle=com.brave.Browser
+    ```
+    Brave's only connections were DNS to the router. tcpdump (pid 48018) was alive and never
+    restarted: 0.41 s CPU in 2 min 18 s, about 0.3%, so it was receiving packets. It printed
+    no non-DNS outbound UDP from a non-system process.
+  - **10.243.5.87: the exact command prints the call.**
+    ```text
+    A (udp filter): 1561 lines   2644 received by filter, 0 dropped by kernel, 873 by metadata filter
+    B (NetworkService, any protocol): 1540 lines
+    1539 udp Brave Browser He:16112 74.125.250.248.3478     (A and B alike)
+      21 udp nsurlsessiond:759 17.248.x.x:443                (A only)
+    ```
+    1560 of A's 1561 lines parse; the last one is the empty line printed at SIGINT. Replayed
+    through `PktapFlowTracker`, A gives exactly one connection:
+    `Brave Browser Helper 16112 74.125.250.248:3478 com.brave.Browser`.
+    B has no TCP at all: on this network the media goes over UDP only.
+- **Conclusion:** the command and the parser work on a live call. On `Host-001` Meet sent no
+  UDP. The likely cause is UDP being blocked there, so the call fell back to TCP inside a
+  connection that was already open; no probe was run on that network, so this is not
+  proven. pktap cannot see such a call, and the socket table sees no new connection either.
+- **Code changes:** none.
+- **Next steps:** run `pktap_e2e.py` again on this network and rejoin a call, to see the alert
+  and the delay between the sensor event and the first UDP packet.
+
 ## [2026-10-27 08:47 +0100] - pktap phase 2: `--udp-flows`, Supervisor, doctor (Mac, not root, offline)
 
 - **Environment:** macOS 27.0.1, arm64 Apple M4, `main` at 8efa930 plus uncommitted

@@ -329,9 +329,11 @@ testabile anche su Linux (la CI gira su macOS).
   esempio da una call Meet nel browser.
   - Senza `--udp-flows`, una call Meet in Brave non produce alert, perché il suo traffico non
     è visibile. Anche le connessioni TCP verso Google sono già aperte e vengono riusate.
-  - Con `--udp-flows` la sorgente pktap vede il flusso della call: verificato come root
-    durante una call il 2026-10-27, vedi [TESTLOG.md](TESTLOG.md). L'alert completo, dalla
-    `tui` o da `watch`, non è ancora stato provato su una call reale.
+  - Con `--udp-flows` la call produce l'alert: verificato il 2026-10-28 con camera e
+    microfono di Brave, 188 ms prima del primo pacchetto UDP verso 74.125.250.248:3478, vedi
+    [TESTLOG.md](TESTLOG.md).
+  - Su una rete che blocca l'UDP, Meet ripiega su TCP dentro una connessione già aperta, e
+    nessuna delle due sorgenti lo vede. È stato osservato su una rete, senza conferma.
   - I flussi pktap non hanno ancora il nome host: l'alert mostra l'IP.
   - Gli eventi sensore di Brave restano visibili e attribuiti correttamente (verificato il
     2026-10-26, vedi [TESTLOG.md](TESTLOG.md)).
