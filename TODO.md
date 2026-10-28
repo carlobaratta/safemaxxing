@@ -15,7 +15,7 @@ elsewhere makes the next `git pull` there fail); everything else in `testlogs/` 
 
 ## Next Up
 
-- [ ] [P2] Watch `sudo uv run safemaxxing tui` for freezes for a few minutes of normal browsing @network #dns
+- [ ] [P2] Watch the redesigned `sudo uv run safemaxxing tui --udp-flows` for freezes for a few minutes of normal browsing plus a Meet call in Brave: feed, pf panel (ENABLED/ACTIVE), pktap pkt/s, timeline, `b`/`s` badges, `/` filter, codesign line @ui #tui #dns
 - [ ] [P2] Live `watch` with Photo Booth / Voice Memos: confirm they are hidden as system apps (`/System/Applications`) and shown with `--include-system` @correlation #macos
 - [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design; proposal: keep it and say so in SECURITY.md)
 - [ ] [P2] launchd daemon for headless `watch` (the 0.2.0 feature; reuses the `boot` job's launchd setup) @packaging #launchd
@@ -31,6 +31,7 @@ elsewhere makes the next `git pull` there fail); everything else in `testlogs/` 
 
 ## Completed
 
+- [x] [P2] TUI redesign as a dark SOC-style dashboard: live feed with severity/sensor/mitigation pills, Firewall panel (pf, anchor, block table, poller, pktap, DNS), Inspector (process, codesign identity, sensors), millisecond timeline modal (Enter/space), `/` filter, batched event log; new `tui/{badges,panels,screens,timeline}.py`, `tui/safemaxxing.tcss`, `codesign.py`; counters on NetworkMonitor/PktapCapture/HostnameResolver. 242 passed; rendered headless with fake data and once on the real Supervisor without root; run as root with `--udp-flows` by the user: works (details not captured) @ui #tui (done: 2026-10-28)
 - [x] [P2] Privacy pass before pushing: no secrets in any blob of any ref; host name, account name and home paths replaced in TESTLOG.md and `testlogs/*.log` (history left as is); `testlogs/*` ignored except `*.log`, plus `*.err`, `*.pcapng`, `.claude/`, `.env.*`; `macos_validate.sh` logs `id -u` and redacts `$HOME`, account and host name @process #privacy (done: 2026-10-28)
 - [x] [P2] Full Disk Access granted to the terminal: `sudo safemaxxing doctor` now 13 OK, 0 WARN, 0 FAIL (`Full Disk Access: system TCC.db readable`; pktap capture OK too) @cli #fda (done: 2026-10-28, Mac run 11:19, no code change)
 - [x] [P3] pktap leftovers: hostnames from the shared `HostnameResolver` cache (prefetched per new flow, `PktapCapture.active()` names active flows); flows to an interface's IPv4 broadcast address dropped (`interface_broadcasts`, read per new flow); `bundle_id_for_exe` falls back to an enclosing `.systemextension` (Avast's showed None). 227 passed @network #udp (done: 2026-10-28 @c8edaa9)

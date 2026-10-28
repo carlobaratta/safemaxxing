@@ -98,7 +98,19 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
 - **Enforcement**: tabella pf `safemaxxing_block` dentro l'anchor `com.apple/safemaxxing`.
   L'anchor è già valutato dal `/etc/pf.conf` di sistema, quindi non serve modificare la
   configurazione. Controllo dei processi con `SIGSTOP` / `SIGCONT` / `SIGKILL`.
-- **TUI Textual**: alert, connessioni attive e stream degli eventi sensore in tempo reale.
+- **TUI Textual**: una dashboard scura a pannelli.
+  - **Live feed** degli alert, con badge di severità (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`),
+    pill dei sensori (`CAM`, `MIC`, `LOC`, `SCR`, `TCC`) e badge di mitigazione (`BLK`,
+    `STOP`). Si filtra con `/`.
+  - **Firewall**: stato di pf e dell'anchor, IP nella tabella di blocco, latenza del polling
+    dei socket, cattura pktap e cache DNS. Rilegge pf ogni 5 s.
+  - **Inspector**: pid, bundle id, percorso, firma del codice (`codesign`), destinazione,
+    sensori ed eventi recenti della selezione.
+  - **Timeline** al millisecondo di un alert (`Invio` o `spazio`): ogni evento sensore
+    dell'app, poi l'egress.
+  - Sotto il feed, a schede, lo stream degli eventi sensore e le connessioni attive. In
+    fondo, una barra di stato con CPU del processo, pacchetti e flussi UDP al secondo, cache
+    DNS ed eventi al secondo.
 - **Headless**: `safemaxxing watch` con output JSON lines e azioni automatiche opzionali.
 
 ## Installazione
@@ -168,12 +180,20 @@ Solo per `watch`:
 
 | Tasto | Azione |
 |-------|--------|
-| `b` / `u` | Blocca / sblocca l'IP di destinazione: della connessione selezionata se ha il focus il pannello connessioni, altrimenti dell'alert selezionato |
+| `↑` / `↓` | Seleziona un alert nel feed, o una connessione nella scheda Active egress; l'inspector mostra la selezione |
+| `b` / `u` | Blocca / sblocca l'IP di destinazione della selezione |
 | `s` / `r` | `SIGSTOP` / `SIGCONT` sul processo |
-| `k` | `SIGKILL` (con conferma) |
-| `c` | Svuota la lista alert |
+| `k` | `SIGKILL` (con conferma: `y` o Confirm) |
+| `Invio` / `spazio` | Timeline al millisecondo della selezione |
+| `/` | Filtra feed e connessioni per nome processo, bundle id, pid, IP o hostname; `Invio` tiene il filtro, `esc` lo toglie |
+| `c` | Svuota il feed (il log eventi e pf non cambiano) |
 | `tab` / `shift+tab` | Cambia pannello |
 | `q` | Esci |
+
+Le azioni agiscono sempre su quello che mostra l'inspector. `k` resta `SIGKILL`, quindi la
+navigazione usa le frecce e non `j`/`k`. Il feed tiene gli ultimi 1000 alert, la scheda
+Active egress le 300 connessioni più recenti. Il layout è pensato per un terminale di almeno
+170 colonne circa: più stretto, il feed scorre in orizzontale.
 
 ### Diagnostica
 
@@ -274,7 +294,14 @@ src/safemaxxing/
 ├── firewall.py      PfFirewall (pfctl), BlockList (lista salvata) e ProcessController (segnali)
 ├── boot.py          job launchd che riapplica la lista al boot (solo /bin/sh e /sbin/pfctl)
 ├── diagnostics.py   doctor (Check) e sample (summarize_sample)
-├── tui/app.py       dashboard Textual
+├── codesign.py      firma del codice per l'inspector (codesign -dv)
+├── tui/
+│   ├── app.py           SafemaxxingApp: feed, tab eventi/egress, timer, azioni
+│   ├── panels.py        pannelli Firewall e Inspector, barra di stato (snapshot → Rich)
+│   ├── screens.py       modali: conferma del kill, timeline
+│   ├── timeline.py      eventi dell'alert e passi della timeline (puro, senza Textual)
+│   ├── badges.py        badge Rich per severità, sensori e mitigazioni
+│   └── safemaxxing.tcss palette scura e layout
 └── cli.py           entry point Typer
 ```
 

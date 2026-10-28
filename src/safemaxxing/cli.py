@@ -136,10 +136,11 @@ def tui(
     include_dns: IncludeDns = False,
     udp_flows: UdpFlows = False,
 ) -> None:
-    """Interactive dashboard: alerts, active egress and sensor events.
+    """Interactive dashboard: alert feed, pf/pktap status, inspector and sensor events.
 
     Keys: b/u block/unblock the destination IP, s/r SIGSTOP/SIGCONT, k SIGKILL (asks first),
-    c clear alerts, q quit. Run as root for full visibility.
+    Enter/space timeline, / filter (Esc clears), c clear the feed, q quit. Run as root for
+    full visibility.
     """
     from safemaxxing.tui.app import SafemaxxingApp
 

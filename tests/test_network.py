@@ -108,6 +108,9 @@ def test_monitor_reports_only_new_connections() -> None:
     assert monitor.poll_once(T0 + 2) == []
     (active,) = monitor.active
     assert active.local_port == 1 and active.first_seen == T0 + 1
+    assert monitor.polls == 3
+    assert monitor.last_poll_s is not None and monitor.last_poll_s >= 0
+    assert monitor.interval_s == 0.2
 
 
 async def test_resolver_times_out_fast_and_caches_late_answer() -> None:
@@ -141,6 +144,7 @@ async def test_resolver_skips_private_and_bounds_pending() -> None:
 
     resolver = HostnameResolver(timeout_s=0.01, lookup=lookup, max_pending=2, max_workers=1)
     assert await resolver.resolve("10.0.0.1") is None
+    assert len(resolver) == 1  # the private address is cached as unresolvable
     for ip in ("8.8.8.8", "8.8.4.4", "1.1.1.1"):
         resolver.prefetch(ip)
     await asyncio.sleep(0.05)

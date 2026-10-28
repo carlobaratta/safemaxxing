@@ -281,6 +281,10 @@ class HostnameResolver:
         self._cache: dict[str, str | None] = {}
         self._pending: dict[str, asyncio.Future[str | None]] = {}
 
+    def __len__(self) -> int:
+        """Number of addresses in the cache, failed lookups included."""
+        return len(self._cache)
+
     def cached(self, ip: str) -> str | None:
         """Return the cached hostname for `ip` without any lookup (None if unknown or failed)."""
         return self._cache.get(ip)
@@ -354,6 +358,14 @@ class NetworkMonitor:
         self._include_loopback = include_loopback
         self._resolver = resolver
         self._active: dict[tuple[object, ...], NetworkConnection] = {}
+        # How long the last socket-table snapshot took, for the TUI's poller metrics.
+        self.last_poll_s: float | None = None
+        self.polls = 0
+
+    @property
+    def interval_s(self) -> float:
+        """Target time between two snapshots."""
+        return self._interval_s
 
     def _named(self, conn: NetworkConnection) -> NetworkConnection:
         if conn.hostname is not None or self._resolver is None:
@@ -375,7 +387,10 @@ class NetworkMonitor:
         if self._snapshot is None:
             self._snapshot = default_snapshot()
         now = time.time() if now is None else now
+        started = time.perf_counter()
         current = outbound_only(self._snapshot(now), self._include_loopback)
+        self.last_poll_s = time.perf_counter() - started
+        self.polls += 1
         fresh: list[NetworkConnection] = []
         active: dict[tuple[object, ...], NetworkConnection] = {}
         for conn in current:

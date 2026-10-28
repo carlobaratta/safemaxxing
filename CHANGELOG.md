@@ -29,6 +29,31 @@ All notable changes are listed here. The format follows
   a /16.
 - A binary inside a `.systemextension` that is in no `.app`, such as Avast's network
   extension, now gets that extension's bundle id. Before, it got none. (c8edaa9)
+- Counters for the TUI: `NetworkMonitor.last_poll_s`, `polls` and `interval_s`;
+  `PktapCapture.packets`; `len(HostnameResolver)` for the cache size; `Supervisor.resolver`.
+- `safemaxxing.codesign`: the signing identity of a binary's app from `codesign -dv`
+  (`Developer ID Application: …`, `Software Signing`, `ad-hoc`, `unsigned`), with a 3 s cap.
+
+### Changed
+
+- The TUI is a dark dashboard of panels, with its styles in `tui/safemaxxing.tcss`.
+  - **Live feed** of alerts with pill badges for severity, sensors (`CAM`, `MIC`, `LOC`,
+    `SCR`, `TCC`) and mitigation (`BLK`, `STOP`). An alert re-emitted with more sensors
+    updates its row in place.
+  - **Firewall** panel: pf and anchor state, block-table size (pfctl is read every 5 s, as
+    root only), socket-poller latency, pktap packets per second and restarts, DNS cache size.
+  - **Inspector**: pid, bundle id, path, code signature, destination, sensors and recent
+    events of the selected alert or connection.
+  - **Timeline** (Enter or space): the actor's sensor events in the alert's window, to the
+    millisecond, then the egress. The events are snapshotted when the alert arrives.
+  - `/` filters the feed and the egress table by process, bundle id, pid, IP or hostname;
+    Esc clears it. `c` clears the feed; `y` confirms a kill.
+  - Sensor events and active egress sit in tabs under the feed. The event log is written in
+    batches every 100 ms and drops lines past 500 queued, so a busy `--udp-flows` capture
+    cannot flood it. The egress table shows the newest 300 connections, the feed the last
+    1000 alerts.
+  - A status bar shows CPU of the process and its children, UDP packets and flows per
+    second, DNS cache entries, sensor events per second and the alert count.
 
 ## [0.1.1] - 2026-10-26
 

@@ -278,6 +278,7 @@ class PktapCapture:
         self._restart_backoff_s = restart_backoff_s
         self._max_backoff_s = max_backoff_s
         self._resolver = resolver
+        self.packets = 0
         self.unparsed = 0
         self.restarts = 0
 
@@ -322,7 +323,8 @@ class PktapCapture:
             stderr_task.cancel()
 
     async def events(self) -> AsyncGenerator[PktapEvent]:
-        """Parsed packets; blank and unrecognised lines are counted in `unparsed`."""
+        """Parsed packets, counted in `packets`; blank and unrecognised lines are counted in
+        `unparsed`."""
         # aclosing: leaving this generator early must close `lines()` too, which stops tcpdump.
         async with contextlib.aclosing(self.lines()) as lines:
             async for line in lines:
@@ -332,6 +334,7 @@ class PktapCapture:
                 if packet is None:
                     self.unparsed += 1
                     continue
+                self.packets += 1
                 yield packet
 
     async def connections(self) -> AsyncGenerator[NetworkConnection]:

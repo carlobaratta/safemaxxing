@@ -29,6 +29,7 @@ class Supervisor:
         engine: CorrelationEngine | None = None,
         monitor: NetworkMonitor | None = None,
         pktap: PktapCapture | None = None,
+        resolver: HostnameResolver | None = None,
     ) -> None:
         self._events = events
         self._connections = connections
@@ -36,6 +37,8 @@ class Supervisor:
         self.monitor = monitor
         # A second connection source: UDP flows the socket table shows without a peer.
         self.pktap = pktap
+        # The reverse-DNS cache both sources read from, so the UI can name alerts later.
+        self.resolver = resolver
         self._recent: deque[NetworkConnection] = deque(maxlen=256)
 
     @classmethod
@@ -66,6 +69,7 @@ class Supervisor:
             engine=CorrelationEngine(config),
             monitor=monitor,
             pktap=_pktap_capture(config, include_loopback, resolver) if udp_flows else None,
+            resolver=resolver,
         )
 
     def active_connections(self) -> tuple[NetworkConnection, ...]:

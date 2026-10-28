@@ -14,6 +14,22 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-28 12:00 +0100] - Redesigned TUI run as root with `--udp-flows` (Mac)
+
+- **Environment:** macOS 27.0.1, arm64, root, `main` at 1b31341 plus the uncommitted TUI
+  redesign.
+- **Goal:** first root run of the new dashboard.
+- **Code changes:** the TUI redesign (see TODO **Completed**), not yet committed.
+- **Commands run:** `sudo uv run safemaxxing tui --udp-flows`.
+- **Result:** the user reported that it works. No screenshot or numbers were captured, so
+  the pf panel values, CPU, pktap rates, timeline and codesign line are not recorded here.
+- **Before this run (headless, not root):** 242 passed; screenshots rendered from fake data;
+  6 s on the real `Supervisor.default()` without root showed `needs root` for pf and a
+  54 ms / 200 ms poller (lsof fallback). That run's CPU read 51.7%; not checked as root.
+- **Problems / regressions:** none reported.
+- **Next steps:** the Next Up item: a few minutes of browsing plus a Meet call, noting CPU,
+  pkt/s and any freeze.
+
 ## [2026-10-28 11:19 +0100] - Full Disk Access granted: `doctor` all green (Mac)
 
 - **Environment:** macOS 27.0.1, arm64, hostname `Host-002`, root, `main` at
