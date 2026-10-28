@@ -1351,7 +1351,7 @@ def test_decoder_handles_a_burst_and_keeps_a_trailing_partial() -> None:
     assert entries[0]["i"] == 0 and entries[-1]["i"] == 4999
     # A partial object at the tail is held until the next chunk completes it.
     assert decoder.feed(',{"subsystem":"com.apple.cmio","i":5') == []
-    (tail,) = decoder.feed('000}')
+    (tail,) = decoder.feed("000}")
     assert tail["i"] == 5000
 
 
@@ -1393,7 +1393,10 @@ async def test_reader_filters_non_sensor_subsystems() -> None:
 
 async def test_reader_drops_oldest_under_backpressure_without_blocking() -> None:
     listener = _StubListener(
-        [{"subsystem": "com.apple.TCC", "eventMessage": "kTCCServiceCamera", "i": i} for i in range(50)]
+        [
+            {"subsystem": "com.apple.TCC", "eventMessage": "kTCCServiceCamera", "i": i}
+            for i in range(50)
+        ]
     )
     # A tiny queue and no consumer: the reader must still finish (never block), shedding load.
     queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue(maxsize=4)

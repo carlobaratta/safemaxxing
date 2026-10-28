@@ -3,7 +3,9 @@ from __future__ import annotations
 from safemaxxing.process_tree import LAUNCHD_PID, ProcessChainResolver
 
 
-def tree(parents: dict[int, int], responsible: dict[int, int] | None = None) -> ProcessChainResolver:
+def tree(
+    parents: dict[int, int], responsible: dict[int, int] | None = None
+) -> ProcessChainResolver:
     """A resolver over an explicit pid graph: `parents[pid]` is the parent, `responsible[pid]`
     the responsible pid. Missing entries resolve to None, as the real lookups do for a pid
     that is gone or inaccessible."""

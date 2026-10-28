@@ -78,7 +78,9 @@ def test_spike_below_absolute_floor_is_ignored() -> None:
 
 def test_young_flow_does_not_spike() -> None:
     # Same burst shape but the flow is younger than min_flow_age_s when it would fire.
-    monitor = ThroughputDeltaMonitor(ThroughputConfig(min_flow_age_s=60.0, min_spike_bytes_per_s=1000))
+    monitor = ThroughputDeltaMonitor(
+        ThroughputConfig(min_flow_age_s=60.0, min_spike_bytes_per_s=1000)
+    )
     assert feed(monitor, baseline_then_burst()) == []
 
 
