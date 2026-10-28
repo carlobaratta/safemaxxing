@@ -8,7 +8,8 @@
 # for Enter on the terminal, then expects Photo Booth and Voice Memos to be opened.
 #
 # Writes testlogs/<stamp>-macos.log (commit it) and testlogs/<stamp>-sample.jsonl (raw unified
-# log, git-ignored; do not publish it).
+# log, git-ignored; do not publish it). The .log replaces your home path with ~, your account
+# name with <user> and the host name with <host>, so the repo stays free of them.
 #
 # Env: SAFEMAXXING_LIVE_IP (default 1.1.1.1), SAMPLE_S (log sample seconds, default 15),
 #      PF_DISABLED_TEST=1 to `pfctl -d` first and check that `block` re-enables pf.
@@ -40,6 +41,13 @@ run() {
     echo "[exit $?]"
 }
 
+ME="$(id -un)"
+HOST="$(hostname -s)"
+redact() {  # line-buffered, so the run still shows live on the terminal
+    sed -l -E -e "s#$HOME#~#g" -e "s/$HOST/<host>/g" \
+        -e "s/(^|[^[:alnum:]_.-])$ME([^[:alnum:]_.-]|\$)/\1<user>\2/g"
+}
+
 probe() {  # curl with a short timeout; prints the HTTP code (000 = no connection)
     run curl -sS -o /dev/null -w '%{http_code} in %{time_total}s\n' --max-time 3 "https://$TARGET_IP/"
 }
@@ -60,7 +68,7 @@ trap cleanup EXIT INT TERM
     run sw_vers
     run uname -m
     run sysctl -n machdep.cpu.brand_string
-    run id
+    run id -u
     run git rev-parse --abbrev-ref HEAD
     run git rev-parse --short HEAD
     # Catches running stale code after an aborted pull (TESTLOG 2026-10-22 13:50).
@@ -113,7 +121,7 @@ Photo Booth (camera), record in Voice Memos (mic), and quit both " _ </dev/tty >
 
     echo; echo "## Tasks 2-4: live pytest suite"
     run sudo SAFEMAXXING_LIVE=1 SAFEMAXXING_LIVE_IP="$TARGET_IP" "$UV" run pytest -m live -v -s -p no:cacheprovider
-} 2>&1 | tee "$OUT"
+} 2>&1 | redact | tee "$OUT"
 
 echo
 echo "Raw log written to $OUT"

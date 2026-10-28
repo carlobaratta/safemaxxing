@@ -16,7 +16,7 @@ Apple M4
 [exit 0]
 
 $ id
-uid=501(carlo) gid=20(staff) groups=20(staff),12(everyone),61(localaccounts),79(_appserverusr),80(admin),81(_appserveradm),701(com.apple.sharepoint.group.1),33(_appstore),98(_lpadmin),100(_lpoperator),204(_developer),250(_analyticsusers),395(com.apple.access_ftp),398(com.apple.access_screensharing),399(com.apple.access_ssh),400(com.apple.access_remote_ae)
+uid=501(<user>) gid=20(staff) groups=<redacted>
 [exit 0]
 
 $ git rev-parse --abbrev-ref HEAD
@@ -54,7 +54,7 @@ $ /opt/homebrew/bin/uv run safemaxxing doctor
 ! pf status: needs root (/dev/pf: Permission denied)
 ! pf parent anchor: needs root (/dev/pf: Permission denied)
 ! anchor com.apple/safemaxxing: needs root (/dev/pf: Permission denied)
-! foreign sockets: only carlo's sockets visible (18 pids): run as root
+! foreign sockets: only <user>'s sockets visible (18 pids): run as root
 ! Full Disk Access: not granted to this terminal (optional today; needed for TCC.db inspection)
 ! socket snapshot: psutil denied: lsof fallback (slow)
 ✔ log stream predicate: accepted
@@ -260,8 +260,8 @@ parsed com.apple.locationd: location CoreParsec pid=None [Info] {"msg":"markRece
 
 $ sudo SAFEMAXXING_LIVE=1 SAFEMAXXING_LIVE_IP=1.1.1.1 /opt/homebrew/bin/uv run pytest -m live -v -s -p no:cacheprovider
 ============================= test session starts ==============================
-platform darwin -- Python 3.13.14, pytest-9.1.1, pluggy-1.7.0 -- /Users/carlo/Desktop/oak's projects/safemaxxing/safemaxxing/.venv/bin/python
-rootdir: /Users/carlo/Desktop/oak's projects/safemaxxing/safemaxxing
+platform darwin -- Python 3.13.14, pytest-9.1.1, pluggy-1.7.0 -- ~/<projects>/safemaxxing/safemaxxing/.venv/bin/python
+rootdir: ~/<projects>/safemaxxing/safemaxxing
 configfile: pyproject.toml
 testpaths: tests
 plugins: asyncio-1.4.0, platformdirs-4.13.5

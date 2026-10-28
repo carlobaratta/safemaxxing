@@ -12,13 +12,17 @@ build/
 .coverage.*
 htmlcov/
 .env
+.env.*
 
 # Local agent tooling state
 .omc/
-.claude/settings.local.json
+.claude/
 graphify-out/
 
-# Raw `log stream` captures: full unified-log entries from a real Mac (app activity,
-# paths, pids). Only the `testlogs/*.log` summaries are committed.
-testlogs/*.jsonl
+# Raw captures from a real Mac: `log stream` entries, pktap/tcpdump output and their stderr
+# (app activity, paths, pids, LAN addresses). Only the `testlogs/*.log` summaries are committed.
+testlogs/*
+!testlogs/*.log
+*.err
 *.pcap
+*.pcapng

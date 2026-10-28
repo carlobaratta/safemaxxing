@@ -34,9 +34,14 @@ sudo SAFEMAXXING_LIVE=1 "$(which uv)" run pytest -m live -v -s
 For a full validation run, use `scripts/macos_validate.sh`. It asks for sudo once,
 pauses so you can open Photo Booth and Voice Memos during the log sample, and writes:
 
-- `testlogs/<stamp>-macos.log`: commands and output. Commit it.
+- `testlogs/<stamp>-macos.log`: commands and output, with your home path shown as `~`, your
+  account name as `<user>` and the host name as `<host>`. Commit it.
 - `testlogs/<stamp>-sample.jsonl`: the raw `log stream` entries. It is git-ignored: it holds the
   Mac's full unified log for the sample window.
+
+Everything in `testlogs/` other than `*.log` is git-ignored, so raw pktap or tcpdump output
+saved there stays local. Before a TESTLOG.md entry quotes a raw capture, replace the host
+name and account name the same way.
 
 The script reads only three variables: `SAFEMAXXING_LIVE_IP`, `SAMPLE_S` (default 15) and
 `PF_DISABLED_TEST=1`. The other live variables do not reach it through sudo. `PF_DISABLED_TEST=1` runs

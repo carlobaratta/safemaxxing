@@ -16,7 +16,7 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 
 ## [2026-10-28 11:19 +0100] - Full Disk Access granted: `doctor` all green (Mac)
 
-- **Environment:** macOS 27.0.1, arm64, hostname `MacBook-Air-di-Carlo-2`, root, `main` at
+- **Environment:** macOS 27.0.1, arm64, hostname `Host-002`, root, `main` at
   2be213c.
 - **Goal:** the FDA task in TODO **Next Up**: grant Full Disk Access to the terminal and see
   the check turn OK.
@@ -109,7 +109,7 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 
 - **Environment:** macOS 27.0.1, arm64 Apple M4, root, `main` at 74b4c14. Two networks:
   - 2026-10-27 15:07: hostname `Host-001`, router 192.168.1.1;
-  - 2026-10-28: hostname `MacBook-Air-di-Carlo-2`, local address 10.243.5.87.
+  - 2026-10-28: hostname `Host-002`, local address 10.243.5.87.
 - **Goal:** the end-to-end check in TODO **Now**, a Meet call in Brave raising an alert with
   `--udp-flows`.
 - **Commands run:**
@@ -1177,7 +1177,7 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 
 ## [2026-10-22 13:45 +0200] - First real Mac run: Tasks 1-4 (macOS 27.0.1, Apple M4)
 
-- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4 (Apple Silicon), user `carlo`
+- **Environment:** macOS 27.0.1 (26A434), arm64 Apple M4 (Apple Silicon), user `<user>`
   uid=501 (admin), root steps via sudo; Python 3.13.14, uv from Homebrew. Local branch
   `claude/amazing-pasteur-hj7ek5` at c895276.
 - **Goal:** validate native calls: doctor, pf block in the kernel, `log stream` redaction,

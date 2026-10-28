@@ -4,7 +4,7 @@ Format: `- [ ] [P1] Title @area #tag (details / key commands)`.
 Rule: max 1-2 tasks in **Now**; every finished task moves to **Completed** with date and commit.
 Each test session is logged in [TESTLOG.md](TESTLOG.md); raw logs live in `testlogs/`.
 Rule: `testlogs/*.log` are committed only from the Mac that produced them (a copy committed
-elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are never committed.
+elsewhere makes the next `git pull` there fail); everything else in `testlogs/` is git-ignored.
 
 ## Inbox
 
@@ -31,6 +31,7 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Completed
 
+- [x] [P2] Privacy pass before pushing: no secrets in any blob of any ref; host name, account name and home paths replaced in TESTLOG.md and `testlogs/*.log` (history left as is); `testlogs/*` ignored except `*.log`, plus `*.err`, `*.pcapng`, `.claude/`, `.env.*`; `macos_validate.sh` logs `id -u` and redacts `$HOME`, account and host name @process #privacy (done: 2026-10-28)
 - [x] [P2] Full Disk Access granted to the terminal: `sudo safemaxxing doctor` now 13 OK, 0 WARN, 0 FAIL (`Full Disk Access: system TCC.db readable`; pktap capture OK too) @cli #fda (done: 2026-10-28, Mac run 11:19, no code change)
 - [x] [P3] pktap leftovers: hostnames from the shared `HostnameResolver` cache (prefetched per new flow, `PktapCapture.active()` names active flows); flows to an interface's IPv4 broadcast address dropped (`interface_broadcasts`, read per new flow); `bundle_id_for_exe` falls back to an enclosing `.systemextension` (Avast's showed None). 227 passed @network #udp (done: 2026-10-28 @c8edaa9)
 - [x] [P2] pktap phase 3, end to end: a Meet call in Brave with `--udp-flows` (same `Supervisor.default` as `watch`) raised `ALERT #1 [critical] com.brave.Browser used camera+microphone then connected to 74.125.250.248:3478 after 188 ms`; the socket table alone saw only DNS. Control+C leaves no tcpdump behind under sudo. On `Host-001` (2026-10-27) no UDP left at all: see Backlog @network #udp (done: 2026-10-28, Mac run 10:57, no code change)
