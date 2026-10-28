@@ -15,10 +15,12 @@ from safemaxxing.correlation import CorrelationEngine
 from safemaxxing.models import PKTAP_STATUS, Direction, PktapEvent, Protocol, SensorType
 from safemaxxing.network import HostnameResolver
 from safemaxxing.pktap import (
+    TCP_SYN_FILTER,
     TCPDUMP_BINARY,
     PktapCapture,
     PktapError,
     PktapFlowTracker,
+    capture_filter,
     interface_broadcasts,
     is_relevant_destination,
     parse_pktap_line,
@@ -560,3 +562,51 @@ def test_pktap_unavailable(tmp_path: Path) -> None:
     assert "missing" in (pktap_unavailable(str(tmp_path / "no-tcpdump"), euid=0) or "")
     assert "needs root" in (pktap_unavailable("/bin/sh", euid=501) or "")
     assert pktap_unavailable("/bin/sh", euid=0) is None
+
+
+# --- M1.4: TCP SYN capture and filter composition -------------------------------------------
+
+TCP_SYN_OUT = "1793026850.100000 (en0, proc curl:6000, svc BE, out, so) IP 10.243.5.87.52000 > 203.0.113.9.443: tcp 0"
+
+
+def test_capture_filter_is_udp_only_by_default() -> None:
+    assert capture_filter() == udp_filter()
+    assert capture_filter(include_udp=False) == udp_filter()
+
+
+def test_capture_filter_adds_tcp_syn() -> None:
+    expr = capture_filter(tcp_syn=True)
+    assert "udp" in expr
+    assert TCP_SYN_FILTER in expr
+
+
+def test_capture_filter_tcp_data_supersedes_syn() -> None:
+    expr = capture_filter(tcp_syn=True, tcp_data=True)
+    assert TCP_SYN_FILTER not in expr
+    assert "(tcp)" in expr
+
+
+def test_capture_filter_tcp_syn_without_udp() -> None:
+    expr = capture_filter(include_udp=False, tcp_syn=True)
+    assert "udp" not in expr
+    assert TCP_SYN_FILTER in expr
+
+
+def test_parses_tcp_syn_packet() -> None:
+    packet = parse_pktap_line(TCP_SYN_OUT)
+    assert packet is not None
+    assert packet.protocol is Protocol.TCP
+    assert (packet.dest_ip, packet.dest_port) == ("203.0.113.9", 443)
+    assert packet.direction is Direction.OUTBOUND
+
+
+def test_tracker_turns_a_tcp_syn_into_a_connection() -> None:
+    # A short-lived socket the poller would miss: its SYN alone becomes a connection.
+    tracker = make_tracker(process_lookup={6000: ("curl", None)}.get)
+    packet = parse_pktap_line(TCP_SYN_OUT)
+    assert packet is not None
+    conn = tracker.feed(packet)
+    assert conn is not None
+    assert conn.protocol is Protocol.TCP
+    assert conn.remote == "203.0.113.9:443"
+    assert conn.process_name == "curl"

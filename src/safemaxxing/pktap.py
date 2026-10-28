@@ -30,6 +30,7 @@ from safemaxxing.models import (
 )
 from safemaxxing.network import HostnameResolver, bundle_id_for_exe
 from safemaxxing.sensors import ProcessInfo, _drain_tail, process_info
+from safemaxxing.throughput import THROUGHPUT_STATUS, ThroughputDeltaMonitor, ThroughputSpike
 
 TCPDUMP_BINARY = "/usr/sbin/tcpdump"
 
@@ -40,6 +41,41 @@ def udp_filter(include_dns: bool = False) -> str:
     if include_dns:
         return "udp"
     return " and ".join(["udp", *(f"not port {p}" for p in sorted(DNS_PORTS))])
+
+
+# A SYN with no ACK is a connection this host is opening (an outbound SYN-ACK would be us
+# accepting someone else's). `-Q dir=out` already keeps only our packets, so this isolates
+# the initiations: the one on-wire sign of a TCP socket that opens and closes inside a single
+# 200 ms poll and so never appears in the socket table.
+TCP_SYN_FILTER = "(tcp[tcpflags] & (tcp-syn|tcp-ack)) == tcp-syn"
+
+
+def capture_filter(
+    include_udp: bool = True,
+    include_dns: bool = False,
+    tcp_syn: bool = False,
+    tcp_data: bool = False,
+) -> str:
+    """Compose a BPF expression from the sources wanted.
+
+    `include_udp` adds outbound UDP (what the socket table misses). `tcp_data` adds every TCP
+    packet, which the throughput monitor needs to weigh a pre-established socket but is heavy;
+    it already includes SYNs, so it supersedes `tcp_syn`, which on its own adds only connection
+    initiations (short-lived sockets) at almost no cost. With nothing selected the filter falls
+    back to UDP, the historical default.
+    """
+    clauses: list[str] = []
+    if include_udp:
+        clauses.append(udp_filter(include_dns))
+    if tcp_data:
+        clauses.append("tcp")
+    elif tcp_syn:
+        clauses.append(TCP_SYN_FILTER)
+    if not clauses:
+        return udp_filter(include_dns)
+    if len(clauses) == 1:
+        return clauses[0]
+    return " or ".join(f"({clause})" for clause in clauses)
 
 
 # TCP connections are already in the socket table with their peer; UDP is what it misses.
@@ -198,6 +234,12 @@ class PktapFlowTracker:
         horizon = (time.time() if now is None else now) - self._idle_s
         return tuple(c for k, c in self._conns.items() if self._last_packet.get(k, 0.0) >= horizon)
 
+    def connection_for(self, key: FlowKey) -> NetworkConnection | None:
+        """The connection built for `key` (with process name, exe and bundle id resolved) when
+        its first packet was seen, or None if the flow is unknown. Lets a throughput spike
+        re-use that identity instead of only the kernel's 16-character process name."""
+        return self._conns.get(key)
+
     def _prune(self, now: float) -> None:
         horizon = now - self._idle_s
         self._last_packet = {k: t for k, t in self._last_packet.items() if t >= horizon}
@@ -269,6 +311,7 @@ class PktapCapture:
         restart_backoff_s: float = 1.0,
         max_backoff_s: float = 30.0,
         resolver: HostnameResolver | None = None,
+        throughput: ThroughputDeltaMonitor | None = None,
     ) -> None:
         self._command = list(command) if command is not None else pktap_command()
         self.tracker = tracker or PktapFlowTracker()
@@ -278,13 +321,25 @@ class PktapCapture:
         self._restart_backoff_s = restart_backoff_s
         self._max_backoff_s = max_backoff_s
         self._resolver = resolver
+        # Optional: re-surfaces a pre-established flow when its outbound rate spikes. None keeps
+        # the capture to new-flow detection only.
+        self._throughput = throughput
         self.packets = 0
         self.unparsed = 0
         self.restarts = 0
+        self.spikes = 0
 
     def _named(self, conn: NetworkConnection) -> NetworkConnection:
         host = self._resolver.cached(conn.remote_address) if self._resolver else None
         return dataclasses.replace(conn, hostname=host) if host else conn
+
+    def _spike_connection(self, spike: ThroughputSpike) -> NetworkConnection:
+        """A spike as a connection, re-using the flow's resolved identity when the tracker has
+        it (it does once the flow's first packet went by), else the kernel's process name."""
+        known = self.tracker.connection_for(spike.flow_key)
+        if known is None:
+            return spike.to_connection()
+        return dataclasses.replace(known, status=THROUGHPUT_STATUS, first_seen=spike.timestamp)
 
     def active(self, now: float | None = None) -> tuple[NetworkConnection, ...]:
         """The tracker's active flows, with hostnames filled in from the resolver cache."""
@@ -364,6 +419,14 @@ class PktapCapture:
                             if self._resolver is not None:
                                 self._resolver.prefetch(conn.remote_address)
                             yield self._named(conn)
+                        if self._throughput is not None:
+                            spike = self._throughput.observe(packet)
+                            if spike is not None:
+                                self.spikes += 1
+                                spike_conn = self._spike_connection(spike)
+                                if self._resolver is not None:
+                                    self._resolver.prefetch(spike_conn.remote_address)
+                                yield self._named(spike_conn)
             except PktapError as exc:
                 error = exc
             if loop.time() - started > self._max_backoff_s:
