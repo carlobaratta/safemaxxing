@@ -15,7 +15,6 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Next Up
 
-- [ ] [P2] Grant Full Disk Access to the terminal and confirm the FDA check turns OK @cli #fda (System Settings → Privacy & Security → Full Disk Access)
 - [ ] [P2] Watch `sudo uv run safemaxxing tui` for freezes for a few minutes of normal browsing @network #dns
 - [ ] [P2] Live `watch` with Photo Booth / Voice Memos: confirm they are hidden as system apps (`/System/Applications`) and shown with `--include-system` @correlation #macos
 - [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design; proposal: keep it and say so in SECURITY.md)
@@ -32,6 +31,7 @@ elsewhere makes the next `git pull` there fail); raw `testlogs/*.jsonl` are neve
 
 ## Completed
 
+- [x] [P2] Full Disk Access granted to the terminal: `sudo safemaxxing doctor` now 13 OK, 0 WARN, 0 FAIL (`Full Disk Access: system TCC.db readable`; pktap capture OK too) @cli #fda (done: 2026-10-28, Mac run 11:19, no code change)
 - [x] [P3] pktap leftovers: hostnames from the shared `HostnameResolver` cache (prefetched per new flow, `PktapCapture.active()` names active flows); flows to an interface's IPv4 broadcast address dropped (`interface_broadcasts`, read per new flow); `bundle_id_for_exe` falls back to an enclosing `.systemextension` (Avast's showed None). 227 passed @network #udp (done: 2026-10-28 @c8edaa9)
 - [x] [P2] pktap phase 3, end to end: a Meet call in Brave with `--udp-flows` (same `Supervisor.default` as `watch`) raised `ALERT #1 [critical] com.brave.Browser used camera+microphone then connected to 74.125.250.248:3478 after 188 ms`; the socket table alone saw only DNS. Control+C leaves no tcpdump behind under sudo. On `Host-001` (2026-10-27) no UDP left at all: see Backlog @network #udp (done: 2026-10-28, Mac run 10:57, no code change)
 - [x] [P2] pktap phase 2: `--udp-flows` on `tui`/`watch` (exits early without root via `pktap_unavailable`); `Supervisor(pktap=...)` pumps `PktapCapture.connections()` as a second source and merges its active flows into `active_connections()` (a socket seen by both is listed once); 2 s warm-up mutes flows already open; up to 5 restarts with doubling backoff; `doctor` check `pktap capture (--udp-flows)`. 222 passed. Not yet run as root @network #udp (done: 2026-10-27 @d56aeef)

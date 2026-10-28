@@ -14,6 +14,33 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-28 11:19 +0100] - Full Disk Access granted: `doctor` all green (Mac)
+
+- **Environment:** macOS 27.0.1, arm64, hostname `MacBook-Air-di-Carlo-2`, root, `main` at
+  2be213c.
+- **Goal:** the FDA task in TODO **Next Up**: grant Full Disk Access to the terminal and see
+  the check turn OK.
+- **Code changes:** none.
+- **Commands run:** `sudo uv run safemaxxing doctor`, before and after adding the terminal in
+  System Settings → Privacy & Security → Full Disk Access and reopening it.
+- **Result and raw data:**
+  - Before: 12 OK, 1 WARN, `! Full Disk Access: not granted to this terminal (optional today;
+    needed for TCC.db inspection)`. Root alone is not enough: the grant belongs to the
+    terminal app.
+  - After (verbatim): 13 OK, 0 WARN, 0 FAIL.
+    ```text
+    ✔ pf status: Enabled
+    ✔ anchor com.apple/safemaxxing: block drop out quick from any to <safemaxxing_block>
+    ✔ foreign sockets: 38 pids visible incl. daemons _mdnsresponder, _netbios
+    ✔ Full Disk Access: system TCC.db readable
+    ✔ socket snapshot: 10 ms per poll (interval 200 ms)
+    ✔ log stream predicate: accepted
+    ✔ pktap capture (--udp-flows): tcpdump capturing
+    ```
+  - pktap capture is also OK as root, so `--udp-flows` is ready on this Mac.
+- **Problems / regressions:** none.
+- **Next steps:** reading TCC.db for camera/mic grants (Backlog) is now possible here.
+
 ## [2026-10-28 11:05 +0100] - pktap leftovers: hostnames, directed broadcasts, system-extension bundle ids (Mac, offline)
 
 - **Environment:** macOS 27.0.1, arm64 Apple M4, `main` at 6bd75f7 plus uncommitted
