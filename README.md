@@ -73,7 +73,8 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
 - **Socket mapper**: polling della tabella socket via `psutil`, con fallback `lsof -F`.
   - Tiene solo le connessioni *in uscita*: TCP `SYN_SENT`/`ESTABLISHED` non accettate su porte
     in ascolto, e UDP connessi.
-  - Ricava il bundle id dall'`Info.plist` dell'app.
+  - Ricava il bundle id dall'`Info.plist` dell'app, o della system extension per i binari
+    in `/Library/SystemExtensions` (es. quella di rete di Avast).
   - Fa il reverse DNS in background, con cache.
 - **Flussi UDP via pktap** (opzionale, `--udp-flows`, serve root): un `tcpdump -k` sempre
   attivo sull'interfaccia pktap, solo UDP in uscita e senza porte DNS.
@@ -81,7 +82,8 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
     pacchetto in uscita di un flusso diventa una connessione con stato `PKTAP`.
   - Così si vedono le destinazioni dei socket UDP mai `connect()`-ati, come i media di una
     call Meet in Brave.
-  - Scarta il traffico link-local, multicast e broadcast, il kernel e i binari SIP (salvo
+  - Scarta il traffico link-local, multicast e broadcast (anche verso l'indirizzo di broadcast
+    della sottorete di ogni interfaccia), il kernel e i binari SIP (salvo
     `--include-system`). I flussi già aperti all'avvio non contano come nuovi.
   - Se tcpdump si ferma viene riavviato, fino a 5 volte di fila.
   - Durante una call Meet costa circa lo 0,5% di un core.
@@ -334,7 +336,8 @@ testabile anche su Linux (la CI gira su macOS).
     [TESTLOG.md](TESTLOG.md).
   - Su una rete che blocca l'UDP, Meet ripiega su TCP dentro una connessione già aperta, e
     nessuna delle due sorgenti lo vede. È stato osservato su una rete, senza conferma.
-  - I flussi pktap non hanno ancora il nome host: l'alert mostra l'IP.
+  - I flussi pktap prendono il nome host dalla stessa cache del reverse DNS: il primo alert
+    verso un IP nuovo mostra l'IP, come per la tabella dei socket.
   - Gli eventi sensore di Brave restano visibili e attribuiti correttamente (verificato il
     2026-10-26, vedi [TESTLOG.md](TESTLOG.md)).
 - **SNI**: oggi il nome host arriva dal reverse DNS. Estrarre lo SNI dal ClientHello richiede

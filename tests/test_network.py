@@ -74,6 +74,27 @@ def test_bundle_id_uses_outermost_app(tmp_path: Path) -> None:
     assert bundle_id_for_exe("/usr/bin/curl") is None
 
 
+def test_bundle_id_of_a_system_extension(tmp_path: Path) -> None:
+    ext = (
+        tmp_path
+        / "Library/SystemExtensions/3F2A/com.avast.Antivirus.SystemExtension.systemextension"
+    )
+    (ext / "Contents").mkdir(parents=True)
+    with open(ext / "Contents" / "Info.plist", "wb") as fh:
+        plistlib.dump({"CFBundleIdentifier": "com.avast.Antivirus.SystemExtension"}, fh)
+    exe = ext / "Contents/MacOS/com.avast.Antivirus.SystemExtension"
+    assert bundle_id_for_exe(str(exe)) == "com.avast.Antivirus.SystemExtension"
+
+
+def test_enclosing_app_wins_over_its_system_extension(tmp_path: Path) -> None:
+    app = tmp_path / "Avast.app"
+    (app / "Contents").mkdir(parents=True)
+    with open(app / "Contents" / "Info.plist", "wb") as fh:
+        plistlib.dump({"CFBundleIdentifier": "com.avast.Antivirus"}, fh)
+    exe = app / "Contents/Library/SystemExtensions/x.systemextension/Contents/MacOS/x"
+    assert bundle_id_for_exe(str(exe)) == "com.avast.Antivirus"
+
+
 def test_monitor_reports_only_new_connections() -> None:
     snapshots: list[list[NetworkConnection]] = [
         [make_conn(first_seen=T0)],

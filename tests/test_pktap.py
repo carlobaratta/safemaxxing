@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import psutil
 import pytest
@@ -11,11 +13,13 @@ from conftest import make_event
 
 from safemaxxing.correlation import CorrelationEngine
 from safemaxxing.models import PKTAP_STATUS, Direction, PktapEvent, Protocol, SensorType
+from safemaxxing.network import HostnameResolver
 from safemaxxing.pktap import (
     TCPDUMP_BINARY,
     PktapCapture,
     PktapError,
     PktapFlowTracker,
+    interface_broadcasts,
     is_relevant_destination,
     parse_pktap_line,
     pktap_command,
@@ -51,6 +55,7 @@ def make_tracker(**overrides: object) -> PktapFlowTracker:
     kwargs: dict[str, object] = {
         "process_lookup": PROCESSES.get,
         "bundle_lookup": BUNDLES.get,
+        "broadcasts": frozenset,
     }
     kwargs.update(overrides)
     return PktapFlowTracker(**kwargs)  # type: ignore[arg-type]
@@ -231,6 +236,59 @@ def test_idle_capture_gives_whatsapp_connection() -> None:
 def test_system_and_link_local_traffic_dropped(name: str) -> None:
     tracker = make_tracker()
     assert [c for p in fixture_packets(name) if (c := tracker.feed(p)) is not None] == []
+
+
+def test_directed_broadcast_from_a_user_process_dropped() -> None:
+    # Synthetic: WhatsApp to en0's /16 broadcast address (10.243.255.255 on 2026-10-28).
+    line = "1793026604.858618 (en0, proc WhatsApp:19122, svc BK, out, so) IP 10.243.5.87.65188 > 10.243.255.255.9: UDP, length 36"
+    packet = parse_pktap_line(line)
+    assert packet is not None
+    assert make_tracker().feed(packet) is not None
+    lan = make_tracker(broadcasts=lambda: frozenset({"10.243.255.255"}))
+    assert lan.feed(packet) is None
+
+
+def test_interface_broadcasts_lists_ipv4_broadcasts(monkeypatch: pytest.MonkeyPatch) -> None:
+    addrs = {
+        "lo0": [SimpleNamespace(family=socket.AF_INET, broadcast=None)],
+        "en0": [
+            SimpleNamespace(family=socket.AF_INET, broadcast="10.243.255.255"),
+            SimpleNamespace(family=socket.AF_INET6, broadcast=None),
+        ],
+    }
+    monkeypatch.setattr(psutil, "net_if_addrs", lambda: addrs)
+    assert interface_broadcasts() == frozenset({"10.243.255.255"})
+
+
+async def test_capture_names_flows_from_the_resolver_cache(tmp_path: Path) -> None:
+    looked_up: list[str] = []
+
+    def lookup(ip: str) -> str:
+        looked_up.append(ip)
+        return "relay.example"
+
+    resolver = HostnameResolver(lookup=lookup)
+
+    def capture() -> PktapCapture:
+        return PktapCapture(
+            fake_tcpdump(tmp_path, f"print({MEET_OUT!r})\n"),
+            tracker=make_tracker(idle_s=1e12),
+            warmup_s=0,
+            max_restarts=0,
+            resolver=resolver,
+        )
+
+    # Unknown destination: yielded unnamed at once, its lookup started in the background.
+    first = capture()
+    [unnamed] = [c async for c in first.connections()]
+    assert unnamed.hostname is None
+    assert await resolver.resolve("74.125.250.240") == "relay.example"
+    assert looked_up == ["74.125.250.240"]
+    assert [c.hostname for c in first.active()] == ["relay.example"]
+    # Cached destination: named when yielded.
+    [named] = [c async for c in capture().connections()]
+    assert named.hostname == "relay.example"
+    resolver.close()
 
 
 def test_kernel_netbios_broadcast_dropped_as_system() -> None:

@@ -10,11 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import ipaddress
 import os
 import re
+import socket
 import time
 from collections.abc import AsyncGenerator, Callable, Sequence
+
+import psutil
 
 from safemaxxing.correlation import DNS_PORTS
 from safemaxxing.models import (
@@ -24,7 +28,7 @@ from safemaxxing.models import (
     Protocol,
     is_system_path,
 )
-from safemaxxing.network import bundle_id_for_exe
+from safemaxxing.network import HostnameResolver, bundle_id_for_exe
 from safemaxxing.sensors import ProcessInfo, _drain_tail, process_info
 
 TCPDUMP_BINARY = "/usr/sbin/tcpdump"
@@ -141,14 +145,26 @@ def is_relevant_destination(ip: str, include_loopback: bool = False) -> bool:
     )
 
 
+def interface_broadcasts() -> frozenset[str]:
+    """The IPv4 broadcast address of every interface now (`10.243.255.255` for a /16 on en0);
+    read per new flow, since the network can change under a running capture."""
+    return frozenset(
+        addr.broadcast
+        for addrs in psutil.net_if_addrs().values()
+        for addr in addrs
+        if addr.family == socket.AF_INET and addr.broadcast
+    )
+
+
 class PktapFlowTracker:
     """Turns packets into connections: the first outbound packet of a flow is its connection.
 
     A flow with no packet in either direction for `idle_s` is forgotten, so it counts as new
-    when it resumes. Flows first seen before `mute_until` are tracked but not returned. Flows
-    of the kernel and of SIP-protected binaries are dropped unless
-    `include_system`; the process is looked up once per new flow, never cached, so a reused
-    pid is never mistaken for the process that held it before.
+    when it resumes. Flows first seen before `mute_until` are tracked but not returned, and
+    flows to an interface's broadcast address are never returned. Flows of the kernel and of
+    SIP-protected binaries are dropped unless `include_system`; the process is looked up once
+    per new flow, never cached, so a reused pid is never mistaken for the process that held
+    it before.
     """
 
     def __init__(
@@ -159,6 +175,7 @@ class PktapFlowTracker:
         max_flows: int = 8192,
         process_lookup: ProcessInfo = process_info,
         bundle_lookup: Callable[[str], str | None] = bundle_id_for_exe,
+        broadcasts: Callable[[], frozenset[str]] = interface_broadcasts,
     ) -> None:
         self._include_system = include_system
         self._include_loopback = include_loopback
@@ -166,6 +183,7 @@ class PktapFlowTracker:
         self._max_flows = max_flows
         self._process_lookup = process_lookup
         self._bundle_lookup = bundle_lookup
+        self._broadcasts = broadcasts
         self._last_packet: dict[FlowKey, float] = {}
         self._conns: dict[FlowKey, NetworkConnection] = {}
         self._muted_until = 0.0
@@ -201,6 +219,8 @@ class PktapFlowTracker:
             self._prune(packet.timestamp)
         self._last_packet[key] = packet.timestamp
         if last is not None and packet.timestamp - last < self._idle_s:
+            return None
+        if packet.dest_ip in self._broadcasts():
             return None
         # A process gone already keeps the kernel's name and counts as non-system.
         name, exe = self._process_lookup(packet.pid) or (None, None)
@@ -248,6 +268,7 @@ class PktapCapture:
         max_restarts: int = 5,
         restart_backoff_s: float = 1.0,
         max_backoff_s: float = 30.0,
+        resolver: HostnameResolver | None = None,
     ) -> None:
         self._command = list(command) if command is not None else pktap_command()
         self.tracker = tracker or PktapFlowTracker()
@@ -256,8 +277,17 @@ class PktapCapture:
         self._max_restarts = max_restarts
         self._restart_backoff_s = restart_backoff_s
         self._max_backoff_s = max_backoff_s
+        self._resolver = resolver
         self.unparsed = 0
         self.restarts = 0
+
+    def _named(self, conn: NetworkConnection) -> NetworkConnection:
+        host = self._resolver.cached(conn.remote_address) if self._resolver else None
+        return dataclasses.replace(conn, hostname=host) if host else conn
+
+    def active(self, now: float | None = None) -> tuple[NetworkConnection, ...]:
+        """The tracker's active flows, with hostnames filled in from the resolver cache."""
+        return tuple(self._named(c) for c in self.tracker.active(now))
 
     async def lines(self) -> AsyncGenerator[str]:
         """Raw output lines; raises `PktapError` if tcpdump exits with an error (e.g. not root)."""
@@ -312,6 +342,8 @@ class PktapCapture:
         started again, up to `max_restarts` times in a row, after `restart_backoff_s` doubled
         each time up to `max_backoff_s`; a run longer than `max_backoff_s` resets the count.
         Past that, the last error is raised, or iteration ends if tcpdump exited cleanly.
+        Hostnames come only from the resolver cache; a new destination is prefetched, never
+        awaited, as in `NetworkMonitor.connections`.
         """
         loop = asyncio.get_running_loop()
         failures = 0
@@ -326,7 +358,9 @@ class PktapCapture:
                             self.tracker.mute_until(packet.timestamp + self._warmup_s)
                             first = False
                         if (conn := self.tracker.feed(packet)) is not None:
-                            yield conn
+                            if self._resolver is not None:
+                                self._resolver.prefetch(conn.remote_address)
+                            yield self._named(conn)
             except PktapError as exc:
                 error = exc
             if loop.time() - started > self._max_backoff_s:

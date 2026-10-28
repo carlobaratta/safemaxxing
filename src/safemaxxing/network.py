@@ -67,16 +67,28 @@ def enclosing_apps(exe_path: str) -> list[str]:
 
 @lru_cache(maxsize=1024)
 def bundle_id_for_app(app_path: str) -> str | None:
-    """CFBundleIdentifier of the .app at `app_path`, or None if its Info.plist is unusable."""
+    """CFBundleIdentifier of the bundle (.app, .systemextension) at `app_path`, or None if
+    its Info.plist is unusable."""
     data = _read_plist(f"{app_path}/Contents/Info.plist")
     ident = data.get("CFBundleIdentifier") if isinstance(data, dict) else None
     return ident if isinstance(ident, str) else None
 
 
 def bundle_id_for_exe(exe_path: str) -> str | None:
-    """Return the CFBundleIdentifier of the outermost .app containing `exe_path`."""
+    """Return the CFBundleIdentifier of the outermost .app containing `exe_path`, else of the
+    innermost system extension containing it.
+
+    A system extension runs from `/Library/SystemExtensions/<uuid>/<id>.systemextension`, in
+    no .app (Avast's network extension on macOS 27.0.1). Its bundle has the same layout.
+    """
     apps = enclosing_apps(exe_path)
-    return bundle_id_for_app(apps[0]) if apps else None
+    if apps:
+        return bundle_id_for_app(apps[0])
+    parts = PurePosixPath(exe_path).parts
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].endswith(".systemextension"):
+            return bundle_id_for_app(str(PurePosixPath(*parts[: i + 1])))
+    return None
 
 
 def _strip_brackets(addr: str) -> str:

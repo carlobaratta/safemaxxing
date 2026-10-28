@@ -54,17 +54,18 @@ class Supervisor:
         and `include_loopback` like the socket table does.
         """
         config = config or CorrelationConfig()
+        resolver = HostnameResolver() if resolve_hostnames else None
         monitor = NetworkMonitor(
             interval_s=poll_interval_s,
             include_loopback=include_loopback,
-            resolver=HostnameResolver() if resolve_hostnames else None,
+            resolver=resolver,
         )
         return cls(
             events=SensorListener().events(),
             connections=monitor.connections(),
             engine=CorrelationEngine(config),
             monitor=monitor,
-            pktap=_pktap_capture(config, include_loopback) if udp_flows else None,
+            pktap=_pktap_capture(config, include_loopback, resolver) if udp_flows else None,
         )
 
     def active_connections(self) -> tuple[NetworkConnection, ...]:
@@ -77,7 +78,7 @@ class Supervisor:
             return sockets
         # A connected UDP socket is in both; the TUI keys its rows on `key`, so keep one.
         seen = {c.key for c in sockets}
-        return sockets + tuple(c for c in self.pktap.tracker.active() if c.key not in seen)
+        return sockets + tuple(c for c in self.pktap.active() if c.key not in seen)
 
     def _ingest_connection(self, conn: NetworkConnection) -> list[Alert]:
         self._recent.append(conn)
@@ -122,9 +123,12 @@ class Supervisor:
             await asyncio.gather(*tasks, return_exceptions=True)
 
 
-def _pktap_capture(config: CorrelationConfig, include_loopback: bool) -> PktapCapture:
+def _pktap_capture(
+    config: CorrelationConfig, include_loopback: bool, resolver: HostnameResolver | None
+) -> PktapCapture:
     tracker = PktapFlowTracker(
         include_system=config.include_system, include_loopback=include_loopback
     )
     command = pktap_command(bpf_filter=udp_filter(include_dns=config.include_dns))
-    return PktapCapture(command=command, tracker=tracker)
+    # Shares the monitor's resolver: one cache, one thread pool, for both sources.
+    return PktapCapture(command=command, tracker=tracker, resolver=resolver)
