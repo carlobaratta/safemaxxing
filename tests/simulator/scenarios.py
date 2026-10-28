@@ -193,9 +193,9 @@ def screencapture_cmd_shift_5() -> Scenario:
 
 def camera_then_curl_upload() -> Scenario:
     """An app reads the camera, then a helper it spawned (`curl`) uploads 450 ms later: the
-    socket's owner is a different pid, linked back only by the process chain (M1.3). Because
-    `/usr/bin/curl` is a system binary, catching it also needs `include_system` -- otherwise the
-    socket is dropped before correlation, so the chain has nothing to attribute."""
+    socket's owner is a different pid, linked back only by the process chain (M1.3). `curl` is a
+    system binary, but the chain overrides the system-path filter for an accountable delegate,
+    so this is caught without `include_system`."""
     app_pid, curl_pid = 4242, 5001
     return Scenario(
         name="camera_then_curl_upload",
