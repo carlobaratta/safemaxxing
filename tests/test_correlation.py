@@ -227,3 +227,88 @@ def test_indicator_events_correlate_even_when_marked_system() -> None:
     eng = engine()
     eng.ingest_event(make_event(system=True))
     assert eng.ingest_connection(make_conn()) == []
+
+
+def test_child_socket_attributes_to_parent_via_chain() -> None:
+    # The app (pid 300) used the camera; the socket is owned by a helper it spawned (pid 501,
+    # "curl"), a different pid, name and bundle. Only the actor chain links the two.
+    chains = {501: frozenset({501, 412, 300})}
+    eng = CorrelationEngine(
+        CorrelationConfig(),
+        clock=lambda: T0,
+        actor_chain=lambda pid: chains.get(pid, frozenset({pid})),
+    )
+    eng.ingest_event(make_event(pid=300, bundle_id=None, process_name="app"))
+    conn = make_conn(pid=501, process_name="curl", bundle_id=None, first_seen=T0 + 0.1)
+    (alert,) = eng.ingest_connection(conn)
+    assert alert.severity is Severity.HIGH
+
+
+def test_chain_does_not_match_unrelated_process() -> None:
+    eng = CorrelationEngine(
+        CorrelationConfig(),
+        clock=lambda: T0,
+        actor_chain=lambda pid: frozenset({pid}),
+    )
+    eng.ingest_event(make_event(pid=300, bundle_id=None, process_name="app"))
+    conn = make_conn(pid=501, process_name="curl", bundle_id=None, first_seen=T0 + 0.1)
+    assert eng.ingest_connection(conn) == []
+
+
+def test_decay_window_late_connection_still_alerts_at_lower_severity() -> None:
+    # Camera (high) at T0; the upload opens 2.0 s later, past the 0.5 s hard window but inside
+    # the 5.0 s decay window. It still correlates, one step down (medium), flagged late.
+    eng = engine(window_s=0.5, decay_window_s=5.0)
+    eng.ingest_event(make_event(sensor=SensorType.CAMERA))
+    (alert,) = eng.ingest_connection(make_conn(first_seen=T0 + 2.0))
+    assert alert.severity is Severity.MEDIUM
+    assert alert.finding.late
+    assert 0.0 < alert.finding.weight < 1.0
+
+
+def test_decay_weight_fades_with_delay() -> None:
+    eng = engine(window_s=0.5, decay_window_s=5.0)
+    eng.ingest_event(make_event())
+    (near,) = eng.ingest_connection(
+        make_conn(local_port=10, remote_address="198.51.100.1", first_seen=T0 + 1.0)
+    )
+    (far,) = eng.ingest_connection(
+        make_conn(local_port=11, remote_address="198.51.100.2", first_seen=T0 + 4.0)
+    )
+    assert near.finding.weight > far.finding.weight
+
+
+def test_beyond_decay_window_no_match() -> None:
+    eng = engine(window_s=0.5, decay_window_s=5.0)
+    eng.ingest_event(make_event())
+    assert eng.ingest_connection(make_conn(first_seen=T0 + 6.0)) == []
+
+
+def test_in_hard_window_is_full_severity_with_decay_enabled() -> None:
+    eng = engine(window_s=0.5, decay_window_s=5.0)
+    eng.ingest_event(make_event(sensor=SensorType.CAMERA))
+    (alert,) = eng.ingest_connection(make_conn(first_seen=T0 + 0.3))
+    assert alert.severity is Severity.HIGH
+    assert not alert.finding.late
+
+
+def test_in_window_sensor_keeps_full_severity_despite_a_late_one() -> None:
+    # A late microphone match and an in-window camera match on the same connection: the
+    # in-window one keeps it at full strength, and two sensors bump it to critical.
+    eng = engine(window_s=0.5, decay_window_s=5.0)
+    eng.ingest_event(make_event(sensor=SensorType.MICROPHONE, timestamp=T0 - 1.6))
+    eng.ingest_event(make_event(sensor=SensorType.CAMERA, timestamp=T0))
+    (alert,) = eng.ingest_connection(make_conn(first_seen=T0 + 0.3))
+    assert alert.severity is Severity.CRITICAL
+
+
+def test_pktap_syn_and_socket_poll_of_one_flow_alert_once() -> None:
+    # The same TCP flow reaches the engine twice: pktap's SYN (early, accurate) and the socket
+    # poll (up to a poll late). One alert, keeping the earlier SYN timing -- no duplicate.
+    eng = engine()
+    eng.ingest_event(make_event())
+    syn = make_conn(status="PKTAP", first_seen=T0 + 0.02)
+    polled = make_conn(status="ESTABLISHED", first_seen=T0 + 0.15)
+    alerts = eng.ingest_connection(syn) + eng.ingest_connection(polled)
+    assert len(alerts) == 1
+    assert round(alerts[0].finding.delta_s, 3) == 0.02
