@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTD/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Entitlements for the hardened runtime, required to notarize a PyInstaller build. -->
+
+    <!-- CPython allocates executable memory for its bytecode evaluator and ctypes trampolines. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- The bundle loads its own copies of libpython and C-extension dylibs (psutil, textual's
+         deps), which are signed with the Developer ID key, not Apple's: library validation must
+         be relaxed or the loader rejects them under the hardened runtime. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- The frozen interpreter reads its own environment and resources. -->
+    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+    <true/>
+</dict>
+</plist>
