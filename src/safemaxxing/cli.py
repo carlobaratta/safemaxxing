@@ -403,6 +403,63 @@ def doctor(poll_ms: PollMs = 200) -> None:
 
 
 @app.command()
+def permissions(
+    check_signatures: Annotated[
+        bool,
+        typer.Option(
+            "--check-signatures/--no-check-signatures",
+            help="Also run codesign on each path client (slower).",
+        ),
+    ] = True,
+) -> None:
+    """List apps holding sensitive TCC permissions (camera, microphone, screen, input
+    monitoring, accessibility, full disk access) and flag high-risk holders.
+
+    Reads the system and per-user TCC databases read-only; needs Full Disk Access on this
+    terminal (see `doctor`). Run as root to read the system database.
+    """
+    from safemaxxing import tcc_inspector
+
+    entries, unavailable = tcc_inspector.inspect()
+    for reason in unavailable:
+        console.print(f"[yellow]![/] {escape(reason)}")
+    if not entries:
+        if unavailable:
+            console.print("[bold red]no TCC database readable[/] — grant Full Disk Access")
+            raise typer.Exit(1)
+        console.print("no sensitive TCC grants found")
+        return
+
+    table = Table(title="TCC permissions")
+    table.add_column("Service")
+    table.add_column("Client", overflow="fold")
+    table.add_column("Scope")
+    table.add_column("Risk", style="red")
+    risky = 0
+    for entry in sorted(entries, key=lambda e: (bool(e.path), e.service_label, e.client)):
+        exists = entry.path is None or Path(entry.path).exists()
+        signing = (
+            tcc_inspector.codesign_identity(entry.path)
+            if check_signatures and entry.path and exists
+            else None
+        )
+        reasons = tcc_inspector.risk_reasons(entry, exists=exists, signing=signing)
+        if reasons:
+            risky += 1
+        scope = "system" if entry.source == tcc_inspector.SYSTEM_TCC_DB else "user"
+        table.add_row(
+            entry.service_label,
+            escape(entry.client),
+            scope,
+            escape(", ".join(reasons)) if reasons else "[dim]-[/]",
+        )
+    console.print(table)
+    summary = f"{len(entries)} sensitive grant(s)"
+    tail = f"[red]{risky} high-risk[/]" if risky else "none high-risk"
+    console.print(f"{summary}, {tail}")
+
+
+@app.command()
 def sample(
     seconds: Annotated[
         float, typer.Option("--seconds", min=0.5, help="How long to sample `log stream`.")

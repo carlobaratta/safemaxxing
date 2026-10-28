@@ -12,9 +12,11 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import PurePosixPath
 
 import psutil
 
+from safemaxxing import tcc_inspector
 from safemaxxing.firewall import (
     ANCHOR,
     PARENT_ANCHOR_RULE,
@@ -275,6 +277,34 @@ def check_pktap(
     return Check(name, Status.WARN, lines[-1] if lines else f"exit {res.returncode}")
 
 
+def check_tcc_permissions(
+    paths: tuple[str, ...] = (tcc_inspector.SYSTEM_TCC_DB, tcc_inspector.USER_TCC_DB),
+) -> Check:
+    """Summarise the standing TCC grants and flag high-risk holders of sensitive permissions.
+
+    Needs Full Disk Access to read the databases; without it the check warns rather than fails,
+    like `check_full_disk_access`. Path heuristics only (no per-binary codesign), so it stays
+    fast; `safemaxxing permissions` shows the full breakdown.
+    """
+    entries, unavailable = tcc_inspector.inspect(paths)
+    if not entries and unavailable:
+        return Check("TCC permissions", Status.WARN, "; ".join(unavailable))
+    risky = [
+        e
+        for e in entries
+        if tcc_inspector.risk_reasons(e, exists=e.path is None or os.path.exists(e.path))
+    ]
+    if risky:
+        names = sorted({PurePosixPath(e.client).name if e.path else e.client for e in risky})
+        shown = ", ".join(names[:5]) + (" ..." if len(names) > 5 else "")
+        return Check(
+            "TCC permissions",
+            Status.WARN,
+            f"{len(entries)} sensitive grant(s), {len(risky)} high-risk: {shown}",
+        )
+    return Check("TCC permissions", Status.OK, f"{len(entries)} sensitive grant(s), none high-risk")
+
+
 def run_doctor(poll_interval_s: float = 0.2) -> list[Check]:
     """Run every check in order; on a non-macOS host return after the basic checks."""
     checks = [check_platform(), check_root(), *check_binaries()]
@@ -282,7 +312,7 @@ def run_doctor(poll_interval_s: float = 0.2) -> list[Check]:
         return checks
     checks += [check_pf_status(), *check_pf_anchor(), check_socket_visibility()]
     checks += [check_full_disk_access(), check_snapshot_latency(poll_interval_s)]
-    checks += [check_log_predicate(), check_pktap()]
+    checks += [check_log_predicate(), check_pktap(), check_tcc_permissions()]
     return checks
 
 
