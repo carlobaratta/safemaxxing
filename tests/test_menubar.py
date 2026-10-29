@@ -225,3 +225,44 @@ def test_model_survives_concurrent_writes_and_reads() -> None:
         stop.set()
         thread.join()
     assert errors == []
+
+
+def test_a_system_binarys_sensor_access_does_not_light_the_icon() -> None:
+    model = MenuModel()
+    model.observe(make_event(timestamp=T0, system=True, bundle_id=None, process_name="coreaudiod"))
+    assert model.icon_state(now=T0) is IconState.IDLE
+
+
+def test_an_indicator_event_counts_even_for_a_system_app() -> None:
+    model = MenuModel()
+    model.observe(make_event(timestamp=T0, system=True, service="indicator:camera"))
+    assert model.icon_state(now=T0) is IconState.SENSOR
+
+
+def test_include_system_counts_system_accesses_too() -> None:
+    model = MenuModel(MenuBarConfig(include_system=True))
+    model.observe(make_event(timestamp=T0, system=True))
+    assert model.icon_state(now=T0) is IconState.SENSOR
+
+
+def test_snapshot_is_stable_until_what_the_menu_shows_changes() -> None:
+    model = MenuModel()
+    first = model.snapshot(now=T0)
+    assert model.snapshot(now=T0) == first
+    model.observe(make_alert(alert_id=1, created_at=T0))
+    after_alert = model.snapshot(now=T0)
+    assert after_alert != first
+    assert after_alert.title == ICON_GLYPHS[IconState.ALERT]
+    model.record_action(ActionResult(ActionKind.BLOCK_IP, "203.0.113.9", True))
+    after_action = model.snapshot(now=T0)
+    assert after_action != after_alert
+    model.auto_block = True
+    assert model.snapshot(now=T0) != after_action
+
+
+def test_snapshot_status_carries_the_stop_reason() -> None:
+    model = MenuModel()
+    model.mark_stopped("monitoring stopped: log stream exited")
+    snap = model.snapshot(now=T0)
+    assert snap.status == "monitoring stopped: log stream exited"
+    assert snap.title == ICON_GLYPHS[IconState.STOPPED]

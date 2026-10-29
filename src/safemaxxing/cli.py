@@ -211,7 +211,7 @@ def menubar(
     Auto-Block/Auto-Suspend toggles and the blocked-IP list. Needs the `menubar` extra (rumps)
     and root for full visibility.
     """
-    from safemaxxing.menubar import MENUBAR_HINT, menubar_available, run_menubar
+    from safemaxxing.menubar import MENUBAR_HINT, MenuBarConfig, menubar_available, run_menubar
 
     if not menubar_available():
         console.print(f"[bold red]menubar:[/] {escape(MENUBAR_HINT)}")
@@ -227,7 +227,8 @@ def menubar(
         include_dns,
         udp_flows,
     )
-    run_menubar(supervisor, _firewall(), ProcessController())
+    config = MenuBarConfig(include_system=include_system)
+    run_menubar(supervisor, _firewall(), ProcessController(), config)
 
 
 def _alert_json(alert: Alert) -> str:

@@ -77,6 +77,11 @@ class MenuBarConfig:
     recent_actions: int = 3
     # Auto-Block / Auto-Suspend act on alerts at or above this severity, once per alert.
     auto_action_severity: Severity = Severity.HIGH
+    # Count system binaries' sensor accesses toward the icon, as `--include-system` does for the
+    # TUI feed and the correlation engine; Control Center indicator events always count.
+    include_system: bool = False
+    # The block table is re-read from pf every this many one-second ticks, and after each action.
+    blocked_refresh_ticks: int = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +94,19 @@ class RecentAlert:
     summary: str
     remote_address: str
     pid: int
+
+
+@dataclass(frozen=True, slots=True)
+class MenuSnapshot:
+    """Everything the drop-down shows, so the runner rebuilds it only when this changes."""
+
+    title: str
+    status: str
+    alerts: tuple[RecentAlert, ...]
+    actions: tuple[ActionResult, ...]
+    blocked: tuple[str, ...]
+    auto_block: bool
+    auto_suspend: bool
 
 
 class MenuModel:
@@ -139,6 +157,10 @@ class MenuModel:
                     newest = sorted(self._alerts.values(), key=lambda a: a.created_at, reverse=True)
                     self._alerts = {a.id: a for a in newest[: self.config.max_alerts]}
             elif isinstance(update, Event):
+                # Same rule as the correlation engine: a system binary's access is noise unless
+                # asked for, but the indicator reports a sensor that is really on.
+                if update.system and not update.from_indicator and not self.config.include_system:
+                    return
                 previous = self._sensor_last.get(update.sensor, 0.0)
                 self._sensor_last[update.sensor] = max(previous, update.timestamp)
 
@@ -221,6 +243,20 @@ class MenuModel:
     def status_title(self, now: float | None = None) -> str:
         """The icon's glyph for the current state."""
         return ICON_GLYPHS[self.icon_state(now)]
+
+    def snapshot(self, now: float | None = None) -> MenuSnapshot:
+        """What the menu shows now; equal snapshots mean the menu need not be rebuilt."""
+        with self._lock:
+            state = self.icon_state(now)
+            return MenuSnapshot(
+                title=ICON_GLYPHS[state],
+                status=self._stopped or state.value,
+                alerts=tuple(self.recent_alerts()),
+                actions=tuple(self.recent_actions()),
+                blocked=self._blocked,
+                auto_block=self.auto_block,
+                auto_suspend=self.auto_suspend,
+            )
 
 
 def action_label(result: ActionResult) -> str:
@@ -312,6 +348,7 @@ def run_menubar(
         conn = alert.finding.connection
         if model.auto_block:
             model.record_action(await firewall.block(conn.remote_address))
+            model.set_blocked(await firewall.blocked())
         if model.auto_suspend:
             model.record_action(processes.suspend(conn.pid))
 
@@ -328,8 +365,17 @@ def run_menubar(
 
     app = rumps.App("safemaxxing", title=model.status_title(), quit_button="Quit safemaxxing")
 
+    def refresh_blocked() -> None:
+        """Re-read the block table from pf on the loop; a failed read keeps the last list."""
+
+        def done(future: Any) -> None:
+            if not future.cancelled() and future.exception() is None:
+                model.set_blocked(future.result())
+
+        asyncio.run_coroutine_threadsafe(firewall.blocked(), loop).add_done_callback(done)
+
     def schedule(kind: ActionKind, target: str, action: Coroutine[Any, Any, ActionResult]) -> None:
-        """Run a firewall call on the loop and record its outcome, or why it raised."""
+        """Run a firewall call on the loop, record its outcome (or why it raised), re-read pf."""
 
         def done(future: Any) -> None:
             try:
@@ -337,6 +383,7 @@ def run_menubar(
             except Exception as exc:
                 result = ActionResult(kind, target, False, str(exc))
             model.record_action(result)
+            refresh_blocked()
 
         asyncio.run_coroutine_threadsafe(action, loop).add_done_callback(done)
 
@@ -363,13 +410,11 @@ def run_menubar(
     def open_dashboard(_sender: Any) -> None:
         open_tui()
 
-    def rebuild() -> None:
-        status = model.stopped_reason or model.icon_state().value
-        items: list[Any] = [rumps.MenuItem(f"Status: {status}", callback=None)]
-        alerts = model.recent_alerts()
+    def rebuild(snap: MenuSnapshot) -> None:
+        items: list[Any] = [rumps.MenuItem(f"Status: {snap.status}", callback=None)]
         items.append(rumps.separator)
-        if alerts:
-            for alert in alerts:
+        if snap.alerts:
+            for alert in snap.alerts:
                 row = rumps.MenuItem(f"[{alert.severity.label}] {alert.summary}", callback=None)
                 row.add(rumps.MenuItem("Block IP", callback=partial(block, alert.remote_address)))
                 row.add(rumps.MenuItem("Freeze process", callback=partial(suspend, alert.pid)))
@@ -378,17 +423,15 @@ def run_menubar(
             items.append(rumps.MenuItem("No correlations yet", callback=None))
         items.append(rumps.separator)
         auto_block_item = rumps.MenuItem("Auto-Block Mode", callback=toggle_auto_block)
-        auto_block_item.state = model.auto_block
+        auto_block_item.state = snap.auto_block
         auto_suspend_item = rumps.MenuItem("Auto-Suspend Mode", callback=toggle_auto_suspend)
-        auto_suspend_item.state = model.auto_suspend
+        auto_suspend_item.state = snap.auto_suspend
         items += [auto_block_item, auto_suspend_item, rumps.separator]
-        actions = model.recent_actions()
-        if actions:
-            items += [rumps.MenuItem(action_label(r), callback=None) for r in actions]
+        if snap.actions:
+            items += [rumps.MenuItem(action_label(r), callback=None) for r in snap.actions]
             items.append(rumps.separator)
-        blocked = model.blocked_ips()
-        if blocked:
-            for ip in blocked:
+        if snap.blocked:
+            for ip in snap.blocked:
                 entry = rumps.MenuItem(ip, callback=None)
                 entry.add(rumps.MenuItem("Unblock", callback=partial(unblock, ip)))
                 items.append(entry)
@@ -400,19 +443,26 @@ def run_menubar(
         app.menu.update(items)
 
     notified_stop = False
+    shown: MenuSnapshot | None = None
+    ticks = 0
 
     def refresh(_timer: Any) -> None:
-        nonlocal notified_stop
-        app.title = model.status_title()
+        nonlocal notified_stop, shown, ticks
+        snap = model.snapshot()
+        app.title = snap.title
         if model.stopped_reason and not notified_stop:
             notified_stop = True
             # rumps refuses to notify from an interpreter without a bundle id; the icon still shows.
             with contextlib.suppress(RuntimeError):
                 rumps.notification("safemaxxing", "Monitoring stopped", model.stopped_reason)
-        future = asyncio.run_coroutine_threadsafe(firewall.blocked(), loop)
-        future.add_done_callback(lambda f: model.set_blocked(f.result()))
-        rebuild()
+        if ticks % model.config.blocked_refresh_ticks == 0:
+            refresh_blocked()
+        ticks += 1
+        # Rebuilding an open menu closes its submenus, so only rebuild when the content changed.
+        if snap != shown:
+            shown = snap
+            rebuild(snap)
 
-    rebuild()
+    refresh(None)
     rumps.Timer(refresh, 1.0).start()
     app.run()

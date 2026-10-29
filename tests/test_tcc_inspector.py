@@ -193,3 +193,37 @@ def test_doctor_check_is_ok_only_when_every_database_is_read_and_clean(tmp_path:
     check = check_tcc_permissions(paths=(clean,))
     assert check.status is Status.OK
     assert check.detail == "1 sensitive grant(s), none high-risk"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/opt/homebrew/Cellar/python@3.12/3.12.7/bin/python3.12",
+        "/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+        "/usr/bin/perl5.30",
+        "/opt/homebrew/bin/node",
+    ],
+)
+def test_versioned_and_framework_interpreters_are_flagged(path: str) -> None:
+    assert tcc_inspector.interpreter_name(path) is not None
+    reasons = tcc_inspector.risk_reasons(entry(path), exists=True)
+    assert any(r.startswith("interpreter (") for r in reasons)
+
+
+def test_a_name_that_only_ends_in_digits_is_not_an_interpreter() -> None:
+    assert tcc_inspector.interpreter_name("/Applications/X11.app/Contents/MacOS/X11") is None
+    assert tcc_inspector.interpreter_name("/usr/bin/shasum") is None
+
+
+def test_user_tcc_db_under_sudo_is_the_invoking_users() -> None:
+    homes = {"alice": "/Users/alice"}
+    path = tcc_inspector.user_tcc_db({"SUDO_USER": "alice"}, euid=0, home_of=homes.get)
+    assert path == "/Users/alice/Library/Application Support/com.apple.TCC/TCC.db"
+
+
+def test_user_tcc_db_without_sudo_is_the_current_home() -> None:
+    def no_lookup(_login: str) -> str | None:
+        raise AssertionError("SUDO_USER must be ignored when not running as root")
+
+    path = tcc_inspector.user_tcc_db({"SUDO_USER": "carlo"}, euid=501, home_of=no_lookup)
+    assert path == str(Path.home() / "Library/Application Support/com.apple.TCC/TCC.db")

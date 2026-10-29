@@ -44,6 +44,7 @@ take, as opposed to a normal app bundle in `/Applications` signed by its vendor.
 from __future__ import annotations
 
 import os
+import pwd
 import sqlite3
 import subprocess
 from collections.abc import Callable, Mapping
@@ -57,7 +58,34 @@ from safemaxxing.codesign import CODESIGN, parse_codesign
 from safemaxxing.models import is_system_path
 
 SYSTEM_TCC_DB = "/Library/Application Support/com.apple.TCC/TCC.db"
-USER_TCC_DB = str(Path("~/Library/Application Support/com.apple.TCC/TCC.db").expanduser())
+_USER_TCC_RELATIVE = "Library/Application Support/com.apple.TCC/TCC.db"
+
+
+def _home_of(login: str) -> str | None:
+    try:
+        return pwd.getpwnam(login).pw_dir
+    except KeyError:
+        return None
+
+
+def user_tcc_db(
+    environ: Mapping[str, str] = os.environ,
+    euid: int | None = None,
+    home_of: Callable[[str], str | None] = _home_of,
+) -> str:
+    """The invoking user's per-user TCC database, also when running as root through sudo.
+
+    Under `sudo -H`, `sudo -i` or `sudo su`, `~` is root's home, whose TCC.db holds none of the
+    user's camera and microphone grants. When root was reached through sudo, `SUDO_USER` names
+    the real user, so their home is used instead; otherwise `~` is the answer.
+    """
+    euid = os.geteuid() if euid is None else euid
+    login = environ.get("SUDO_USER")
+    home = home_of(login) if euid == 0 and login and login != "root" else None
+    return str(Path(home or Path.home()) / _USER_TCC_RELATIVE)
+
+
+USER_TCC_DB = user_tcc_db()
 
 # The sensitive services this audit reports, mapped to a short label for display.
 SENSITIVE_SERVICES: Mapping[str, str] = {
@@ -70,10 +98,39 @@ SENSITIVE_SERVICES: Mapping[str, str] = {
 }
 
 # Executables that run arbitrary code handed to them: a grant to one of these is a grant to
-# whatever script it is pointed at, so it is treated as high-risk on its own.
+# whatever script it is pointed at, so it is treated as high-risk on its own. Names are matched
+# lower-cased and without a version suffix (see `interpreter_name`).
 INTERPRETERS = frozenset(
-    {"python", "python3", "bash", "sh", "zsh", "perl", "ruby", "node", "osascript", "php"}
+    {
+        "python",
+        "pythonw",
+        "bash",
+        "sh",
+        "zsh",
+        "dash",
+        "ksh",
+        "fish",
+        "perl",
+        "ruby",
+        "node",
+        "osascript",
+        "php",
+        "tclsh",
+        "lua",
+        "pwsh",
+        "java",
+    }
 )
+
+
+def interpreter_name(path: str) -> str | None:
+    """The `INTERPRETERS` name the binary at `path` matches, or None.
+
+    Case and a version suffix are ignored, so `python3.12`, `perl5.30` and a framework's
+    `Python` all match.
+    """
+    base = PurePosixPath(path).name.lower().rstrip("0123456789.")
+    return base if base in INTERPRETERS else None
 
 
 class ClientType(IntEnum):
@@ -245,7 +302,7 @@ def risk_reasons(
         return []
     reasons: list[str] = []
     name = PurePosixPath(path).name
-    if name in INTERPRETERS:
+    if interpreter_name(path):
         reasons.append(f"interpreter ({name})")
     if not is_system_path(path) and not path.startswith("/Applications/"):
         reasons.append("outside /Applications")
