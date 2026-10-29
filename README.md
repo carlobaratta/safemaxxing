@@ -36,6 +36,9 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
 - [Funzionalità](#funzionalità)
 - [Installazione](#installazione)
 - [Utilizzo](#utilizzo)
+  - [Menu bar](#menu-bar)
+  - [Permessi TCC](#permessi-tcc)
+  - [Diagnostica](#diagnostica)
 - [Architettura](#architettura)
 - [Limiti noti](#limiti-noti)
 - [Sviluppo](#sviluppo)
@@ -112,6 +115,13 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
     fondo, una barra di stato con CPU del processo, pacchetti e flussi UDP al secondo, cache
     DNS ed eventi al secondo.
 - **Headless**: `safemaxxing watch` con output JSON lines e azioni automatiche opzionali.
+- **Menu bar** (`safemaxxing menubar`, extra `menubar`): icona di stato, ultimi alert con
+  blocco e freeze a un clic, modalità Auto-Block / Auto-Suspend, lista degli IP bloccati.
+  Vedi [Menu bar](#menu-bar).
+- **Audit dei permessi TCC** (`safemaxxing permissions`): quali app hanno già il permesso per
+  fotocamera, microfono, registrazione schermo, monitoraggio input, accessibilità e accesso
+  completo al disco, con i titolari ad alto rischio evidenziati. Vedi
+  [Permessi TCC](#permessi-tcc).
 
 ## Installazione
 
@@ -120,9 +130,26 @@ Requisiti: macOS (Apple Silicon o Intel), Python 3.12+, [`uv`](https://docs.astr
 ```bash
 git clone https://github.com/carlobaratta/safemaxxing
 cd safemaxxing
-uv sync
+uv sync                      # oppure: uv sync --extra menubar, per `safemaxxing menubar`
 sudo uv run safemaxxing doctor
 ```
+
+> **Root e percorsi scrivibili.** `sudo uv run` esegue come root il codice del virtualenv,
+> che è scrivibile dal tuo utente: va bene su una macchina tua per sviluppo e test, ma
+> qualunque processo con il tuo utente potrebbe modificarlo. Vedi
+> [SECURITY.md](SECURITY.md#running-as-root-pktap-and-sigstop).
+
+**Release firmate** (dalla prima release taggata, vedi
+[packaging/README.md](packaging/README.md)): ogni
+[GitHub release](https://github.com/carlobaratta/safemaxxing/releases) allega, per arm64 e
+x86_64, un `.pkg` firmato e notarizzato e un tarball.
+
+- Il `.pkg` installa una copia di proprietà di root in `/usr/local/libexec/safemaxxing` e il
+  link `/usr/local/bin/safemaxxing`: è il modo consigliato per usarlo come root.
+- La formula Homebrew (`brew tap carlobaratta/tap && brew install safemaxxing`) installa il
+  tarball nel prefisso di Homebrew, che è scrivibile dal tuo utente. Usala solo per i comandi
+  senza root (`doctor`, `permissions`, `version`), mai con `sudo` o `sudo brew services`.
+- Il binario standalone non include rumps: `menubar` funziona solo da sorgente con l'extra.
 
 ## Utilizzo
 
@@ -145,6 +172,9 @@ sudo uv run safemaxxing boot uninstall
 sudo uv run safemaxxing freeze 4242               # SIGSTOP
 sudo uv run safemaxxing thaw 4242                 # SIGCONT
 sudo uv run safemaxxing kill 4242                 # SIGKILL
+
+sudo uv run safemaxxing menubar                   # icona nella barra dei menu (extra menubar)
+sudo uv run safemaxxing permissions               # chi ha già i permessi TCC sensibili
 
 uv run safemaxxing version
 ```
@@ -195,6 +225,51 @@ navigazione usa le frecce e non `j`/`k`. Il feed tiene gli ultimi 1000 alert, la
 Active egress le 300 connessioni più recenti. Il layout è pensato per un terminale di almeno
 170 colonne circa: più stretto, il feed scorre in orizzontale.
 
+### Menu bar
+
+`sudo uv run safemaxxing menubar` (dopo `uv sync --extra menubar`) mette safemaxxing nella barra
+dei menu. Usa lo stesso supervisor di `tui` e `watch` e accetta le stesse opzioni (tranne
+quelle solo di `watch`).
+
+| Icona | Stato |
+|-------|-------|
+| ○ | Nessun sensore in uso |
+| ● | Un sensore è stato usato negli ultimi 6 s |
+| ⚠︎ | Un alert negli ultimi 20 s |
+| ⊘ | Monitoraggio fermo: lo stream del supervisor è fallito o finito (motivo nel menu, notifica una volta) |
+
+Il menu mostra:
+
+- gli ultimi 5 alert, ciascuno con **Block IP** e **Freeze process**;
+- **Auto-Block Mode** e **Auto-Suspend Mode**: agiscono sugli alert `high` e `critical`, al
+  massimo una volta per alert (come `watch`);
+- l'esito delle ultime 3 azioni, automatiche o manuali, con ✓ o ✗ e il motivo dell'errore;
+- gli IP bloccati, ciascuno con **Unblock**, e **Flush All**. La lista si rilegge da pf ogni 5 s
+  e dopo ogni azione;
+- **Open TUI Dashboard**, che apre `safemaxxing tui` in una finestra di Terminal.
+
+Un sensore conta come "in uso" per qualche secondo dopo l'ultimo accesso: il log riporta gli
+accessi, non lo spegnimento. Gli accessi dei binari di sistema non accendono l'icona, salvo
+`--include-system`; gli eventi dell'indicatore di Control Center contano sempre.
+
+### Permessi TCC
+
+`safemaxxing permissions` legge in sola lettura il `TCC.db` di sistema e quello dell'utente
+(sotto `sudo`, quello di chi ha lanciato il comando) e mostra chi ha già un permesso per
+fotocamera, microfono, registrazione schermo, monitoraggio input, accessibilità o accesso
+completo al disco.
+
+Un permesso è segnalato come ad alto rischio quando il client è un percorso e:
+
+- è un interprete (`python3.12`, `bash`, `node`, `osascript`, …): il permesso vale per
+  qualunque script gli si passi;
+- sta fuori da `/Applications` e dai percorsi di sistema;
+- non esiste più su disco;
+- non è firmato, o è firmato ad-hoc (`--no-check-signatures` salta `codesign`).
+
+Serve il Full Disk Access sul terminale; il database di sistema richiede anche root. Un client
+indicato solo da bundle id non viene segnalato: vedi [Limiti noti](#limiti-noti).
+
 ### Diagnostica
 
 `sudo uv run safemaxxing doctor` controlla:
@@ -209,7 +284,9 @@ Active egress le 300 connessioni più recenti. Il layout è pensato per un termi
 - il Full Disk Access del terminale (lettura del `TCC.db` di sistema; per ora facoltativo);
 - la latenza di uno snapshot dei socket rispetto a `--poll-ms`;
 - la validità del predicato di `log stream`;
-- se `tcpdump` riesce a catturare su pktap (per `--udp-flows`; mai FAIL, solo WARN).
+- se `tcpdump` riesce a catturare su pktap (per `--udp-flows`; mai FAIL, solo WARN);
+- i permessi TCC sensibili (vedi [Permessi TCC](#permessi-tcc)): WARN se c'è un titolare ad
+  alto rischio o se un database non si legge, quindi senza root è sempre WARN.
 
 Senza root, i tre controlli su pf e lo snapshot dei socket risultano "needs root", e quello
 di pktap dice "needs root".
@@ -295,6 +372,8 @@ src/safemaxxing/
 ├── boot.py          job launchd che riapplica la lista al boot (solo /bin/sh e /sbin/pfctl)
 ├── diagnostics.py   doctor (Check) e sample (summarize_sample)
 ├── codesign.py      firma del codice per l'inspector (codesign -dv)
+├── tcc_inspector.py audit in sola lettura dei TCC.db (permissions, check di doctor)
+├── menubar.py       MenuModel (puro) e il runner rumps della barra dei menu
 ├── tui/
 │   ├── app.py           SafemaxxingApp: feed, tab eventi/egress, timer, azioni
 │   ├── panels.py        pannelli Firewall e Inspector, barra di stato (snapshot → Rich)
@@ -303,6 +382,8 @@ src/safemaxxing/
 │   ├── badges.py        badge Rich per severità, sensori e mitigazioni
 │   └── safemaxxing.tcss palette scura e layout
 └── cli.py           entry point Typer
+packaging/           build PyInstaller, firma, .pkg (vedi packaging/README.md)
+Formula/             formula Homebrew per il tap
 ```
 
 Tutti i componenti con side effect accettano dipendenze iniettabili: il comando `log`, lo
@@ -373,6 +454,12 @@ testabile anche su Linux (la CI gira su macOS).
   [Blocchi dopo il riavvio](#blocchi-dopo-il-riavvio)); verificato con un riavvio reale su
   macOS 27.0.1. Le modifiche fatte a mano con `pfctl` non finiscono nella lista salvata.
 - `SIGSTOP` su un'app GUI può lasciare finestre non responsive finché non si invia `SIGCONT`.
+- **Menu bar**: "Open TUI Dashboard" avvia un secondo supervisor (senza root) in Terminal,
+  invece di collegarsi a quello della menu bar. La menu bar non è ancora stata provata su una
+  sessione grafica reale.
+- **Permessi TCC**: un'app terminale (Terminal, iTerm) con un permesso sensibile non viene
+  segnalata, anche se il permesso vale per ogni script che vi gira: `doctor` stesso chiede il
+  Full Disk Access per il terminale. Le euristiche guardano solo il percorso e la firma.
 
 ## Sviluppo
 
@@ -420,6 +507,7 @@ Per una validazione completa con raccolta delle evidenze in `testlogs/` c'è
 | [TESTLOG.md](TESTLOG.md) | Ogni sessione di test, con ambiente, comandi e risultati grezzi |
 | [testlogs/](testlogs/) | Log grezzi di `scripts/macos_validate.sh` dal Mac |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Ciclo di sviluppo, test live, convenzioni |
+| [packaging/README.md](packaging/README.md) | Build standalone, firma, notarizzazione, release e Homebrew |
 | [SECURITY.md](SECURITY.md) | Threat model, segnalazione vulnerabilità, pf/token, cosa modifica sul sistema |
 
 ## Licenza

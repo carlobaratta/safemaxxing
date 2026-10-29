@@ -1,0 +1,25 @@
+name: Feature request
+description: A new capability, command or option.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What you want to detect, block or see, and why the current commands do not cover it.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What safemaxxing would do. Mention whether it needs root, pf changes or new data from macOS.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checked
+    attributes:
+      label: Checked
+      options:
+        - label: It is not already in TODO.md or listed as a known limit in the README
+          required: true

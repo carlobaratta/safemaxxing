@@ -14,6 +14,10 @@ uv run pytest -q
 
 CI ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs the same four checks on
 macOS arm64 and Intel with Python 3.12 and 3.13. A pull request must keep all of them green.
+A test that hangs fails after 60 s (`pytest-timeout`) and prints its stack.
+
+The menu bar needs rumps, which is an optional extra: `uv sync --extra menubar` to run
+`safemaxxing menubar`. The tests do not need it; `MenuModel` is tested without a GUI.
 
 ## Live tests on a Mac
 
@@ -63,6 +67,22 @@ history only; do not push to them.
   release is tagged.
 - `testlogs/*.log` files are committed only from the Mac that produced them. A copy committed
   from elsewhere makes the next `git pull` on the Mac fail.
+
+## Documentation
+
+The README is in Italian and is the user guide; ARCHITECTURE.md, SECURITY.md, CONTRIBUTING.md,
+CHANGELOG.md and packaging/README.md are in English. When a command, option or module changes,
+update the README section and the module table in ARCHITECTURE.md in the same pull request.
+When it changes what runs as root, what pf loads or what the automatic responses do, update
+SECURITY.md too.
+
+## Releases
+
+Releases are tagged `vX.Y.Z` on `main` and built by
+[.github/workflows/release.yml](.github/workflows/release.yml); the steps, secrets and what is
+verified are in [packaging/README.md](packaging/README.md). Bump `__version__` in
+`src/safemaxxing/__init__.py`, move the CHANGELOG's **Unreleased** entries under the new
+version, then tag.
 
 ## Parser changes
 

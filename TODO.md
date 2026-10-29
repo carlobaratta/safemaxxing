@@ -19,17 +19,24 @@ elsewhere makes the next `git pull` there fail); everything else in `testlogs/` 
 - [ ] [P2] Live `watch` with Photo Booth / Voice Memos: confirm they are hidden as system apps (`/System/Applications`) and shown with `--include-system` @correlation #macos
 - [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design; proposal: keep it and say so in SECURITY.md)
 - [ ] [P2] launchd daemon for headless `watch` (the 0.2.0 feature; reuses the `boot` job's launchd setup) @packaging #launchd
+- [ ] [P2] Dry-run signing and notarization with a real Developer ID before the first tag: `build_release.sh` with `SIGN_IDENTITY`/`INSTALLER_IDENTITY`, `notarytool submit`, then run the signed binary (are `allow-jit` / `allow-unsigned-executable-memory` both needed?) @packaging #release
+- [ ] [P2] First run of `safemaxxing menubar` in a real GUI session: glyphs, submenus while open, Block/Unblock/Freeze outcomes, ⊘ when the stream stops @ui #menubar
 
 ## Backlog / Future
 
 - [ ] [P3] Meet on a network that blocks UDP (seen on `Host-001`, 2026-10-27): the call goes over TCP inside a connection already open, and neither source sees it. Probe that network with `pktap_probe.sh` to confirm @network #udp
 - [ ] [P2] SNI / TLS ClientHello capture to name destinations without reverse DNS @network #sni
-- [ ] [P2] Packaging: signed, notarized build @packaging #release
-- [ ] [P3] Menu-bar app (status, last alerts, one-click block) @ui #menubar
-- [ ] [P3] Read TCC.db (with Full Disk Access) to show which apps hold camera/mic grants @sensors #tcc
+- [ ] [P3] Menu bar's Open TUI Dashboard starts a second, non-root supervisor: share the running one (IPC) or launch it as root @ui #menubar
+- [ ] [P3] `permissions`: decide how to flag terminal apps (Terminal, iTerm) that hold sensitive grants by bundle id, given `doctor` asks for Full Disk Access on the terminal @sensors #tcc
+- [ ] [P3] Bundle rumps into the standalone build so `menubar` works from the `.pkg` @packaging #menubar
 - [ ] [P3] CI job on a macOS runner for the non-root parts of the live suite @ci #macos
 
 ## Completed
+
+- [x] [P2] Review fixes for #6–#10: menu bar stop state, once-per-alert auto-actions, action outcomes, glyphs, model lock, system-event filter, rebuild only on change; TCC WAL-aware read-only open, doctor WARN on an unread database, versioned interpreters, SUDO_USER; entitlements without library-validation/DYLD relaxations; Homebrew install fix and no root service; sign every Mach-O. 335 passed @review (done: 2026-10-29, b4cd714, 47c51e4)
+- [x] [P2] Packaging: PyInstaller onedir spec, `build_release.sh`, tag-triggered `release.yml` (notarize, staple, publish), Homebrew formula; signing not yet dry-run @packaging #release (done: 2026-10-28, cafd317)
+- [x] [P3] Menu-bar app: status icon, last alerts with Block IP / Freeze process, Auto-Block / Auto-Suspend, blocked-IP list @ui #menubar (done: 2026-10-28, 4b0bdfb)
+- [x] [P3] Read TCC.db: `safemaxxing permissions` and doctor's TCC check flag high-risk holders of sensitive grants @sensors #tcc (done: 2026-10-28, e1a6a84)
 
 - [x] [P2] TUI redesign as a dark SOC-style dashboard: live feed with severity/sensor/mitigation pills, Firewall panel (pf, anchor, block table, poller, pktap, DNS), Inspector (process, codesign identity, sensors), millisecond timeline modal (Enter/space), `/` filter, batched event log; new `tui/{badges,panels,screens,timeline}.py`, `tui/safemaxxing.tcss`, `codesign.py`; counters on NetworkMonitor/PktapCapture/HostnameResolver. 242 passed; rendered headless with fake data and once on the real Supervisor without root; run as root with `--udp-flows` by the user: works (details not captured) @ui #tui (done: 2026-10-28)
 - [x] [P2] Privacy pass before pushing: no secrets in any blob of any ref; host name, account name and home paths replaced in TESTLOG.md and `testlogs/*.log` (history left as is); `testlogs/*` ignored except `*.log`, plus `*.err`, `*.pcapng`, `.claude/`, `.env.*`; `macos_validate.sh` logs `id -u` and redacts `$HOME`, account and host name @process #privacy (done: 2026-10-28)

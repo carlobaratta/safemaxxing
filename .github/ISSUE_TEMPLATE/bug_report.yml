@@ -17,11 +17,36 @@ body:
       placeholder: 27.0.1, arm64
     validations:
       required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install method
+      options:
+        - Source checkout (uv)
+        - .pkg from a GitHub release
+        - Homebrew formula
+    validations:
+      required: true
   - type: input
     id: commit
     attributes:
-      label: Commit
-      description: Output of `git rev-parse --short HEAD`.
+      label: Version or commit
+      description: Output of `safemaxxing version`, or `git rev-parse --short HEAD` for a checkout.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - tui
+        - watch
+        - menubar
+        - permissions / doctor
+        - block / unblock / flush / boot
+        - freeze / thaw / kill
+        - packaging / release
+        - other
     validations:
       required: true
   - type: textarea

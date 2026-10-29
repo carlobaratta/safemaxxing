@@ -4,11 +4,13 @@ safemaxxing watches two things macOS already reports and asks whether one caused
 process accessed a sensor (camera, microphone, screen, location) and then, within a short
 window, opened an outbound connection. The sensor side is read from the unified log; the egress
 side from the socket table and, for connection-less UDP, from per-packet metadata. A
-correlation engine links them and raises an alert that the TUI, the headless `watch` command or
-the automatic responses act on.
+correlation engine links them and raises an alert that the TUI, the menu bar, the headless
+`watch` command or the automatic responses act on.
 
 The core is pure and OS-agnostic; everything that touches macOS is reached through an injected
-seam, so the whole pipeline is driven by fixtures on Linux CI and by real subprocesses on a Mac.
+seam, so the whole pipeline is driven by fixtures in the unit tests and by real subprocesses on
+a Mac. The unit tests need nothing from macOS and run on Linux too; CI runs them on macOS
+runners (arm64 and Intel).
 
 ## Modules
 
@@ -22,6 +24,12 @@ seam, so the whole pipeline is driven by fixtures on Linux CI and by real subpro
 | `firewall.py` | `PfFirewall` (pf block table) and `ProcessController` (SIGSTOP / SIGCONT / SIGKILL). |
 | `models.py` | The immutable `Event`, `NetworkConnection`, `Finding`, `Alert` and the `Severity` scale. |
 | `tui/` | The Textual dashboard. |
+| `menubar.py` | `MenuModel` (pure, clock-injected) and `run_menubar`, the rumps status-bar view over the same `stream()`. |
+| `tcc_inspector.py` | Read-only audit of the TCC databases: who already holds a sensitive grant, and which holders look risky. |
+| `diagnostics.py` | `doctor`'s checks and `sample`'s summary of a raw log capture. |
+| `boot.py` | The launchd job that reapplies the saved blocklist at boot (`/bin/sh` and `/sbin/pfctl` only). |
+| `codesign.py` | Signing identity of a binary's app, for the inspector and the TCC audit. |
+| `cli.py` | The Typer entry point. |
 
 ## A Meet call in Brave, intercepted via pktap
 
@@ -51,11 +59,11 @@ sequenceDiagram
     Note over Out: b to block the IP (pfctl),<br/>s to SIGSTOP the process
 ```
 
-## Dependency injection: Linux CI vs. macOS live
+## Dependency injection: unit tests vs. macOS live
 
 Each source and action takes its macOS-specific backend as a constructor argument. In production
 those default to real subprocesses and syscalls; in tests they are replaced with deterministic
-fakes, so the same engine and supervisor run unchanged on a Linux runner.
+fakes, so the same engine and supervisor run unchanged on any runner, Linux included.
 
 ```mermaid
 flowchart TB
@@ -86,7 +94,7 @@ flowchart TB
         l3["tcpdump -k (pktap)"]
         l4["pfctl / os.kill"]
     end
-    subgraph ci["Linux CI (fakes)"]
+    subgraph ci["Unit tests (fakes, any OS)"]
         c1["fixture log lines"]
         c2["fake Snapshot callable"]
         c3["fixture pktap lines"]
@@ -122,6 +130,55 @@ stateDiagram-v2
     high --> critical: another distinct sensor<br/>matches the same connection
     critical --> critical: further sensors (capped at critical)
 ```
+
+One exception lowers the start: when every sensor match behind a new alert is *late* (it only
+fits the adaptive, decayed window), the alert starts one step lower, floored at low, so a
+delayed upload still alerts, quietly.
+
+## The menu bar: two threads, one model
+
+rumps owns the main thread (AppKit's run loop), so the supervisor runs on a background asyncio
+loop. `pump_updates` folds every update into a `MenuModel`; a one-second rumps timer reads a
+`MenuSnapshot` and rebuilds the menu only when the snapshot changed, since rebuilding an open
+menu closes its submenus. Quick actions are scheduled back onto the loop and their
+`ActionResult`s are recorded in the model.
+
+```mermaid
+flowchart LR
+    subgraph bg["asyncio thread"]
+        st["Supervisor.stream()"] --> pu["pump_updates"]
+        pu -->|"alert >= high, once per id"| act["auto-block / auto-suspend"]
+        fw["PfFirewall / ProcessController"]
+    end
+    subgraph main["main thread (AppKit)"]
+        tm["rumps.Timer, 1 s"] --> snap["MenuModel.snapshot()"]
+        snap -->|changed| menu["rebuild menu + icon"]
+        clicks["Block / Unblock / Freeze"]
+    end
+    model[("MenuModel<br/>one RLock")]
+    pu --> model
+    act --> fw
+    act -->|ActionResult| model
+    snap --> model
+    clicks -->|run_coroutine_threadsafe| fw
+    fw -->|ActionResult| model
+```
+
+Both threads touch the model, so every `MenuModel` method takes one re-entrant lock. If the
+stream fails or ends, `pump_updates` marks the model stopped: the icon turns to ⊘ rather than
+staying on idle with nothing behind it, and the loop keeps running so Unblock and Flush All
+still work.
+
+## Packaging
+
+`packaging/` builds a PyInstaller onedir bundle per architecture, signs every Mach-O in it
+with the hardened runtime, and wraps it in a tarball and a signed `.pkg`. Library validation
+and DYLD variables stay enforced: the bundle is signed with one Team ID, so neither
+`disable-library-validation` nor `allow-dyld-environment-variables` is needed, and either
+would let another process inject code into a binary that runs as root. Root use goes through
+the `.pkg`, which installs a root-owned copy; the Homebrew formula installs into a
+user-writable prefix and has no root service for that reason. See
+[packaging/README.md](packaging/README.md).
 
 ## Why the core stays pure
 

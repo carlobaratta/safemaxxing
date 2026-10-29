@@ -10,8 +10,9 @@ Use GitHub's private reporting: **Security → Report a vulnerability** on
 <https://github.com/carlobaratta/safemaxxing/security/advisories/new>.
 Please do not open a public issue for a security problem.
 
-Include the macOS version (`sw_vers`), the architecture, the commit (`git rev-parse --short
-HEAD`), the output of `sudo uv run safemaxxing doctor`, and the steps to reproduce. Strip
+Include the macOS version (`sw_vers`), the architecture, the version (`safemaxxing version`)
+or commit (`git rev-parse --short HEAD`), how it was installed (source, `.pkg`, Homebrew), the
+output of `sudo uv run safemaxxing doctor`, and the steps to reproduce. Strip
 anything personal from logs: raw `log stream` captures contain app activity and paths.
 
 ## Supported versions
@@ -56,7 +57,13 @@ In scope:
   signal a process it did not intend to;
 - pf rules that block more than the listed IPs, or IPs that stay blocked after
   `safemaxxing flush`;
-- `--auto-block` / `--auto-suspend` acting on a process or IP other than the one in the alert;
+- `--auto-block` / `--auto-suspend`, or the menu bar's Auto-Block / Auto-Suspend, acting on a
+  process or IP other than the one in the alert, or more than once per alert;
+- the menu bar showing idle (○) while nothing is being monitored;
+- `permissions` or `doctor` writing to a TCC database, or reporting a clean result when a
+  database was not read;
+- a release binary or `.pkg` that a non-root process can modify, or inject code into, before
+  it runs as root;
 - crashes or hangs triggered by crafted log lines, socket tables or a running app's
   `Info.plist`;
 - an app hiding its sensor use from correlation by claiming another app's bundle id.
@@ -72,16 +79,20 @@ Not a vulnerability (these are documented limits, see "Limiti noti" in the READM
 
 | Change | When | How to undo |
 |--------|------|-------------|
-| Rule `block drop out quick from any to <safemaxxing_block>` loaded in anchor `com.apple/safemaxxing` | first block (`block`, TUI `b`, `--auto-block`, live suite) | stays until reboot, or `sudo pfctl -a com.apple/safemaxxing -F rules` |
+| Rule `block drop out quick from any to <safemaxxing_block>` loaded in anchor `com.apple/safemaxxing` | first block (`block`, TUI `b`, menu bar Block IP, `--auto-block`, Auto-Block Mode, live suite) | stays until reboot, or `sudo pfctl -a com.apple/safemaxxing -F rules` |
 | Blocked IPs saved to `/Library/Application Support/safemaxxing/blocklist` (root, 0644) | every successful `block`, `unblock`, `flush` and `boot install` | `flush` empties it; delete the directory |
 | launchd job `/Library/LaunchDaemons/io.github.carlobaratta.safemaxxing.restore.plist`, log `/var/log/safemaxxing-boot.log` | `boot install` | `sudo safemaxxing boot uninstall`; delete the log |
 | IPs in table `safemaxxing_block` | every block | `unblock <ip>`, or `flush` to empty the table |
 | Existing pf states to the blocked IP killed (`pfctl -k`) | every block | none; apps must reconnect |
 | pf enabled (`pfctl -E`) | first block, if pf was disabled | `sudo pfctl -d` |
-| Process stopped (`SIGSTOP`) | `freeze`, TUI `s`, `--auto-suspend` | `thaw <pid>` / TUI `r` |
+| Process stopped (`SIGSTOP`) | `freeze`, TUI `s`, menu bar Freeze process, `--auto-suspend`, Auto-Suspend Mode | `thaw <pid>` / TUI `r` |
 | Process killed (`SIGKILL`) | `kill`, TUI `k` (with confirmation) | none |
 | Raw unified-log file written | `sample --out PATH` (root-owned under sudo) | delete the file |
 | `testlogs/` files written, `.pytest_cache` chowned to you | `scripts/macos_validate.sh` | delete the files |
+| Bundle in `/usr/local/libexec/safemaxxing` (root-owned), link `/usr/local/bin/safemaxxing` | installing the `.pkg` | `sudo rm -rf /usr/local/libexec/safemaxxing /usr/local/bin/safemaxxing`, then `sudo pkgutil --forget com.github.carlobaratta.safemaxxing` |
+
+`permissions` and `doctor` only read the TCC databases, never write them. The menu bar
+changes nothing beyond the actions in the table.
 
 `/etc/pf.conf` is never modified. Without `boot install`, blocks do not survive a reboot:
 after a restart pf is back to its boot state and the table is gone. With it, a root launchd job
@@ -121,6 +132,16 @@ bounded amounts, never evaluate their input, and treat each field as hostile. Ru
 root-owned location: a root process launched from a user-writable virtualenv would let any code
 running as that user execute as root (the boot job avoids this by running only `/bin/sh` and
 `/sbin/pfctl`, never safemaxxing itself).
+
+| Install | Owner of the code | Run as root? |
+| --- | --- | --- |
+| Source checkout, `sudo uv run …` | your user | development and testing on your own Mac only |
+| `.pkg` from a release | root (`/usr/local/libexec/safemaxxing`) | yes: the intended way |
+| Homebrew formula | your user (Homebrew prefix) | no: it has no `service` block, and `sudo` on it is the same risk as a virtualenv |
+
+The release binary keeps library validation and DYLD variables enforced under the hardened
+runtime (no `disable-library-validation`, no `allow-dyld-environment-variables`), so another
+process cannot load its own dylib into it and borrow its root or its Full Disk Access grant.
 
 **pktap.** `tcpdump -k` on a pktap interface is a system-wide packet capture: it exposes
 per-packet process metadata for every process, not only the one under suspicion. It is

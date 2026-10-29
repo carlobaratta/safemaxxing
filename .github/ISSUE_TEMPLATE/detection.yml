@@ -30,7 +30,8 @@ body:
   - type: input
     id: macos
     attributes:
-      label: macOS version and commit
-      placeholder: 27.0.1 arm64, f3e5144
+      label: macOS version, and safemaxxing version or commit
+      description: "`sw_vers -productVersion`, `uname -m`, and `safemaxxing version` or `git rev-parse --short HEAD`."
+      placeholder: 27.0.1 arm64, 0.1.1 (or f3e5144)
     validations:
       required: true

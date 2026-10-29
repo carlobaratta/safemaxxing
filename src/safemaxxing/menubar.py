@@ -305,7 +305,7 @@ def menubar_available() -> bool:
     return _import_rumps() is not None
 
 
-MENUBAR_HINT = "the menu bar needs rumps: install with  pip install 'safemaxxing[menubar]'"
+MENUBAR_HINT = "the menu bar needs rumps: from a source checkout run  uv sync --extra menubar"
 
 
 def open_tui() -> None:
