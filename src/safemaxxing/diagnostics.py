@@ -294,15 +294,19 @@ def check_tcc_permissions(
         for e in entries
         if tcc_inspector.risk_reasons(e, exists=e.path is None or os.path.exists(e.path))
     ]
+    summary = f"{len(entries)} sensitive grant(s)"
     if risky:
         names = sorted({PurePosixPath(e.client).name if e.path else e.client for e in risky})
         shown = ", ".join(names[:5]) + (" ..." if len(names) > 5 else "")
-        return Check(
-            "TCC permissions",
-            Status.WARN,
-            f"{len(entries)} sensitive grant(s), {len(risky)} high-risk: {shown}",
-        )
-    return Check("TCC permissions", Status.OK, f"{len(entries)} sensitive grant(s), none high-risk")
+        summary += f", {len(risky)} high-risk: {shown}"
+    else:
+        summary += ", none high-risk"
+    if unavailable:
+        # One database unread (typically the system one, without root) hides the screen,
+        # accessibility, input and full-disk grants: "none high-risk" would not be the full story.
+        return Check("TCC permissions", Status.WARN, f"{summary}; unread: {'; '.join(unavailable)}")
+    status = Status.WARN if risky else Status.OK
+    return Check("TCC permissions", status, summary)
 
 
 def run_doctor(poll_interval_s: float = 0.2) -> list[Check]:
