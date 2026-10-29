@@ -8,6 +8,38 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- `safemaxxing menubar`, a macOS status-bar companion over the same supervisor (needs the
+  `menubar` extra, i.e. rumps). (4b0bdfb, b4cd714, 47c51e4)
+  - The icon is a monochrome glyph: ○ idle, ● a sensor in use, ⚠︎ a recent alert, ⊘
+    monitoring stopped. If the supervisor stream fails or ends, the icon shows ⊘, the status
+    line gives the reason and a notification is sent once.
+  - The menu lists the last five alerts, each with Block IP and Freeze process, the blocked
+    IPs with Unblock and Flush All, and Open TUI Dashboard.
+  - Auto-Block and Auto-Suspend toggles act on alerts of severity `high` and above, at most
+    once per alert, as `watch` does. The outcome of every action, automatic or manual, is
+    listed with ✓ or ✗ and the reason it failed.
+  - System binaries' sensor accesses do not light the icon unless `--include-system`; Control
+    Center indicator events always count. The menu is rebuilt only when its content changes,
+    and pf's block table is re-read every 5 s and after each action.
+- `safemaxxing permissions` lists the apps holding camera, microphone, screen capture, input
+  monitoring, accessibility and full disk access grants in the system and per-user TCC
+  databases. It flags a grant as high-risk when the client is a script interpreter, lives
+  outside `/Applications`, is missing from disk, or is unsigned or ad-hoc signed. The databases
+  are opened read-only, including grants still in the write-ahead log; under sudo the per-user
+  database is the invoking user's. (e1a6a84, 47c51e4)
+- `doctor` gains a `TCC permissions` check. It WARNs on high-risk grants and whenever a TCC
+  database cannot be read, so without root (no system database) it is always WARN.
+  (e1a6a84, 47c51e4)
+- Packaging: a PyInstaller onedir build per architecture, `packaging/build_release.sh` (sign
+  every Mach-O with the hardened runtime, tarball, signed `.pkg`), a tag-triggered
+  `release.yml` (test matrix, notarize, staple, publish) and a Homebrew formula for a tap. The
+  formula is for non-root use only; root use goes through the `.pkg`. Signing and notarization
+  have not been run yet. See [packaging/README.md](packaging/README.md). (cafd317, b4cd714,
+  47c51e4)
+- [ARCHITECTURE.md](ARCHITECTURE.md) with Mermaid diagrams, and a threat model in
+  [SECURITY.md](SECURITY.md). (eb9be43)
+- CI fails a hung test after 60 s (`pytest-timeout`) instead of running to the job timeout.
+  (b5722bb)
 - `safemaxxing.pktap`, the first part of a pktap egress source for UDP sockets that are never
   `connect()`ed. These sockets have no remote address in the socket table, as with Meet's
   media in Brave. The module has `PktapEvent` and `Direction` in `models.py`, a parser for

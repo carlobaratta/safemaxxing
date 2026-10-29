@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
+  - name: Known limits
+    url: https://github.com/carlobaratta/safemaxxing#limiti-noti
+    about: Reused sockets, system daemons, unconnected UDP without --udp-flows... check here before filing a missed alert.
   - name: Security vulnerability
     url: https://github.com/carlobaratta/safemaxxing/security/advisories/new
     about: Report vulnerabilities privately, not as a public issue.
