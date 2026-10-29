@@ -27,14 +27,18 @@ _ROWS = [
 ]
 
 
-def make_db(path: Path) -> str:
+_INSERT = (
+    "INSERT INTO access (service, client, client_type, auth_value, last_modified) "
+    "VALUES (?, ?, ?, ?, 1700000000)"
+)
+
+
+def make_db(path: Path, rows: list[tuple[str, str, int, int]] = _ROWS, wal: bool = False) -> str:
     conn = sqlite3.connect(path)
+    if wal:
+        conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(_SCHEMA)
-    conn.executemany(
-        "INSERT INTO access (service, client, client_type, auth_value, last_modified) "
-        "VALUES (?, ?, ?, ?, 1700000000)",
-        _ROWS,
-    )
+    conn.executemany(_INSERT, rows)
     conn.commit()
     conn.close()
     return str(path)
@@ -136,3 +140,90 @@ def test_doctor_check_warns_on_high_risk(tmp_path: Path) -> None:
 def test_doctor_check_warns_when_unreadable(tmp_path: Path) -> None:
     check = check_tcc_permissions(paths=(str(tmp_path / "missing.db"),))
     assert check.status is Status.WARN
+
+
+def test_read_tcc_sees_a_grant_still_in_the_write_ahead_log(tmp_path: Path) -> None:
+    # tccd writes in WAL mode; a grant not yet checkpointed lives only in TCC.db-wal, and an
+    # immutable open would skip it -- the newest grant, the one most worth seeing.
+    db = make_db(tmp_path / "TCC.db", rows=[], wal=True)
+    writer = sqlite3.connect(db)
+    try:
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute(_INSERT, ("kTCCServiceCamera", "/tmp/fresh", 1, 2))
+        writer.commit()
+        assert (tmp_path / "TCC.db-wal").stat().st_size > 0
+        assert [e.client for e in tcc_inspector.read_tcc(db)] == ["/tmp/fresh"]
+    finally:
+        writer.close()
+
+
+def test_read_tcc_falls_back_to_immutable_in_an_unwritable_directory(tmp_path: Path) -> None:
+    # A plain read-only open of a WAL database needs to create TCC.db-shm; when the directory
+    # refuses that, the immutable open still reads the checkpointed rows.
+    folder = tmp_path / "ro"
+    folder.mkdir()
+    db = make_db(folder / "TCC.db", wal=True)
+    folder.chmod(0o555)
+    try:
+        assert len(tcc_inspector.read_tcc(db)) == 4
+    finally:
+        folder.chmod(0o755)
+
+
+def test_read_tcc_rejects_a_file_that_is_not_a_database(tmp_path: Path) -> None:
+    bogus = tmp_path / "TCC.db"
+    bogus.write_bytes(b"not sqlite at all" * 100)
+    with pytest.raises(TccUnavailable):
+        tcc_inspector.read_tcc(str(bogus))
+
+
+def test_doctor_check_warns_when_one_database_is_unread_even_if_the_rest_is_clean(
+    tmp_path: Path,
+) -> None:
+    clean = make_db(tmp_path / "TCC.db", rows=[("kTCCServiceCamera", "com.zoom.xos", 0, 2)])
+    check = check_tcc_permissions(paths=(str(tmp_path / "system.db"), clean))
+    # Without the system database the screen/accessibility/FDA grants are unknown, so no OK.
+    assert check.status is Status.WARN
+    assert "none high-risk" in check.detail
+    assert "unread" in check.detail and "system.db" in check.detail
+
+
+def test_doctor_check_is_ok_only_when_every_database_is_read_and_clean(tmp_path: Path) -> None:
+    clean = make_db(tmp_path / "TCC.db", rows=[("kTCCServiceCamera", "com.zoom.xos", 0, 2)])
+    check = check_tcc_permissions(paths=(clean,))
+    assert check.status is Status.OK
+    assert check.detail == "1 sensitive grant(s), none high-risk"
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/opt/homebrew/Cellar/python@3.12/3.12.7/bin/python3.12",
+        "/Library/Frameworks/Python.framework/Versions/3.12/Resources/Python.app/Contents/MacOS/Python",
+        "/usr/bin/perl5.30",
+        "/opt/homebrew/bin/node",
+    ],
+)
+def test_versioned_and_framework_interpreters_are_flagged(path: str) -> None:
+    assert tcc_inspector.interpreter_name(path) is not None
+    reasons = tcc_inspector.risk_reasons(entry(path), exists=True)
+    assert any(r.startswith("interpreter (") for r in reasons)
+
+
+def test_a_name_that_only_ends_in_digits_is_not_an_interpreter() -> None:
+    assert tcc_inspector.interpreter_name("/Applications/X11.app/Contents/MacOS/X11") is None
+    assert tcc_inspector.interpreter_name("/usr/bin/shasum") is None
+
+
+def test_user_tcc_db_under_sudo_is_the_invoking_users() -> None:
+    homes = {"alice": "/Users/alice"}
+    path = tcc_inspector.user_tcc_db({"SUDO_USER": "alice"}, euid=0, home_of=homes.get)
+    assert path == "/Users/alice/Library/Application Support/com.apple.TCC/TCC.db"
+
+
+def test_user_tcc_db_without_sudo_is_the_current_home() -> None:
+    def no_lookup(_login: str) -> str | None:
+        raise AssertionError("SUDO_USER must be ignored when not running as root")
+
+    path = tcc_inspector.user_tcc_db({"SUDO_USER": "carlo"}, euid=501, home_of=no_lookup)
+    assert path == str(Path.home() / "Library/Application Support/com.apple.TCC/TCC.db")

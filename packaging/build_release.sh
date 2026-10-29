@@ -28,9 +28,17 @@ uv run pyinstaller --clean --noconfirm packaging/safemaxxing.spec
 
 if [[ -n "${SIGN_IDENTITY:-}" ]]; then
     echo "==> Code signing with hardened runtime"
-    # Every embedded Mach-O must be signed before the main executable, inner ones first.
-    find "$bundle" -type f \( -name "*.so" -o -name "*.dylib" \) -print0 \
-        | while IFS= read -r -d '' lib; do
+    # Every embedded Mach-O must be signed before the main executable, deepest paths first. It is
+    # found by `file`, not by extension: a framework's binary (e.g. Python.framework/Python) has
+    # none, and one unsigned Mach-O is enough for notarization to reject the whole bundle.
+    find "$bundle" -type f ! -path "$bundle/safemaxxing" -print0 \
+        | while IFS= read -r -d '' f; do
+            if file -b "$f" | grep -q '^Mach-O'; then
+                printf '%s\t%s\n' "$(tr -cd / <<<"$f" | wc -c | tr -d ' ')" "$f"
+            fi
+        done \
+        | sort -t $'\t' -k1,1nr | cut -f2- \
+        | while IFS= read -r lib; do
             codesign --force --options runtime --timestamp \
                 --entitlements "$entitlements" --sign "$SIGN_IDENTITY" "$lib"
         done

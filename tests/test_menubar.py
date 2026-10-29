@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -11,10 +13,11 @@ from safemaxxing.menubar import (
     MenuBarConfig,
     MenuModel,
     Update,
+    action_label,
     menubar_available,
     pump_updates,
 )
-from safemaxxing.models import Alert, Finding, SensorType, Severity
+from safemaxxing.models import ActionKind, ActionResult, Alert, Finding, SensorType, Severity
 
 
 def make_alert(
@@ -158,3 +161,108 @@ async def test_a_failing_alert_action_is_reported_as_a_stop() -> None:
 
     await pump_updates(_updates(make_alert()), model, on_alert)
     assert model.stopped_reason == "monitoring stopped: pfctl missing"
+
+
+def test_auto_actions_claim_each_alert_once_even_when_reemitted() -> None:
+    model = MenuModel()
+    assert model.claim_enforcement(make_alert(alert_id=1, severity=Severity.HIGH))
+    # The same alert escalating must not re-run pfctl or re-signal the process.
+    assert not model.claim_enforcement(make_alert(alert_id=1, severity=Severity.CRITICAL))
+    assert model.claim_enforcement(make_alert(alert_id=2, severity=Severity.HIGH))
+
+
+def test_a_low_alert_is_not_claimed_so_it_can_be_acted_on_once_it_escalates() -> None:
+    model = MenuModel()
+    assert not model.claim_enforcement(make_alert(alert_id=1, severity=Severity.MEDIUM))
+    assert model.claim_enforcement(make_alert(alert_id=1, severity=Severity.HIGH))
+
+
+def test_recent_actions_are_newest_first_and_capped() -> None:
+    model = MenuModel(MenuBarConfig(recent_actions=2))
+    for i in range(3):
+        model.record_action(ActionResult(ActionKind.BLOCK_IP, f"198.51.100.{i}", True))
+    assert [r.target for r in model.recent_actions()] == ["198.51.100.2", "198.51.100.1"]
+
+
+def test_action_label_shows_why_an_action_failed() -> None:
+    ok = ActionResult(ActionKind.BLOCK_IP, "203.0.113.9", True, "ignored on success")
+    failed = ActionResult(ActionKind.SUSPEND, "4242", False, "permission denied (run as root)")
+    assert action_label(ok) == "\u2713 block_ip 203.0.113.9"
+    assert action_label(failed) == "\u2717 suspend 4242: permission denied (run as root)"
+
+
+def test_glyphs_are_short_distinct_text_not_symbol_names() -> None:
+    glyphs = list(ICON_GLYPHS.values())
+    assert len(set(glyphs)) == len(glyphs)
+    # rumps shows the title verbatim, so a name like "shield.idle" would appear as that text.
+    assert all(len(g) <= 2 and "." not in g for g in glyphs)
+
+
+def test_model_survives_concurrent_writes_and_reads() -> None:
+    # The runner writes from its asyncio thread while the main thread reads; unlocked, this
+    # raised "dictionary changed size during iteration" within a few milliseconds.
+    model = MenuModel(MenuBarConfig(max_alerts=1_000_000))
+    stop = threading.Event()
+
+    def writer() -> None:
+        i = 0
+        while not stop.is_set():
+            model.observe(make_alert(alert_id=i, created_at=T0 + i))
+            i += 1
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    errors: list[Exception] = []
+    deadline = time.monotonic() + 0.5
+    try:
+        while time.monotonic() < deadline:
+            try:
+                model.icon_state(now=T0)
+                model.recent_alerts()
+            except RuntimeError as exc:
+                errors.append(exc)
+    finally:
+        stop.set()
+        thread.join()
+    assert errors == []
+
+
+def test_a_system_binarys_sensor_access_does_not_light_the_icon() -> None:
+    model = MenuModel()
+    model.observe(make_event(timestamp=T0, system=True, bundle_id=None, process_name="coreaudiod"))
+    assert model.icon_state(now=T0) is IconState.IDLE
+
+
+def test_an_indicator_event_counts_even_for_a_system_app() -> None:
+    model = MenuModel()
+    model.observe(make_event(timestamp=T0, system=True, service="indicator:camera"))
+    assert model.icon_state(now=T0) is IconState.SENSOR
+
+
+def test_include_system_counts_system_accesses_too() -> None:
+    model = MenuModel(MenuBarConfig(include_system=True))
+    model.observe(make_event(timestamp=T0, system=True))
+    assert model.icon_state(now=T0) is IconState.SENSOR
+
+
+def test_snapshot_is_stable_until_what_the_menu_shows_changes() -> None:
+    model = MenuModel()
+    first = model.snapshot(now=T0)
+    assert model.snapshot(now=T0) == first
+    model.observe(make_alert(alert_id=1, created_at=T0))
+    after_alert = model.snapshot(now=T0)
+    assert after_alert != first
+    assert after_alert.title == ICON_GLYPHS[IconState.ALERT]
+    model.record_action(ActionResult(ActionKind.BLOCK_IP, "203.0.113.9", True))
+    after_action = model.snapshot(now=T0)
+    assert after_action != after_alert
+    model.auto_block = True
+    assert model.snapshot(now=T0) != after_action
+
+
+def test_snapshot_status_carries_the_stop_reason() -> None:
+    model = MenuModel()
+    model.mark_stopped("monitoring stopped: log stream exited")
+    snap = model.snapshot(now=T0)
+    assert snap.status == "monitoring stopped: log stream exited"
+    assert snap.title == ICON_GLYPHS[IconState.STOPPED]

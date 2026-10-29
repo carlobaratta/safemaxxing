@@ -44,19 +44,48 @@ take, as opposed to a normal app bundle in `/Applications` signed by its vendor.
 from __future__ import annotations
 
 import os
+import pwd
 import sqlite3
 import subprocess
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path, PurePosixPath
+from typing import Any
 from urllib.parse import quote
 
 from safemaxxing.codesign import CODESIGN, parse_codesign
 from safemaxxing.models import is_system_path
 
 SYSTEM_TCC_DB = "/Library/Application Support/com.apple.TCC/TCC.db"
-USER_TCC_DB = str(Path("~/Library/Application Support/com.apple.TCC/TCC.db").expanduser())
+_USER_TCC_RELATIVE = "Library/Application Support/com.apple.TCC/TCC.db"
+
+
+def _home_of(login: str) -> str | None:
+    try:
+        return pwd.getpwnam(login).pw_dir
+    except KeyError:
+        return None
+
+
+def user_tcc_db(
+    environ: Mapping[str, str] = os.environ,
+    euid: int | None = None,
+    home_of: Callable[[str], str | None] = _home_of,
+) -> str:
+    """The invoking user's per-user TCC database, also when running as root through sudo.
+
+    Under `sudo -H`, `sudo -i` or `sudo su`, `~` is root's home, whose TCC.db holds none of the
+    user's camera and microphone grants. When root was reached through sudo, `SUDO_USER` names
+    the real user, so their home is used instead; otherwise `~` is the answer.
+    """
+    euid = os.geteuid() if euid is None else euid
+    login = environ.get("SUDO_USER")
+    home = home_of(login) if euid == 0 and login and login != "root" else None
+    return str(Path(home or Path.home()) / _USER_TCC_RELATIVE)
+
+
+USER_TCC_DB = user_tcc_db()
 
 # The sensitive services this audit reports, mapped to a short label for display.
 SENSITIVE_SERVICES: Mapping[str, str] = {
@@ -69,10 +98,39 @@ SENSITIVE_SERVICES: Mapping[str, str] = {
 }
 
 # Executables that run arbitrary code handed to them: a grant to one of these is a grant to
-# whatever script it is pointed at, so it is treated as high-risk on its own.
+# whatever script it is pointed at, so it is treated as high-risk on its own. Names are matched
+# lower-cased and without a version suffix (see `interpreter_name`).
 INTERPRETERS = frozenset(
-    {"python", "python3", "bash", "sh", "zsh", "perl", "ruby", "node", "osascript", "php"}
+    {
+        "python",
+        "pythonw",
+        "bash",
+        "sh",
+        "zsh",
+        "dash",
+        "ksh",
+        "fish",
+        "perl",
+        "ruby",
+        "node",
+        "osascript",
+        "php",
+        "tclsh",
+        "lua",
+        "pwsh",
+        "java",
+    }
 )
+
+
+def interpreter_name(path: str) -> str | None:
+    """The `INTERPRETERS` name the binary at `path` matches, or None.
+
+    Case and a version suffix are ignored, so `python3.12`, `perl5.30` and a framework's
+    `Python` all match.
+    """
+    base = PurePosixPath(path).name.lower().rstrip("0123456789.")
+    return base if base in INTERPRETERS else None
 
 
 class ClientType(IntEnum):
@@ -126,15 +184,44 @@ class TccEntry:
         return self.client if self.client_type is ClientType.PATH else None
 
 
-def _ro_uri(path: str) -> str:
-    """A read-only, immutable SQLite URI for `path`, so the open never locks or waits on tccd."""
-    return f"file:{quote(path)}?mode=ro&immutable=1"
+def _ro_uri(path: str, immutable: bool = False) -> str:
+    """A read-only SQLite URI for `path`; `immutable` also skips locking and the WAL."""
+    flags = "mode=ro&immutable=1" if immutable else "mode=ro"
+    return f"file:{quote(path)}?{flags}"
+
+
+def _query_ro(db_path: str, query: str, params: tuple[object, ...]) -> list[tuple[Any, ...]]:
+    """Run `query` on a read-only open of `db_path`, falling back to an immutable open.
+
+    The plain read-only open comes first because it reads the write-ahead log: an immutable
+    open skips it, so a grant tccd wrote but has not checkpointed yet -- the newest one, the
+    one most worth seeing -- would be missed. A WAL database whose directory the reader cannot
+    write (so no `-shm` to map) refuses the plain open, and only then is immutable used.
+    Neither open can write; a busy database is waited on for at most a second.
+    """
+    failure: sqlite3.OperationalError | None = None
+    for immutable in (False, True):
+        try:
+            connection = sqlite3.connect(_ro_uri(db_path, immutable), uri=True, timeout=1.0)
+        except sqlite3.OperationalError as exc:
+            failure = exc
+            continue
+        try:
+            return connection.execute(query, params).fetchall()
+        except sqlite3.OperationalError as exc:
+            failure = exc
+        except sqlite3.DatabaseError as exc:
+            # Not a database, or corrupt: an immutable open would fail the same way.
+            raise TccUnavailable(f"{db_path}: {exc}") from exc
+        finally:
+            connection.close()
+    raise TccUnavailable(f"{db_path}: {failure} (Full Disk Access may be required)")
 
 
 def read_tcc(db_path: str, services: Mapping[str, str] = SENSITIVE_SERVICES) -> list[TccEntry]:
     """Read the standing grants for `services` from the TCC database at `db_path`.
 
-    Opens read-only and immutable, so it cannot change the database or block on the daemon.
+    Opens read-only (see `_query_ro`), so it cannot change the database.
     Raises `TccUnavailable` when the file is missing or cannot be opened (typically because the
     reading tool lacks Full Disk Access). Rows whose `auth_value` is not at least `allowed`, and
     services outside `services`, are left out.
@@ -150,16 +237,7 @@ def read_tcc(db_path: str, services: Mapping[str, str] = SENSITIVE_SERVICES) -> 
         f"FROM access WHERE service IN ({placeholders}) AND auth_value >= ? "
         "ORDER BY service, client"
     )
-    try:
-        connection = sqlite3.connect(_ro_uri(db_path), uri=True)
-    except sqlite3.OperationalError as exc:
-        raise TccUnavailable(f"{db_path}: {exc} (Full Disk Access may be required)") from exc
-    try:
-        rows = connection.execute(query, (*names, int(_GRANTED))).fetchall()
-    except sqlite3.DatabaseError as exc:
-        raise TccUnavailable(f"{db_path}: {exc}") from exc
-    finally:
-        connection.close()
+    rows = _query_ro(db_path, query, (*names, int(_GRANTED)))
     entries: list[TccEntry] = []
     for service, client, client_type, auth_value, auth_reason, last_modified in rows:
         entries.append(
@@ -224,7 +302,7 @@ def risk_reasons(
         return []
     reasons: list[str] = []
     name = PurePosixPath(path).name
-    if name in INTERPRETERS:
+    if interpreter_name(path):
         reasons.append(f"interpreter ({name})")
     if not is_system_path(path) and not path.startswith("/Applications/"):
         reasons.append("outside /Applications")
