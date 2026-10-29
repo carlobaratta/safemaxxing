@@ -21,7 +21,7 @@ window after its last access rather than until a kernel signal says otherwise.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterable, Awaitable, Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -34,6 +34,7 @@ Update = Event | NetworkConnection | Alert
 class IconState(StrEnum):
     """What the status icon shows, worst-first when several could apply."""
 
+    STOPPED = "stopped"  # the supervisor stream failed or ended: nothing is being watched
     ALERT = "alert"  # a sensor-to-egress correlation fired recently
     SENSOR = "sensor"  # a sensor is in use, no recent correlation
     IDLE = "idle"  # nothing in use, firewall nominal
@@ -44,6 +45,7 @@ ICON_GLYPHS: dict[IconState, str] = {
     IconState.IDLE: "shield.idle",
     IconState.SENSOR: "shield.sensor",
     IconState.ALERT: "shield.alert",
+    IconState.STOPPED: "shield.stopped",
 }
 
 
@@ -90,8 +92,18 @@ class MenuModel:
         self._alerts: dict[int, Alert] = {}
         self._sensor_last: dict[SensorType, float] = {}
         self._blocked: tuple[str, ...] = ()
+        self._stopped: str | None = None
         self.auto_block = False
         self.auto_suspend = False
+
+    def mark_stopped(self, reason: str) -> None:
+        """Record that the update stream is gone, so the icon stops claiming all is idle."""
+        self._stopped = reason
+
+    @property
+    def stopped_reason(self) -> str | None:
+        """Why monitoring stopped, or None while the stream is still running."""
+        return self._stopped
 
     def observe(self, update: Update) -> None:
         """Fold one supervisor update into the model; connections affect nothing on their own."""
@@ -140,7 +152,9 @@ class MenuModel:
         return out
 
     def icon_state(self, now: float | None = None) -> IconState:
-        """Worst state that applies now: alert, else sensor-in-use, else idle."""
+        """Worst state that applies now: stopped, else alert, else sensor-in-use, else idle."""
+        if self._stopped is not None:
+            return IconState.STOPPED
         moment = self._clock() if now is None else now
         if self._alerts:
             last_alert = max(a.created_at for a in self._alerts.values())
@@ -153,6 +167,28 @@ class MenuModel:
     def status_title(self, now: float | None = None) -> str:
         """The icon's glyph name for the current state."""
         return ICON_GLYPHS[self.icon_state(now)]
+
+
+async def pump_updates(
+    updates: AsyncIterable[Update],
+    model: MenuModel,
+    on_alert: Callable[[Alert], Awaitable[None]],
+) -> None:
+    """Fold `updates` into `model`, calling `on_alert` per alert, until the stream stops.
+
+    The stream only ends by failing (a source died, or root is missing) or by running dry, and
+    either way nothing is watched any more: the model is marked stopped so the icon shows it,
+    instead of the menu bar sitting on "idle" with no supervisor behind it.
+    """
+    try:
+        async for update in updates:
+            model.observe(update)
+            if isinstance(update, Alert):
+                await on_alert(update)
+    except Exception as exc:
+        model.mark_stopped(f"monitoring stopped: {exc}")
+        return
+    model.mark_stopped("monitoring stopped: the supervisor stream ended")
 
 
 # --- rumps runner (macOS only; not import- or unit-testable without the dependency) ---------
@@ -192,11 +228,13 @@ def run_menubar(
     """Render the menu bar and drive it from `supervisor.stream()` until the app quits.
 
     macOS only, and requires the `menubar` extra; raises `RuntimeError` otherwise. The stream
-    runs on a background asyncio thread feeding a `MenuModel`; a timer on the main thread
-    rebuilds the icon and menu from that model and refreshes the blocked-IP list. Quick actions
-    schedule the real firewall and process-controller calls. Not exercised in CI (no GUI).
+    runs on a background asyncio thread feeding a `MenuModel` via `pump_updates`, which marks
+    the model stopped if the stream fails or ends; a timer on the main thread rebuilds the icon
+    and menu from that model, notifies once on a stop, and refreshes the blocked-IP list. Quick
+    actions schedule the real firewall and process-controller calls. Not exercised in CI.
     """
     import asyncio
+    import contextlib
     import threading
     from functools import partial
 
@@ -207,22 +245,23 @@ def run_menubar(
     model = MenuModel(config)
     loop = asyncio.new_event_loop()
 
-    async def pump() -> None:
-        async for update in supervisor.stream():
-            model.observe(update)
-            if isinstance(update, Alert) and update.severity >= Severity.HIGH:
-                conn = update.finding.connection
-                if model.auto_block:
-                    await firewall.block(conn.remote_address)
-                if model.auto_suspend:
-                    processes.suspend(conn.pid)
+    async def act(alert: Alert) -> None:
+        if alert.severity < Severity.HIGH:
+            return
+        conn = alert.finding.connection
+        if model.auto_block:
+            await firewall.block(conn.remote_address)
+        if model.auto_suspend:
+            processes.suspend(conn.pid)
 
     def run_loop() -> None:
         asyncio.set_event_loop(loop)
+        # The loop outlives the stream, so Unblock / Flush All still work once monitoring stops.
+        task = loop.create_task(pump_updates(supervisor.stream(), model, act))
         try:
-            loop.run_until_complete(pump())
+            loop.run_forever()
         finally:
-            loop.close()
+            task.cancel()
 
     threading.Thread(target=run_loop, name="safemaxxing-menubar", daemon=True).start()
 
@@ -252,7 +291,8 @@ def run_menubar(
         open_tui()
 
     def rebuild() -> None:
-        items: list[Any] = [rumps.MenuItem(f"Status: {model.icon_state().value}", callback=None)]
+        status = model.stopped_reason or model.icon_state().value
+        items: list[Any] = [rumps.MenuItem(f"Status: {status}", callback=None)]
         alerts = model.recent_alerts()
         items.append(rumps.separator)
         if alerts:
@@ -282,8 +322,16 @@ def run_menubar(
         app.menu.clear()
         app.menu.update(items)
 
+    notified_stop = False
+
     def refresh(_timer: Any) -> None:
+        nonlocal notified_stop
         app.title = model.status_title()
+        if model.stopped_reason and not notified_stop:
+            notified_stop = True
+            # rumps refuses to notify from an interpreter without a bundle id; the icon still shows.
+            with contextlib.suppress(RuntimeError):
+                rumps.notification("safemaxxing", "Monitoring stopped", model.stopped_reason)
         future = asyncio.run_coroutine_threadsafe(firewall.blocked(), loop)
         future.add_done_callback(lambda f: model.set_blocked(f.result()))
         rebuild()

@@ -1,10 +1,19 @@
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 
 from conftest import T0, make_conn, make_event
 
-from safemaxxing.menubar import ICON_GLYPHS, IconState, MenuBarConfig, MenuModel, menubar_available
+from safemaxxing.menubar import (
+    ICON_GLYPHS,
+    IconState,
+    MenuBarConfig,
+    MenuModel,
+    Update,
+    menubar_available,
+    pump_updates,
+)
 from safemaxxing.models import Alert, Finding, SensorType, Severity
 
 
@@ -96,3 +105,56 @@ def test_toggles_default_off_and_every_icon_state_has_a_glyph() -> None:
     assert not model.auto_suspend
     assert set(ICON_GLYPHS) == set(IconState)
     assert isinstance(menubar_available(), bool)
+
+
+async def _updates(*items: Update, fail: Exception | None = None) -> AsyncIterator[Update]:
+    for item in items:
+        yield item
+    if fail is not None:
+        raise fail
+
+
+async def test_pump_folds_updates_and_hands_alerts_to_the_callback() -> None:
+    model = MenuModel()
+    seen: list[int] = []
+
+    async def on_alert(alert: Alert) -> None:
+        seen.append(alert.id)
+
+    await pump_updates(_updates(make_event(timestamp=T0), make_alert(alert_id=3)), model, on_alert)
+    assert seen == [3]
+    assert [r.id for r in model.recent_alerts()] == [3]
+
+
+async def test_a_failed_stream_marks_the_model_stopped_over_any_alert() -> None:
+    model = MenuModel()
+
+    async def on_alert(_alert: Alert) -> None:
+        return None
+
+    stream = _updates(make_alert(created_at=T0), fail=RuntimeError("log stream exited"))
+    await pump_updates(stream, model, on_alert)
+    assert model.stopped_reason == "monitoring stopped: log stream exited"
+    # Stopped outranks a fresh alert: the icon must never look healthy with no supervisor behind it.
+    assert model.icon_state(now=T0) is IconState.STOPPED
+
+
+async def test_a_stream_that_runs_dry_also_marks_the_model_stopped() -> None:
+    model = MenuModel()
+
+    async def on_alert(_alert: Alert) -> None:
+        return None
+
+    await pump_updates(_updates(), model, on_alert)
+    assert model.stopped_reason is not None
+    assert model.icon_state(now=T0) is IconState.STOPPED
+
+
+async def test_a_failing_alert_action_is_reported_as_a_stop() -> None:
+    model = MenuModel()
+
+    async def on_alert(_alert: Alert) -> None:
+        raise OSError("pfctl missing")
+
+    await pump_updates(_updates(make_alert()), model, on_alert)
+    assert model.stopped_reason == "monitoring stopped: pfctl missing"
