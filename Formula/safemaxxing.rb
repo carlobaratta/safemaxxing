@@ -2,9 +2,11 @@
 #
 #   brew tap carlobaratta/tap
 #   brew install safemaxxing
-#   sudo brew services start safemaxxing   # runs `safemaxxing watch` as root
 #
-# It installs the signed, notarized onedir bundle from the GitHub release (one per arch). The
+# There is deliberately no `service` block: the Homebrew prefix is owned by the user, so a root
+# daemon run from it (`sudo brew services`) would let any code running as that user replace the
+# bundle and gain root at the next start (see SECURITY.md). Root use goes through the .pkg,
+# which installs a root-owned copy under /usr/local/libexec. It installs the signed, notarized onedir bundle from the GitHub release (one per arch). The
 # url/sha256 pairs below are placeholders until the first tagged release; the release workflow
 # prints each tarball's SHA-256 so the tap can be updated. Keep this file in the tap repo
 # (carlobaratta/homebrew-tap) as Formula/safemaxxing.rb; it lives here as the source of truth.
@@ -27,18 +29,21 @@ class Safemaxxing < Formula
   depends_on :macos
 
   def install
-    # The tarball holds the PyInstaller onedir bundle under safemaxxing/.
-    libexec.install "safemaxxing"
-    bin.install_symlink libexec/"safemaxxing/safemaxxing"
+    # The tarball holds the onedir bundle under a single safemaxxing/ directory, and Homebrew
+    # stages into that directory, so the working directory is the bundle itself: the binary
+    # plus _internal/.
+    libexec.install Dir["*"]
+    bin.install_symlink libexec/"safemaxxing"
   end
 
-  service do
-    # Detection only by default (no automatic blocking); needs root for log, pf and pktap.
-    run [opt_bin/"safemaxxing", "watch", "--json"]
-    keep_alive true
-    require_root true
-    log_path var/"log/safemaxxing.log"
-    error_log_path var/"log/safemaxxing.log"
+  def caveats
+    <<~EOS
+      safemaxxing needs root for `watch`, `tui`, `menubar` and the firewall commands. This
+      Homebrew install lives in a user-writable prefix, so do not run it as root (no
+      `sudo safemaxxing`, no `sudo brew services`): install the signed .pkg from the GitHub
+      release for a root-owned copy in /usr/local/libexec instead. `doctor`, `version` and
+      `permissions` (with Full Disk Access) work without root.
+    EOS
   end
 
   test do

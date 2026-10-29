@@ -9,10 +9,10 @@ and ships it via a GitHub release and a Homebrew tap.
 | --- | --- |
 | `entrypoint.py` | PyInstaller entry point: runs the Typer CLI. |
 | `safemaxxing.spec` | PyInstaller spec, onedir, host architecture (bundles Textual + its `.tcss` and psutil). |
-| `entitlements.plist` | Hardened-runtime entitlements needed to notarize a Python build. |
+| `entitlements.plist` | Hardened-runtime entitlements needed to notarize a Python build; library validation and DYLD variables stay enforced (see the file). |
 | `build_release.sh` | Build → codesign → tarball → signed `.pkg`. |
 | `../.github/workflows/release.yml` | Test matrix, keychain import, build, notarize, staple, publish. |
-| `../Formula/safemaxxing.rb` | Homebrew formula (lives in the tap repo); installs the release tarball, with a `brew services` block. |
+| `../Formula/safemaxxing.rb` | Homebrew formula (lives in the tap repo); installs the release tarball for non-root use; no `brew services` block (a root daemon must not run from the user-writable prefix — use the `.pkg`). |
 
 ## Build locally (unsigned)
 

@@ -10,14 +10,11 @@
     <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
     <true/>
 
-    <!-- The bundle loads its own copies of libpython and C-extension dylibs (psutil, textual's
-         deps), which are signed with the Developer ID key, not Apple's: library validation must
-         be relaxed or the loader rejects them under the hardened runtime. -->
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
-
-    <!-- The frozen interpreter reads its own environment and resources. -->
-    <key>com.apple.security.cs.allow-dyld-environment-variables</key>
-    <true/>
+    <!-- Deliberately absent: disable-library-validation and allow-dyld-environment-variables.
+         Library validation already accepts the bundled libpython and C extensions, because
+         build_release.sh signs every one with the same Team ID as the executable; and the
+         PyInstaller bootloader resolves them via @rpath, not DYLD_* variables. Either
+         entitlement would let another process inject a dylib into a binary that runs as root
+         and may hold Full Disk Access, i.e. borrow its TCC grants. -->
 </dict>
 </plist>
