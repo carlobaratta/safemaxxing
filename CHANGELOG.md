@@ -6,6 +6,11 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- `release.yml`'s build job first checks the 8 signing and notarization secrets and fails
+  naming each one that is missing, instead of failing later in `security import`.
+
 ## [0.2.0] - 2026-10-30
 
 A menu bar, a TCC permissions audit, a root daemon for `watch`, a UDP egress source (pktap)
