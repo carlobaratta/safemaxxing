@@ -27,6 +27,7 @@ from safemaxxing.firewall import (
     meaningful_stderr,
     parse_pf_status,
 )
+from safemaxxing.menubar import MENUBAR_HINT, menubar_available
 from safemaxxing.network import PsutilSnapshot
 from safemaxxing.pktap import TCPDUMP_BINARY, pktap_command, pktap_unavailable
 from safemaxxing.sensors import (
@@ -309,6 +310,17 @@ def check_tcc_permissions(
     return Check("TCC permissions", status, summary)
 
 
+def check_menubar(available: Callable[[], bool] = menubar_available) -> Check:
+    """Whether `safemaxxing menubar` can start: rumps (and PyObjC) importable.
+
+    Never FAIL, the menu bar is optional: WARN with the install hint when rumps is missing.
+    """
+    name = "menu bar (menubar)"
+    if available():
+        return Check(name, Status.OK, "rumps available")
+    return Check(name, Status.WARN, MENUBAR_HINT)
+
+
 def run_doctor(poll_interval_s: float = 0.2) -> list[Check]:
     """Run every check in order; on a non-macOS host return after the basic checks."""
     checks = [check_platform(), check_root(), *check_binaries()]
@@ -317,6 +329,7 @@ def run_doctor(poll_interval_s: float = 0.2) -> list[Check]:
     checks += [check_pf_status(), *check_pf_anchor(), check_socket_visibility()]
     checks += [check_full_disk_access(), check_snapshot_latency(poll_interval_s)]
     checks += [check_log_predicate(), check_pktap(), check_tcc_permissions()]
+    checks.append(check_menubar())
     return checks
 
 
