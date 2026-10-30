@@ -14,6 +14,45 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-30 11:07 +0100] - v0.2 checks: validate script, system apps, daemon at login, Meet (Mac)
+
+- **Environment:** macOS 27.0.1 (26A434), Apple M4, root via sudo, `main` at 1378869; the
+  daemon from a local unsigned build under `/usr/local/libexec/safemaxxing` (`root:wheel`).
+- **Goal:** the manual checks left before 0.2.0.
+- **Code changes:** none during the run. Afterwards, bundle-only location events go through
+  the same system check as indicator events (see Problems).
+- **Commands run:** `scripts/macos_validate.sh`; `sudo uv run safemaxxing watch --events`
+  and the same with `--include-system`, while opening Photo Booth and recording in Voice
+  Memos; `daemon install --udp-flows`, then a reboot (boot 11:02:32); `tui --udp-flows` and
+  `menubar --udp-flows` during a Meet call in Brave; `daemon uninstall`.
+- **Result:**
+  - Validate script ([testlogs/20261030-1059-macos.log](testlogs/20261030-1059-macos.log)):
+    ruff, mypy, 365 passed; root doctor 0 FAIL (TCC WARN: the user database is not
+    readable); live suite 5 passed and 2 skipped (1.1.1.1 was already blocked, so the block
+    test was skipped). Sample: cmio `CMIODeviceStartStream` for Photo Booth, indicators
+    `cam:`/`mic:`/`loc:` for Photo Booth and Voice Memos.
+  - System apps: without `--include-system` no camera or microphone event for Photo Booth or
+    Voice Memos; with it, `camera com.apple.PhotoBooth pid=11333` (cmio),
+    `camera … (indicator:cam)`, `microphone com.apple.VoiceMemos (indicator:mic)`, and TCC
+    requests as `tcc`.
+  - Daemon after the reboot: 27 alerts from 11:03:01 to 11:03:56, **all medium `tcc`**
+    (Claude, Claude Code, Bitwarden, Microsoft AutoUpdate, Brave's AddressBook check, Avast).
+    None high or critical: the TCC-request fix holds.
+  - Meet call in Brave, about 11:05–11:06: events `indicator:mic`, `indicator:cam`, cmio
+    camera for pid 1679, TCC requests as `tcc`. The TUI ran without freezing, pf
+    ENABLED/ACTIVE, pktap CAPTURING. But UDP stayed at 0 pkt/s and **no alert** was raised,
+    neither in the TUI nor in the daemon log: the media did not go over a new UDP flow (the
+    same as on 2026-10-27 on this network).
+  - Cleanup: the daemon was uninstalled, the bundle was removed, and no tcpdump was left.
+- **Problems / regressions:**
+  - Without `--include-system`, `location com.apple.VoiceMemos pid=None` was shown twice.
+    locationd names the client only by bundle id (`<user>:icom.apple.VoiceMemos:`), and only
+    indicator events were checked against the processes that carry the id. Fixed afterwards
+    (`_mark_bundle_system`), with a test that fails without the fix.
+  - The menu bar checks (phases 4–5) were not reported in detail.
+- **Next steps:** a Meet call on a network that allows UDP; the TUI timeline, filter and
+  codesign line with real alerts; the menu bar report.
+
 ## [2026-10-30 09:45 +0100] - `watch` daemon as root, across a reboot (Mac)
 
 - **Environment:** macOS 27, arm64, root via sudo, branch `watch-daemon` at d5e7713; local

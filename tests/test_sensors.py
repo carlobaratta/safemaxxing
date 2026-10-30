@@ -1293,6 +1293,29 @@ async def test_indicator_bundle_id_alone_never_makes_an_event_system(tmp_path: P
     ]
 
 
+async def test_location_of_an_apple_app_named_by_bundle_id_is_system(tmp_path: Path) -> None:
+    # 2026-10-30: `watch --events` without --include-system showed Voice Memos' location,
+    # which locationd names only by bundle id.
+    line = _entry(
+        "com.apple.locationd",
+        "locationd",
+        '{"msg":"markReceivingLocationInformation", '
+        '"Client":"7589BA80-E466-47F2-99E4-8E9FF2C7F7E5:icom.apple.VoiceMemos:"}',
+        pid=384,
+    )
+    data = tmp_path / "log.json"
+    data.write_text("[" + json.dumps(line) + "]")
+    script = f"import sys; sys.stdout.write(open({str(data)!r}).read())"
+    apple = {
+        "com.apple.VoiceMemos": ["/System/Applications/VoiceMemos.app/Contents/MacOS/VoiceMemos"]
+    }
+    listener = SensorListener(
+        command=[sys.executable, "-c", script], bundle_exes=lambda b: apple.get(b, [])
+    )
+    events = [(e.sensor, e.bundle_id, e.system) async for e in listener.events()]
+    assert events == [(SensorType.LOCATION, "com.apple.VoiceMemos", True)]
+
+
 async def test_slow_indicator_lookup_times_out_and_keeps_the_event_visible(
     tmp_path: Path,
 ) -> None:

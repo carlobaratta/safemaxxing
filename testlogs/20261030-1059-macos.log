@@ -1,0 +1,286 @@
+# safemaxxing macOS validation 2026-10-30 10:59 +0100
+## Environment
+
+$ sw_vers
+ProductName:		macOS
+ProductVersion:		27.0.1
+BuildVersion:		26A434
+[exit 0]
+
+$ uname -m
+arm64
+[exit 0]
+
+$ sysctl -n machdep.cpu.brand_string
+Apple M4
+[exit 0]
+
+$ id -u
+501
+[exit 0]
+
+$ git rev-parse --abbrev-ref HEAD
+main
+[exit 0]
+
+$ git rev-parse --short HEAD
+1378869
+[exit 0]
+
+$ git status -sb
+## main...origin/main
+[exit 0]
+
+## Static checks
+
+$ /opt/homebrew/bin/uv run ruff format --check .
+55 files already formatted
+[exit 0]
+
+$ /opt/homebrew/bin/uv run ruff check
+All checks passed!
+[exit 0]
+
+$ /opt/homebrew/bin/uv run mypy
+Success: no issues found in 45 source files
+[exit 0]
+
+$ /opt/homebrew/bin/uv run pytest -q
+sssssss................................................................. [ 19%]
+........................................................................ [ 38%]
+........................................................................ [ 58%]
+........................................................................ [ 77%]
+........................................................................ [ 96%]
+............                                                             [100%]
+365 passed, 7 skipped in 8.44s
+[exit 0]
+
+## Task 1: doctor (non-root, then root)
+
+$ /opt/homebrew/bin/uv run safemaxxing doctor
+✔ macOS: 27.0.1 (arm64)
+✘ root privileges: euid 501: re-run with sudo
+✔ /usr/bin/log: present
+✔ /sbin/pfctl: present
+✔ /usr/sbin/lsof: present
+! pf status: needs root (/dev/pf: Permission denied)
+! pf parent anchor: needs root (/dev/pf: Permission denied)
+! anchor com.apple/safemaxxing: needs root (/dev/pf: Permission denied)
+! foreign sockets: only <user>'s sockets visible (12 pids): run as root
+✔ Full Disk Access: system TCC.db readable
+! socket snapshot: needs root (psutil denied): lsof fallback, slower
+✔ log stream predicate: accepted
+! pktap capture (--udp-flows): capturing on pktap needs root: re-run with sudo
+! TCC permissions: 12 sensitive grant(s), none high-risk; unread: ~/Library/Application 
+Support/com.apple.TCC/TCC.db: not present, or not readable without Full Disk Access
+✔ menu bar (menubar): rumps available
+[exit 1]
+
+$ sudo /opt/homebrew/bin/uv run safemaxxing doctor
+✔ macOS: 27.0.1 (arm64)
+✔ root privileges: euid 0
+✔ /usr/bin/log: present
+✔ /sbin/pfctl: present
+✔ /usr/sbin/lsof: present
+✔ pf status: Enabled
+✔ pf parent anchor: main ruleset has anchor "com.apple/*"
+✔ anchor com.apple/safemaxxing: block drop out quick from any to <safemaxxing_block>
+✔ foreign sockets: 27 pids visible incl. daemons _mdnsresponder, _netbios
+✔ Full Disk Access: system TCC.db readable
+✔ socket snapshot: 7 ms per poll (interval 200 ms)
+✔ log stream predicate: accepted
+✔ pktap capture (--udp-flows): tcpdump capturing
+! TCC permissions: 12 sensitive grant(s), none high-risk; unread: ~/Library/Application 
+Support/com.apple.TCC/TCC.db: not present, or not readable without Full Disk Access
+✔ menu bar (menubar): rumps available
+[exit 0]
+
+## Task 2: pf state and anchor before
+
+$ sudo /sbin/pfctl -s info
+No ALTQ support in kernel
+ALTQ related functions disabled
+Status: Enabled for 0 days 01:18:30           Debug: Urgent
+
+State Table                          Total             Rate
+  current entries                        0               
+  searches                          211056           44.8/s
+  inserts                                0            0.0/s
+  removals                               0            0.0/s
+Counters
+  match                             146480           31.1/s
+  bad-offset                             0            0.0/s
+  fragment                               0            0.0/s
+  short                                  0            0.0/s
+  normalize                              0            0.0/s
+  memory                                 0            0.0/s
+  bad-timestamp                          0            0.0/s
+  congestion                             0            0.0/s
+  ip-option                             96            0.0/s
+  proto-cksum                            0            0.0/s
+  state-mismatch                         0            0.0/s
+  state-insert                           0            0.0/s
+  state-limit                            0            0.0/s
+  src-limit                              0            0.0/s
+  synproxy                               0            0.0/s
+  dummynet                               0            0.0/s
+  invalid-port                           0            0.0/s
+[exit 0]
+
+$ sudo /sbin/pfctl -a com.apple/safemaxxing -s rules
+No ALTQ support in kernel
+ALTQ related functions disabled
+block drop out quick from any to <safemaxxing_block>
+[exit 0]
+
+$ sudo /sbin/pfctl -a com.apple/safemaxxing -t safemaxxing_block -T show
+No ALTQ support in kernel
+ALTQ related functions disabled
+   1.1.1.1
+[exit 0]
+
+## Task 2: live block SKIPPED: 1.1.1.1 already blocked by the user
+
+## Task 3: log stream sample (15s, raw entries in testlogs/20261030-1059-sample.jsonl)
+
+$ sudo /opt/homebrew/bin/uv run safemaxxing sample --seconds 15 --out testlogs/20261030-1059-sample.jsonl
+                                         log stream sample: 2708 entries in 15s                                         
+┏━━━━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┓
+┃ subsystem        ┃ entries ┃ <private> msg ┃ no image path ┃ no pid ┃ parsed ┃ w/ pid ┃ w/ bundle ┃ top processes    ┃
+┡━━━━━━━━━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━┩
+│ com.apple.TCC    │ 179     │ 13            │ 0             │ 0      │ 56     │ 56     │ 21        │ tccd×142,        │
+│                  │         │               │               │        │        │        │           │ VoiceMemos×13,   │
+│                  │         │               │               │        │        │        │           │ coreaudiod×8     │
+│ com.apple.cmio   │ 2006    │ 1807          │ 0             │ 0      │ 2      │ 2      │ 0         │ com.apple.cmio.… │
+│                  │         │               │               │        │        │        │           │ Photo Booth×259, │
+│                  │         │               │               │        │        │        │           │ cameracaptured×… │
+│ com.apple.contr… │ 5       │ 0             │ 0             │ 0      │ 3      │ 0      │ 3         │ ControlCenter×5  │
+│ com.apple.corea… │ 427     │ 0             │ 0             │ 0      │ 0      │ 0      │ 0         │ VoiceMemos×347,  │
+│                  │         │               │               │        │        │        │           │ systemsoundserv… │
+│                  │         │               │               │        │        │        │           │ audiomxd×20      │
+│ com.apple.locat… │ 91      │ 9             │ 0             │ 0      │ 7      │ 0      │ 0         │ locationd×63,    │
+│                  │         │               │               │        │        │        │           │ cameracaptured×… │
+│                  │         │               │               │        │        │        │           │ duetexpertd×7    │
+└──────────────────┴─────────┴───────────────┴───────────────┴────────┴────────┴────────┴───────────┴──────────────────┘
+unparsed com.apple.TCC: [access] <TCCDProcess: identifier=com.apple.voicememod, pid=11207> has the 
+com.apple.private.tcc.manager.access.read entitlement for service kTCCServiceAll (composed to parent: (null))
+unparsed com.apple.TCC: [access] REPLY_MSG: msg={
+        services=
+        [0] = {
+                has_prompted_for_allow=false
+                service="kTCCServiceUbiquity"
+                auth_value=2 (0x2)
+                last_modified=1792667810 (0x6ad9f0a2)
+                TCCD_MSG_ALLOW_STANDARD_USER_TO_SET_SYSTEM_SERVICE=false
+                auth_version=1 (0x
+unparsed com.apple.TCC: [access] <TCCDProcess: identifier=com.apple.voicememod, pid=11207> has the 
+com.apple.private.tcc.manager.access.read entitlement for service kTCCServiceAll (composed to parent: (null))
+com.apple.TCC: tcc×56  levels: Info×52, Default×4
+parsed com.apple.TCC: tcc voicememod pid=11207 [Info] RECV: synchronous reply <dictionary: 0x7b11070900> { count = 1, 
+transaction: 0, voucher = 0x0, contents =
+        "services" => <array: 0x7b10ebe190> { count = 2, capa
+parsed com.apple.TCC: tcc VoiceMemos pid=11206 [Info] RECV: synchronous reply <dictionary: 0x7a0cf51300> { count = 1, 
+transaction: 0, voucher = 0x0, contents =
+        "services" => <array: 0x7a0f302d60> { count = 2, capa
+parsed com.apple.TCC: tcc VoiceMemos pid=11206 [Info] RECV: synchronous reply <dictionary: 0x7a0cf52400> { count = 1, 
+transaction: 0, voucher = 0x0, contents =
+        "services" => <array: 0x7a0f302c70> { count = 2, capa
+unparsed com.apple.cmio: RegisterAssistantService.m:2102:-[RegisterAssistantServer 
+addRegisterExtensionConnection:]_block_invoke [<private>] get Preference
+unparsed com.apple.cmio: RegisterAssistantService.m:2893:-[RegisterAssistantServer 
+_preferenceValueForKey:pid:userDefaults:] [<private>] returning <private> : <private>
+unparsed com.apple.cmio: RegisterAssistantService.m:2102:-[RegisterAssistantServer 
+addRegisterExtensionConnection:]_block_invoke [<private>] get Preference
+com.apple.cmio: camera×2  levels: Default×1, Info×1
+parsed com.apple.cmio: camera Photo Booth pid=11224 [Default] CMIOHardware.cpp:741:CMIODeviceStartStream (35 36)
+parsed com.apple.cmio: camera Photo Booth pid=11224 [Info] CMIO_DAL_CMIOExtension_Device.mm:1732:StartStream 35, 36
+indicator com.apple.controlcenter: [loc:com.apple.VoiceMemos, mic:com.apple.VoiceMemos]
+indicator com.apple.controlcenter: [cam:com.apple.PhotoBooth, loc:com.apple.VoiceMemos, mic:com.apple.VoiceMemos]
+indicator com.apple.controlcenter: [cam:com.apple.PhotoBooth, mic:com.apple.VoiceMemos]
+indicator com.apple.controlcenter: [cam:com.apple.PhotoBooth]
+indicator com.apple.controlcenter: []
+com.apple.controlcenter: location×1, microphone×1, camera×1  levels: Default×3
+parsed com.apple.controlcenter: location com.apple.VoiceMemos pid=None [Default] Active activity attributions changed to
+["loc:com.apple.VoiceMemos", "mic:com.apple.VoiceMemos"]
+parsed com.apple.controlcenter: microphone com.apple.VoiceMemos pid=None [Default] Active activity attributions changed 
+to ["loc:com.apple.VoiceMemos", "mic:com.apple.VoiceMemos"]
+parsed com.apple.controlcenter: camera com.apple.PhotoBooth pid=None [Default] Active activity attributions changed to 
+["loc:com.apple.VoiceMemos", "mic:com.apple.VoiceMemos", "cam:com.apple.PhotoBooth"]
+unparsed com.apple.coreaudio: [as_client] SessionCore_macOS_Legacy.mm:426   Setting category: 
+AVAudioSessionCategoryPlayAndRecord, requires reconfiguration?: NO
+unparsed com.apple.coreaudio: [as_client]   AVAudioSession_MacOS.mm:690   Activating session
+unparsed com.apple.coreaudio: [ddagg]        AggregateDevice.mm:887   Creating DefaultDeviceAggregate
+unparsed com.apple.locationd: [Client] {"msg":"stopped receiving location information", 
+"client":"root:p\/System\/Library\/PrivateFrameworks\/CoreParsec.framework:"}
+unparsed com.apple.locationd: [Motion] 
+Type,<private>,motionStateUpdate:Motion,1,conf,2,Mounted,0,MountedConf,0,exitState,<private>,turn,<private>,isVehicular,
+<private>,isMoving,<private>,seq,<private>,motionTypeString,<private>,startTime,815047196.461096,timestamp,<private>,sta
+unparsed com.apple.locationd: [AOP] {"msg":"received AOP log", "log":{"flags":1,"seq":1959,"data":[1,16779874]}}
+com.apple.locationd: location×7  levels: Info×7
+parsed com.apple.locationd: location CoreParsec pid=None [Info] {"msg":"markReceivingLocationInformation", 
+"Client":"root:com.apple.locationd.bundle-\/System\/Library\/PrivateFrameworks\/CoreParsec.framework"}
+parsed com.apple.locationd: location CoreParsec pid=None [Info] {"msg":"markReceivingLocationInformation", 
+"Client":"root:com.apple.locationd.bundle-\/System\/Library\/PrivateFrameworks\/CoreParsec.framework"}
+parsed com.apple.locationd: location CoreParsec pid=None [Info] {"msg":"markReceivingLocationInformation", 
+"Client":"root:com.apple.locationd.bundle-\/System\/Library\/PrivateFrameworks\/CoreParsec.framework"}
+[exit 0]
+
+## Tasks 2-4: live pytest suite
+
+$ sudo SAFEMAXXING_LIVE=1 SAFEMAXXING_LIVE_IP=1.1.1.1 /opt/homebrew/bin/uv run pytest -m live -v -s -p no:cacheprovider
+============================= test session starts ==============================
+platform darwin -- Python 3.13.14, pytest-9.1.1, pluggy-1.7.0 -- ~/Desktop/oak's projects/safemaxxing/safemaxxing/.venv/bin/python
+rootdir: ~/Desktop/oak's projects/safemaxxing/safemaxxing
+configfile: pyproject.toml
+testpaths: tests
+plugins: timeout-2.4.0, asyncio-1.4.0, platformdirs-4.13.5
+timeout: 60.0s
+timeout method: thread
+timeout func_only: False
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 372 items / 365 deselected / 7 selected
+
+tests/live/test_live_macos.py::test_doctor_has_no_failures [ok] macOS: 27.0.1 (arm64)
+[ok] root privileges: euid 0
+[ok] /usr/bin/log: present
+[ok] /sbin/pfctl: present
+[ok] /usr/sbin/lsof: present
+[ok] pf status: Enabled
+[ok] pf parent anchor: main ruleset has anchor "com.apple/*"
+[ok] anchor com.apple/safemaxxing: block drop out quick from any to <safemaxxing_block>
+[ok] foreign sockets: 30 pids visible incl. daemons _mdnsresponder, _netbios
+[ok] Full Disk Access: system TCC.db readable
+[ok] socket snapshot: 7 ms per poll (interval 200 ms)
+[ok] log stream predicate: accepted
+[ok] pktap capture (--udp-flows): tcpdump capturing
+[warn] TCC permissions: 12 sensitive grant(s), none high-risk; unread: ~/Library/Application Support/com.apple.TCC/TCC.db: not present, or not readable without Full Disk Access
+[ok] menu bar (menubar): rumps available
+PASSED
+tests/live/test_live_macos.py::test_anchor_rules_and_table_parse_cleanly block drop out quick from any to <safemaxxing_block>
+
+PASSED
+tests/live/test_live_macos.py::test_block_drops_new_connections_and_unblock_restores SKIPPED
+tests/live/test_live_macos.py::test_block_kills_already_open_connection SKIPPED
+tests/live/test_live_macos.py::test_log_stream_predicate_and_parser_on_real_entries 
+10 entries in 5s
+com.apple.cmio: entries=2 parsed=0 with_pid=0 with_bundle=0 private_msg=2 no_image=0 top=[('com.apple.cmio.registerassistantservice', 2)]
+  unparsed: RegisterAssistantService.m:2118:-[RegisterAssistantServer addRegisterExtensionConnection:]_block_invoke [<private>] set Preference
+  unparsed: RegisterAssistantService.m:2156:-[RegisterAssistantServer addRegisterExtensionConnection:]_block_invoke [<private>] setting <private> : <private>
+com.apple.locationd: entries=8 parsed=0 with_pid=0 with_bundle=0 private_msg=2 no_image=0 top=[('locationd', 8)]
+  unparsed: [Core] {"msg":"#Notice Location icon should now be in state", "state":"Inactive"}
+  unparsed: [Motion] Type,<private>,motionStateUpdate:Motion,1,conf,2,Mounted,0,MountedConf,0,exitState,<private>,turn,<private>,isVehicular,<private>,isMoving,<private>,seq,<private>,motionTypeString,<private>,startTime,815047214.516973,timestamp,<private>,sta
+  unparsed: [AOP] {"msg":"received AOP log", "log":{"flags":1,"seq":1981,"data":[1,16779874]}}
+PASSED
+tests/live/test_live_macos.py::test_wide_discovery_predicate_accepted_by_log 
+wide predicate: 1 entries in 1s
+PASSED
+tests/live/test_live_macos.py::test_reverse_dns_never_exceeds_timeout_on_real_resolver 1.1.1.1: 'one.one.one.one' in 40 ms
+8.8.8.8: 'dns.google' in 38 ms
+9.9.9.9: None in 101 ms
+192.0.2.1: None in 0 ms
+203.0.113.7: None in 0 ms
+17.253.144.10: None in 102 ms
+PASSED
+
+================ 5 passed, 2 skipped, 365 deselected in 10.81s =================
+[exit 0]
