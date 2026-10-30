@@ -48,7 +48,7 @@ TCC_ATTRIBUTION = {
 def test_parse_tcc_camera_attributes_client_not_tccd() -> None:
     event = parse_entry(TCC_ATTRIBUTION)
     assert event is not None
-    assert event.sensor is SensorType.CAMERA
+    assert event.sensor is SensorType.TCC
     assert event.pid == 4242
     assert event.bundle_id == "com.example.spy"
     assert event.process_name == ""
@@ -64,7 +64,7 @@ def test_parse_tcc_request_with_sender_pid() -> None:
     }
     event = parse_entry(entry)
     assert event is not None
-    assert event.sensor is SensorType.MICROPHONE
+    assert event.sensor is SensorType.TCC
     assert event.pid == 777
 
 
@@ -381,7 +381,7 @@ def test_tcc_client_side_send_line_uses_msgid_pid() -> None:
     event = parse_entry(entry)
     assert event is not None
     assert (event.sensor, event.pid, event.process_name) == (
-        SensorType.CAMERA,
+        SensorType.TCC,
         34654,
         "Photo Booth",
     )
@@ -587,7 +587,7 @@ def test_broker_tcc_check_on_behalf_of_client_uses_target_token() -> None:
     )
     event = parse_entry(send)
     assert event is not None
-    assert (event.sensor, event.pid, event.process_name) == (SensorType.MICROPHONE, 34661, "")
+    assert (event.sensor, event.pid, event.process_name) == (SensorType.TCC, 34661, "")
     camera = _entry(
         "com.apple.TCC",
         "cameracaptured",
@@ -596,7 +596,7 @@ def test_broker_tcc_check_on_behalf_of_client_uses_target_token() -> None:
         pid=563,
     )
     event = parse_entry(camera)
-    assert event is not None and (event.sensor, event.pid) == (SensorType.CAMERA, 34654)
+    assert event is not None and (event.sensor, event.pid) == (SensorType.TCC, 34654)
 
 
 def test_broker_own_entitlement_check_is_not_attributed_to_broker() -> None:
@@ -619,7 +619,7 @@ def test_tccd_auth_allowed_line() -> None:
     event = parse_entry(entry)
     assert event is not None
     assert (event.sensor, event.pid, event.bundle_id) == (
-        SensorType.MICROPHONE,
+        SensorType.TCC,
         34661,
         "com.apple.VoiceMemos",
     )
@@ -911,7 +911,7 @@ def test_screen_capture_requested_by_the_capturing_app_itself_counts() -> None:
         pid=4242,
     )
     event = parse_entry(own)
-    assert event is not None and (event.sensor, event.pid) == (SensorType.SCREEN_CAPTURE, 4242)
+    assert event is not None and (event.sensor, event.pid) == (SensorType.TCC, 4242)
 
 
 def test_coreaudiod_mic_request_for_a_client_still_counts() -> None:
@@ -924,7 +924,7 @@ def test_coreaudiod_mic_request_for_a_client_still_counts() -> None:
         pid=525,
     )
     event = parse_entry(mic)
-    assert event is not None and (event.sensor, event.pid) == (SensorType.MICROPHONE, 34389)
+    assert event is not None and (event.sensor, event.pid) == (SensorType.TCC, 34389)
 
 
 def _replayd_request(msg_id: str, subject_pid: int, prompt_policy: int = 2) -> str:
@@ -956,7 +956,7 @@ def test_real_screen_capture_indicator_and_replayd_request_for_client() -> None:
     # replayd asks on behalf of the capturing client: tccd names it in the subject audit token.
     request = _entry("com.apple.TCC", "tccd", _replayd_request("733.14", 37712), pid=407)
     event = parse_entry(request)
-    assert event is not None and (event.sensor, event.pid) == (SensorType.SCREEN_CAPTURE, 37712)
+    assert event is not None and (event.sensor, event.pid) == (SensorType.TCC, 37712)
 
 
 def test_brave_window_share_is_attributed_to_brave_not_replayd() -> None:
@@ -974,7 +974,7 @@ def test_brave_window_share_is_attributed_to_brave_not_replayd() -> None:
     event = parse_entry(request)
     assert event is not None
     assert (event.sensor, event.service, event.pid) == (
-        SensorType.SCREEN_CAPTURE,
+        SensorType.TCC,
         "ScreenCapture",
         6254,
     )
@@ -985,7 +985,7 @@ def test_denied_brave_share_is_attributed_to_brave() -> None:
     # Verbatim from macOS 27.0.1, 2026-10-26 10:23: same request while Brave had no grant.
     request = _entry("com.apple.TCC", "tccd", _replayd_request("709.2", 1761), pid=399)
     event = parse_entry(request)
-    assert event is not None and (event.sensor, event.pid) == (SensorType.SCREEN_CAPTURE, 1761)
+    assert event is not None and (event.sensor, event.pid) == (SensorType.TCC, 1761)
 
 
 def test_cmd_shift_5_recording_is_attributed_to_screencapture() -> None:
@@ -993,7 +993,7 @@ def test_cmd_shift_5_recording_is_attributed_to_screencapture() -> None:
     # (3506); its own mic preflight for the recording is not a mic access.
     request = _entry("com.apple.TCC", "tccd", _replayd_request("791.2", 3506), pid=399)
     event = parse_entry(request)
-    assert event is not None and (event.sensor, event.pid) == (SensorType.SCREEN_CAPTURE, 3506)
+    assert event is not None and (event.sensor, event.pid) == (SensorType.TCC, 3506)
     mic_preflight = _entry(
         "com.apple.TCC",
         "replayd",
@@ -1011,7 +1011,7 @@ def test_window_server_check_of_replayd_names_replayd() -> None:
         "com.apple.TCC", "tccd", _replayd_request("398.149", 709, prompt_policy=1), pid=399
     )
     event = parse_entry(request)
-    assert event is not None and (event.sensor, event.pid) == (SensorType.SCREEN_CAPTURE, 709)
+    assert event is not None and (event.sensor, event.pid) == (SensorType.TCC, 709)
 
 
 async def test_listener_shows_brave_share_and_hides_replayd_check(tmp_path: Path) -> None:

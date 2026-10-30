@@ -149,6 +149,8 @@ BRAVE_HELPER_BUNDLE = "com.brave.Browser.helper"
 ZOOM_BINARY = "/Applications/zoom.us.app/Contents/MacOS/zoom.us"
 SPY_BINARY = "/Applications/Spy.app/Contents/MacOS/Spy"
 PHOTO_BOOTH = "/System/Applications/Photo Booth.app/Contents/MacOS/Photo Booth"
+SPOTIFY = "/Applications/Spotify.app/Contents/MacOS/Spotify"
+SPOTIFY_BUNDLE = "com.spotify.client"
 
 
 def brave_meet() -> Scenario:
@@ -206,10 +208,44 @@ def camera_then_curl_upload() -> Scenario:
 
 def photo_booth_system_app() -> Scenario:
     """Apple's Photo Booth using the camera then reaching the network: a system binary, so the
-    access is hidden unless --include-system."""
+    access is hidden unless --include-system. Timings from the 2026-10-23 14:24 capture: the TCC
+    request, the cmio stream start 289 ms later, the `cam:` indicator 28 ms after that."""
     pid = 8100
     return Scenario(
         name="photo_booth",
-        entries=[logs.tcc_access(T0, "Camera", pid, "com.apple.PhotoBooth", PHOTO_BOOTH)],
-        sockets=[_socket(T0 + 0.2, pid, "17.253.144.10", 443, PHOTO_BOOTH, "com.apple.PhotoBooth")],
+        entries=[
+            logs.tcc_access(T0, "Camera", pid, "com.apple.PhotoBooth", PHOTO_BOOTH),
+            logs.cmio_camera(T0 + 0.289, pid, PHOTO_BOOTH),
+            logs.indicator(T0 + 0.317, ["cam:com.apple.PhotoBooth"]),
+        ],
+        sockets=[_socket(T0 + 0.5, pid, "17.253.144.10", 443, PHOTO_BOOTH, "com.apple.PhotoBooth")],
+    )
+
+
+def app_launch_permission_check() -> Scenario:
+    """Spotify starting at login (2026-10-30 09:41): it asks TCC about the microphone and the
+    camera, then connects 124 ms later. No stream starts and no indicator lights: a permission
+    check, not use, so at most a medium `tcc` alert."""
+    pid = 702
+    return Scenario(
+        name="app_launch_permission_check",
+        entries=[
+            logs.tcc_access(T0, "Microphone", pid, SPOTIFY_BUNDLE, SPOTIFY),
+            logs.tcc_access(T0 + 0.01, "Camera", pid, SPOTIFY_BUNDLE, SPOTIFY),
+        ],
+        sockets=[_socket(T0 + 0.124, pid, "192.178.194.113", 443, SPOTIFY, SPOTIFY_BUNDLE)],
+    )
+
+
+def camera_request_then_use() -> Scenario:
+    """A third-party app's camera request followed by real use: the indicator lights 67 ms later
+    (Brave, 2026-10-26), then the app uploads. One sensor, camera: the request is folded in."""
+    pid = 4242
+    return Scenario(
+        name="camera_request_then_use",
+        entries=[
+            logs.tcc_access(T0, "Camera", pid, "com.example.spy", SPY_BINARY),
+            logs.indicator(T0 + 0.067, ["cam:com.example.spy"]),
+        ],
+        sockets=[_socket(T0 + 0.4, pid, "203.0.113.9", 443, SPY_BINARY, "com.example.spy")],
     )

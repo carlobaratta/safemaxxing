@@ -76,6 +76,14 @@ def _bundle_related(a: str, b: str) -> bool:
     return a == b or a.startswith(b + ".") or b.startswith(a + ".")
 
 
+def strongest(sensors: frozenset[SensorType]) -> frozenset[SensorType]:
+    """`sensors` without `tcc` when a sensor's use is known: a TCC request followed by the
+    camera starting is one access, not two sensors. `tcc` alone (a permission check, or another
+    TCC service) stays."""
+    used = sensors - {SensorType.TCC}
+    return used or sensors
+
+
 def same_actor(event: Event, conn: NetworkConnection) -> bool:
     """Whether the process behind `event` owns `conn`.
 
@@ -198,9 +206,9 @@ class CorrelationEngine:
             ev, conn = finding.event, finding.connection
             existing = self._alerted.get(conn.key)
             if existing is not None:
-                if ev.sensor in existing.sensors:
+                sensors = strongest(existing.sensors | {ev.sensor})
+                if sensors == existing.sensors:
                     continue
-                sensors = existing.sensors | {ev.sensor}
                 alert = dataclasses.replace(
                     existing,
                     sensors=sensors,
@@ -214,7 +222,7 @@ class CorrelationEngine:
                 if last is not None and now - last < self.config.alert_cooldown_s:
                     continue
                 findings = self._findings_for(conn)
-                sensors = frozenset(f.event.sensor for f in findings) | {ev.sensor}
+                sensors = strongest(frozenset(f.event.sensor for f in findings) | {ev.sensor})
                 severity = self._severity(sensors)
                 # A connection backed only by decayed (late) matches is a weaker signal: drop
                 # one severity step, floored at low, so a late upload still alerts quietly.
@@ -256,8 +264,10 @@ class CorrelationEngine:
         Ignored processes and DNS ports (unless `include_dns`) are dropped. A system-path
         binary's socket is dropped too (unless `include_system`) -- except when a non-system
         process accountable for it used a sensor, see below. Severity starts from the sensor's
-        base level (high for camera, microphone, location and screen; medium for other TCC) and
-        rises one step, up to critical, when several distinct sensors precede the same connection.
+        base level (high for camera, microphone, location and screen, which only their use
+        reports; medium for `tcc`, a TCC request of any service) and rises one step, up to
+        critical, when several distinct sensors precede the same connection (`tcc` is folded
+        into the sensor it precedes, see `strongest`).
         """
         if self._ignored(conn.bundle_id, conn.process_name):
             return []

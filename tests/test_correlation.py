@@ -351,3 +351,18 @@ def test_system_socket_dropped_when_attribution_disabled() -> None:
     eng.ingest_event(make_event(pid=4242, bundle_id=None, process_name="app"))
     conn = make_conn(pid=5001, exe_path="/usr/bin/curl", first_seen=T0 + 0.1)
     assert eng.ingest_connection(conn) == []
+
+
+def test_a_tcc_alert_becomes_the_sensor_its_indicator_shows() -> None:
+    # A camera request first (tcc, medium), then the indicator a few ms after the socket.
+    eng = CorrelationEngine(clock=lambda: T0)
+    assert eng.ingest_event(make_event(sensor=SensorType.TCC, service="Camera")) == []
+    (first,) = eng.ingest_connection(make_conn())
+    assert first.sensors == {SensorType.TCC} and first.severity is Severity.MEDIUM
+    indicator = make_event(sensor=SensorType.CAMERA, pid=None, timestamp=T0 + 0.12)
+    (merged,) = eng.ingest_event(indicator)
+    assert merged.id == first.id and merged.updated
+    assert merged.sensors == {SensorType.CAMERA}
+    assert merged.severity is Severity.HIGH
+    # Another request for the same connection adds nothing once use is known.
+    assert eng.ingest_event(make_event(sensor=SensorType.TCC, timestamp=T0 + 0.13)) == []

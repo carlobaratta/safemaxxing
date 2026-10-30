@@ -86,6 +86,12 @@ All notable changes are listed here. The format follows
 
 ### Changed
 
+- A TCC request no longer counts as use of the camera, microphone or screen: it is a `tcc`
+  event (medium), whatever the service. Apps send these requests while they start, so the
+  first daemon run saw ~18 critical alerts right after login (Spotify, Claude) that
+  `--auto-block` would have acted on. Camera, microphone and screen now come only from the
+  Control Center indicator and cmio's stream start; a request followed by that use is folded
+  into one sensor, so a Photo Booth camera access is high, not critical.
 - The TUI is a dark dashboard of panels, with its styles in `tui/safemaxxing.tcss`.
   - **Live feed** of alerts with pill badges for severity, sensors (`CAM`, `MIC`, `LOC`,
     `SCR`, `TCC`) and mitigation (`BLK`, `STOP`). An alert re-emitted with more sensors

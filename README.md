@@ -53,6 +53,10 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
   `com.apple.cmio*`.
   - Classifica Fotocamera, Microfono, Posizione, Screen Capture e qualunque altro servizio
     TCC.
+  - Una richiesta TCC, anche per fotocamera, microfono o schermo, conta come `tcc` (severità
+    `medium`): è un controllo dei permessi, e molte app lo fanno all'avvio (Spotify e Claude al
+    login). Fotocamera, microfono e schermo vengono solo dall'uso reale: l'indicatore di
+    Control Center e l'avvio dello stream cmio, 50-400 ms dopo la richiesta.
   - Attribuisce l'accesso al PID e al bundle id del *client*, non ai daemon broker come
     `tccd`, `coreaudiod` o `sandboxd`.
   - La fonte principale sono le attribuzioni dell'indicatore di privacy di Control Center
@@ -97,8 +101,9 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
   - Produce un solo alert per connessione: se altri sensori la precedono, l'alert viene
     aggiornato con lo stesso id. Cooldown di 30 s per (pid, sensore, IP).
   - Le raffiche di righe di log di un accesso diventano un solo evento.
-  - La severità base è `high` (`medium` per gli altri servizi TCC). Sale di un livello, fino a
-    `critical`, se più sensori diversi precedono la stessa connessione.
+  - La severità base è `high` per fotocamera, microfono, schermo e posizione, `medium` per
+    `tcc`. Sale di un livello, fino a `critical`, se più sensori diversi precedono la stessa
+    connessione. Una richiesta `tcc` seguita dall'uso dello stesso sensore conta una volta sola.
 - **Enforcement**: tabella pf `safemaxxing_block` dentro l'anchor `com.apple/safemaxxing`.
   L'anchor è già valutato dal `/etc/pf.conf` di sistema, quindi non serve modificare la
   configurazione. Controllo dei processi con `SIGSTOP` / `SIGCONT` / `SIGKILL`.
@@ -385,10 +390,9 @@ quelle installate.
 - `daemon uninstall` ferma il demone e cancella il plist; log e blocchi fatti restano.
 - Con `--auto-block` i blocchi vengono salvati come gli altri, quindi `boot install` li
   riapplica dopo il riavvio.
-- **Attenzione con `--auto-block`:** oggi molte app chiedono a TCC il microfono o lo schermo
-  mentre si avviano (Spotify, Claude), e questo produce alert `critical` subito dopo il login.
-  Con `--auto-block` il demone bloccherebbe i loro server a ogni accesso. Usalo senza
-  `--auto-block` finché non è risolto (vedi [TODO.md](TODO.md)).
+- Al login molte app chiedono a TCC microfono, fotocamera o schermo mentre si avviano: sono
+  alert `medium` (`tcc`). Con `--auto-block` tieni `--min-severity` almeno a `high`, o il
+  demone bloccherebbe i loro server a ogni accesso.
 
 Il demone esegue safemaxxing stesso come root, quindi `install` rifiuta qualunque copia che un
 utente non root possa modificare: funziona solo dal binario del `.pkg` in
