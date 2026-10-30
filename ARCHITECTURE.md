@@ -27,7 +27,8 @@ runners (arm64 and Intel).
 | `menubar.py` | `MenuModel` (pure, clock-injected) and `run_menubar`, the rumps status-bar view over the same `stream()`. |
 | `tcc_inspector.py` | Read-only audit of the TCC databases: who already holds a sensitive grant, and which holders look risky. |
 | `diagnostics.py` | `doctor`'s checks and `sample`'s summary of a raw log capture. |
-| `boot.py` | The launchd job that reapplies the saved blocklist at boot (`/bin/sh` and `/sbin/pfctl` only). |
+| `boot.py` | The launchd job that reapplies the saved blocklist at boot (`/bin/sh` and `/sbin/pfctl` only), and `LaunchdJob`, the load/unload/inspect shared with the daemon. |
+| `daemon.py` | `WatchDaemon`: a root LaunchDaemon running `watch --json`, installed only from a root-owned frozen bundle (`unsafe_reason`). |
 | `codesign.py` | Signing identity of a binary's app, for the inspector and the TCC audit. |
 | `cli.py` | The Typer entry point. |
 

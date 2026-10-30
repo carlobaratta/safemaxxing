@@ -39,6 +39,7 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
   - [Menu bar](#menu-bar)
   - [Permessi TCC](#permessi-tcc)
   - [Diagnostica](#diagnostica)
+  - [Demone `watch`](#demone-watch)
 - [Architettura](#architettura)
 - [Limiti noti](#limiti-noti)
 - [Sviluppo](#sviluppo)
@@ -168,6 +169,10 @@ sudo uv run safemaxxing flush
 sudo uv run safemaxxing boot install              # riapplica i blocchi a ogni avvio
 uv run safemaxxing boot status
 sudo uv run safemaxxing boot uninstall
+
+sudo safemaxxing daemon install --auto-block      # watch in background (solo dal .pkg)
+safemaxxing daemon status
+sudo safemaxxing daemon uninstall
 
 sudo uv run safemaxxing freeze 4242               # SIGSTOP
 sudo uv run safemaxxing thaw 4242                 # SIGCONT
@@ -365,6 +370,29 @@ lo script una volta: aggiunge gli IP salvati alla tabella attiva e non ne toglie
 tabella attiva. Con `boot uninstall` il job viene rimosso, mentre i blocchi attivi e la lista
 restano.
 
+### Demone `watch`
+
+`sudo safemaxxing daemon install` tiene `watch --json` sempre attivo in background come
+LaunchDaemon di root: parte al caricamento e a ogni avvio, e launchd lo riavvia se esce (al
+massimo un riavvio ogni 10 s). Accetta le stesse opzioni di `watch` (`--ignore`,
+`--udp-flows`, `--auto-block`, `--min-severity`, …); rilanciarlo con opzioni diverse sostituisce
+quelle installate.
+
+- Gli alert finiscono in `/var/log/safemaxxing-watch.log`, un oggetto JSON per riga; errori e
+  traceback in `/var/log/safemaxxing-watch.err`. I log non vengono ruotati.
+- `daemon status` mostra se il job è installato e in esecuzione (stato, pid, ultimo exit
+  code), la riga di comando esatta e gli ultimi 5 alert.
+- `daemon uninstall` ferma il demone e cancella il plist; log e blocchi fatti restano.
+- Con `--auto-block` i blocchi vengono salvati come gli altri, quindi `boot install` li
+  riapplica dopo il riavvio.
+
+Il demone esegue safemaxxing stesso come root, quindi `install` rifiuta qualunque copia che un
+utente non root possa modificare: funziona solo dal binario del `.pkg` in
+`/usr/local/libexec/safemaxxing`, con ogni file e ogni cartella sopra di proprietà di root e
+non scrivibili da gruppo o altri. Da un checkout dei sorgenti, da un virtualenv o da Homebrew
+risponde `refusing to install the daemon` (vedi [SECURITY.md](SECURITY.md)). Per provarlo prima
+di una release firmata, vedi [packaging/README.md](packaging/README.md).
+
 ## Architettura
 
 ```
@@ -377,6 +405,7 @@ src/safemaxxing/
 ├── supervisor.py    unisce gli stream asincroni e alimenta l'engine
 ├── firewall.py      PfFirewall (pfctl), BlockList (lista salvata) e ProcessController (segnali)
 ├── boot.py          job launchd che riapplica la lista al boot (solo /bin/sh e /sbin/pfctl)
+├── daemon.py        LaunchDaemon che tiene attivo `watch --json` (solo da un bundle di root)
 ├── diagnostics.py   doctor (Check) e sample (summarize_sample)
 ├── codesign.py      firma del codice per l'inspector (codesign -dv)
 ├── tcc_inspector.py audit in sola lettura dei TCC.db (permissions, check di doctor)

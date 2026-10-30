@@ -86,8 +86,8 @@ class BootStatus:
     loaded: bool
 
 
-def _write_root_file(path: Path, data: bytes) -> None:
-    # launchd ignores a plist that is group- or world-writable.
+def write_root_file(path: Path, data: bytes) -> None:
+    """Atomically write `path` with mode 0644 (launchd ignores a group/world-writable plist)."""
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}-")
     try:
         with os.fdopen(fd, "wb") as fh:
@@ -99,30 +99,46 @@ def _write_root_file(path: Path, data: bytes) -> None:
         raise
 
 
-class BootJob:
-    """Installs, removes and inspects the launchd job (install and uninstall need root)."""
+class LaunchdJob:
+    """A job in launchd's system domain: load, unload, inspect (load and unload need root)."""
+
+    def __init__(self, label: str, plist: Path, runner: Runner = run_command) -> None:
+        self.label = label
+        self.plist = plist
+        self._run = runner
+
+    async def load(self, plist: bytes) -> str:
+        """Write `plist` and (re)load it into the system domain; return a problem or ''."""
+        write_root_file(self.plist, plist)
+        # bootstrap refuses a label that is already loaded, so drop any older copy first.
+        await self._run([LAUNCHCTL, "bootout", f"system/{self.label}"])
+        res = await self._run([LAUNCHCTL, "bootstrap", "system", str(self.plist)])
+        return "" if res.returncode == 0 else (res.stderr.strip() or f"exit {res.returncode}")
+
+    async def uninstall(self) -> None:
+        """Unload the job and delete its plist."""
+        await self._run([LAUNCHCTL, "bootout", f"system/{self.label}"])
+        self.plist.unlink(missing_ok=True)
+
+    async def print(self) -> str | None:
+        """`launchctl print` of the job, or None when launchd does not have it loaded."""
+        res = await self._run([LAUNCHCTL, "print", f"system/{self.label}"])
+        return res.stdout if res.returncode == 0 else None
+
+    async def status(self) -> BootStatus:
+        """Report whether the plist exists and `launchctl print` finds the job."""
+        return BootStatus(self.plist.exists(), await self.print() is not None)
+
+
+class BootJob(LaunchdJob):
+    """The boot-time restore job; uninstalling it leaves the saved list and live blocks alone."""
 
     def __init__(self, runner: Runner = run_command, plist: Path = PLIST) -> None:
-        self._run = runner
-        self.plist = plist
+        super().__init__(LABEL, plist, runner)
 
     async def install(self, script: str | None = None) -> str:
         """Write the plist and (re)load it into launchd's system domain; return a problem or ''.
 
         Loading runs the script once, which only adds the saved addresses to the live table.
         """
-        _write_root_file(self.plist, launchd_plist(script or boot_script()))
-        # bootstrap refuses a label that is already loaded, so drop any older copy first.
-        await self._run([LAUNCHCTL, "bootout", f"system/{LABEL}"])
-        res = await self._run([LAUNCHCTL, "bootstrap", "system", str(self.plist)])
-        return "" if res.returncode == 0 else (res.stderr.strip() or f"exit {res.returncode}")
-
-    async def uninstall(self) -> None:
-        """Unload the job and delete its plist; the saved list and live blocks stay as they are."""
-        await self._run([LAUNCHCTL, "bootout", f"system/{LABEL}"])
-        self.plist.unlink(missing_ok=True)
-
-    async def status(self) -> BootStatus:
-        """Report whether the plist exists and `launchctl print` finds the job."""
-        res = await self._run([LAUNCHCTL, "print", f"system/{LABEL}"])
-        return BootStatus(self.plist.exists(), res.returncode == 0)
+        return await self.load(launchd_plist(script or boot_script()))

@@ -82,6 +82,7 @@ Not a vulnerability (these are documented limits, see "Limiti noti" in the READM
 | Rule `block drop out quick from any to <safemaxxing_block>` loaded in anchor `com.apple/safemaxxing` | first block (`block`, TUI `b`, menu bar Block IP, `--auto-block`, Auto-Block Mode, live suite) | stays until reboot, or `sudo pfctl -a com.apple/safemaxxing -F rules` |
 | Blocked IPs saved to `/Library/Application Support/safemaxxing/blocklist` (root, 0644) | every successful `block`, `unblock`, `flush` and `boot install` | `flush` empties it; delete the directory |
 | launchd job `/Library/LaunchDaemons/io.github.carlobaratta.safemaxxing.restore.plist`, log `/var/log/safemaxxing-boot.log` | `boot install` | `sudo safemaxxing boot uninstall`; delete the log |
+| launchd daemon `/Library/LaunchDaemons/io.github.carlobaratta.safemaxxing.watch.plist` running `watch --json` as root, logs `/var/log/safemaxxing-watch.log` and `.err` | `daemon install` | `sudo safemaxxing daemon uninstall`; delete the logs |
 | IPs in table `safemaxxing_block` | every block | `unblock <ip>`, or `flush` to empty the table |
 | Existing pf states to the blocked IP killed (`pfctl -k`) | every block | none; apps must reconnect |
 | pf enabled (`pfctl -E`) | first block, if pf was disabled | `sudo pfctl -d` |
@@ -101,6 +102,14 @@ reapplies the saved list at boot and enables pf (`pfctl -E`) when the list is no
 The boot job runs `/bin/sh` and `/sbin/pfctl` only. It never runs safemaxxing itself, which
 usually lives in a user-writable virtualenv: a root job pointing there would let any process
 running as that user execute code as root. The only input the job reads is the root-owned list.
+
+The `watch` daemon is different: it has to run safemaxxing itself as root. `daemon install`
+therefore refuses unless it runs from the frozen binary, and every file of that bundle and
+every directory above it is owned by root and not writable by group or others, with no symlink
+leading out of the bundle. In practice that is only the `.pkg` install under
+`/usr/local/libexec/safemaxxing`. The plist names the resolved bundle path, not the
+`/usr/local/bin` link. A source checkout, virtualenv or Homebrew install is refused. The check
+runs at install time; a later change to those files needs root anyway.
 
 `--auto-block` and `--auto-suspend` act on a heuristic (a sensor event followed by egress in
 the correlation window). Try them on a test machine before relying on them.
@@ -138,6 +147,8 @@ running as that user execute as root (the boot job avoids this by running only `
 | Source checkout, `sudo uv run …` | your user | development and testing on your own Mac only |
 | `.pkg` from a release | root (`/usr/local/libexec/safemaxxing`) | yes: the intended way |
 | Homebrew formula | your user (Homebrew prefix) | no: it has no `service` block, and `sudo` on it is the same risk as a virtualenv |
+
+`daemon install` enforces the second row: it only installs from a root-owned bundle.
 
 The release binary keeps library validation and DYLD variables enforced under the hardened
 runtime (no `disable-library-validation`, no `allow-dyld-environment-variables`), so another

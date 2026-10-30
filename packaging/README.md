@@ -25,6 +25,23 @@ uv pip install pyinstaller
 With `SIGN_IDENTITY` (and `INSTALLER_IDENTITY`) set and the matching Developer ID keys in the
 keychain, the same script signs the bundle and builds the `.pkg`.
 
+### Try the `watch` daemon without a release
+
+`daemon install` only accepts a root-owned bundle, so install the local build the way the
+`.pkg` would:
+
+```sh
+sudo rm -rf /usr/local/libexec/safemaxxing
+sudo mkdir -p /usr/local/libexec
+sudo cp -R dist/safemaxxing /usr/local/libexec/safemaxxing
+sudo chown -R root:wheel /usr/local/libexec/safemaxxing
+sudo chmod -R go-w /usr/local/libexec/safemaxxing
+sudo /usr/local/libexec/safemaxxing/safemaxxing daemon install
+/usr/local/libexec/safemaxxing/safemaxxing daemon status
+```
+
+Undo with `daemon uninstall`, then remove `/usr/local/libexec/safemaxxing`.
+
 ## Release flow
 
 Tag `vX.Y.Z` and push: `release.yml` runs the full gate on `macos-latest` and `macos-15-intel`
