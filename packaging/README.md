@@ -8,7 +8,7 @@ and ships it via a GitHub release and a Homebrew tap.
 | File | Role |
 | --- | --- |
 | `entrypoint.py` | PyInstaller entry point: runs the Typer CLI. |
-| `safemaxxing.spec` | PyInstaller spec, onedir, host architecture (bundles Textual + its `.tcss` and psutil). |
+| `safemaxxing.spec` | PyInstaller spec, onedir, host architecture (bundles Textual + its `.tcss`, psutil, and rumps/PyObjC for `menubar`). |
 | `entitlements.plist` | Hardened-runtime entitlements needed to notarize a Python build; library validation and DYLD variables stay enforced (see the file). |
 | `build_release.sh` | Build → codesign → tarball → signed `.pkg`. |
 | `../.github/workflows/release.yml` | Test matrix, keychain import, build, notarize, staple, publish. |
@@ -17,7 +17,7 @@ and ships it via a GitHub release and a Homebrew tap.
 ## Build locally (unsigned)
 
 ```sh
-uv sync
+uv sync --extra menubar      # the bundle includes rumps; the spec refuses to build without it
 uv pip install pyinstaller
 ./packaging/build_release.sh        # dist/safemaxxing-<version>-<arch>.tar.gz
 ```

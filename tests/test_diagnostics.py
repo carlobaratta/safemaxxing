@@ -12,6 +12,7 @@ from safemaxxing.diagnostics import (
     Status,
     check_full_disk_access,
     check_log_predicate,
+    check_menubar,
     check_pf_anchor,
     check_pf_status,
     check_pktap,
@@ -23,6 +24,7 @@ from safemaxxing.diagnostics import (
     summarize_sample,
 )
 from safemaxxing.firewall import ANCHOR, TABLE, CommandResult
+from safemaxxing.menubar import MENUBAR_HINT
 
 
 def fixed(mapping: dict[tuple[str, ...], CommandResult]):  # type: ignore[no-untyped-def]
@@ -291,3 +293,15 @@ def test_summary_lists_indicator_timeline_and_one_example_per_sensor() -> None:
     assert s.unparsed_examples == []
     assert s.sensors == {"camera": 1, "microphone": 1}
     assert len(s.parsed_examples) == 2  # max_examples=1, but microphone is a new kind
+
+
+def test_menubar_check_is_ok_when_rumps_imports() -> None:
+    check = check_menubar(available=lambda: True)
+    assert check.status is Status.OK
+
+
+def test_menubar_check_warns_with_the_install_hint_when_rumps_is_missing() -> None:
+    # Optional, like pktap: a missing extra must never FAIL doctor.
+    check = check_menubar(available=lambda: False)
+    assert check.status is Status.WARN
+    assert check.detail == MENUBAR_HINT

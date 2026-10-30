@@ -6,11 +6,18 @@
 # at runtime and Gatekeeper rejects it. The host architecture is used, so CI builds arm64 on
 # Apple Silicon and x86_64 on Intel and ships both.
 
+import importlib.util
 import os
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(SPEC)))
+
+# `safemaxxing menubar` needs rumps (and through it PyObjC). It is an optional extra, so a build
+# environment without it would silently ship a bundle whose menubar only prints an install
+# hint: refuse to build instead.
+if importlib.util.find_spec("rumps") is None:
+    raise SystemExit("rumps is not installed: run `uv sync --extra menubar` before building")
 
 # Textual ships its own stylesheets and widgets as package data and loads widgets dynamically.
 datas, binaries, hiddenimports = collect_all("textual")
@@ -18,6 +25,9 @@ datas, binaries, hiddenimports = collect_all("textual")
 # the tui package, so it must sit at the same path inside the bundle.
 datas += [(os.path.join(root, "src/safemaxxing/tui/safemaxxing.tcss"), "safemaxxing/tui")]
 hiddenimports += collect_submodules("safemaxxing")
+# menubar.py imports rumps inside a function, so name it here; PyInstaller's PyObjC hooks then
+# bring the Foundation/AppKit bridges and their extension modules.
+hiddenimports += ["rumps"]
 
 a = Analysis(
     [os.path.join(root, "packaging/entrypoint.py")],

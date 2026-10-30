@@ -28,10 +28,11 @@ elsewhere makes the next `git pull` there fail); everything else in `testlogs/` 
 - [ ] [P2] SNI / TLS ClientHello capture to name destinations without reverse DNS @network #sni
 - [ ] [P3] Menu bar's Open TUI Dashboard starts a second, non-root supervisor: share the running one (IPC) or launch it as root @ui #menubar
 - [ ] [P3] `permissions`: decide how to flag terminal apps (Terminal, iTerm) that hold sensitive grants by bundle id, given `doctor` asks for Full Disk Access on the terminal @sensors #tcc
-- [ ] [P3] Bundle rumps into the standalone build so `menubar` works from the `.pkg` @packaging #menubar
 - [ ] [P3] CI job on a macOS runner for the non-root parts of the live suite @ci #macos
 
 ## Completed
+
+- [x] [P3] Bundle rumps into the standalone build so `menubar` works from the `.pkg`: spec requires the `menubar` extra, release build syncs it, doctor checks it. Unsigned arm64 build: frozen `doctor` reports rumps available; GUI run and signed build not yet tried @packaging #menubar (done: 2026-10-29)
 
 - [x] [P2] Review fixes for #6–#10: menu bar stop state, once-per-alert auto-actions, action outcomes, glyphs, model lock, system-event filter, rebuild only on change; TCC WAL-aware read-only open, doctor WARN on an unread database, versioned interpreters, SUDO_USER; entitlements without library-validation/DYLD relaxations; Homebrew install fix and no root service; sign every Mach-O. 335 passed @review (done: 2026-10-29, b4cd714, 47c51e4)
 - [x] [P2] Packaging: PyInstaller onedir spec, `build_release.sh`, tag-triggered `release.yml` (notarize, staple, publish), Homebrew formula; signing not yet dry-run @packaging #release (done: 2026-10-28, cafd317)

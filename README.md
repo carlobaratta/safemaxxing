@@ -149,7 +149,7 @@ x86_64, un `.pkg` firmato e notarizzato e un tarball.
 - La formula Homebrew (`brew tap carlobaratta/tap && brew install safemaxxing`) installa il
   tarball nel prefisso di Homebrew, che è scrivibile dal tuo utente. Usala solo per i comandi
   senza root (`doctor`, `permissions`, `version`), mai con `sudo` o `sudo brew services`.
-- Il binario standalone non include rumps: `menubar` funziona solo da sorgente con l'extra.
+- Il binario standalone include rumps, quindi `menubar` funziona anche dal `.pkg`.
 
 ## Utilizzo
 
@@ -286,7 +286,8 @@ indicato solo da bundle id non viene segnalato: vedi [Limiti noti](#limiti-noti)
 - la validità del predicato di `log stream`;
 - se `tcpdump` riesce a catturare su pktap (per `--udp-flows`; mai FAIL, solo WARN);
 - i permessi TCC sensibili (vedi [Permessi TCC](#permessi-tcc)): WARN se c'è un titolare ad
-  alto rischio o se un database non si legge, quindi senza root è sempre WARN.
+  alto rischio o se un database non si legge, quindi senza root è sempre WARN;
+- se `menubar` può partire, cioè se rumps è installato (mai FAIL, solo WARN).
 
 Senza root, i tre controlli su pf e lo snapshot dei socket risultano "needs root", e quello
 di pktap dice "needs root".

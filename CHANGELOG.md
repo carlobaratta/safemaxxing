@@ -36,6 +36,9 @@ All notable changes are listed here. The format follows
   formula is for non-root use only; root use goes through the `.pkg`. Signing and notarization
   have not been run yet. See [packaging/README.md](packaging/README.md). (cafd317, b4cd714,
   47c51e4)
+- The standalone build includes rumps and PyObjC, so `menubar` works from the `.pkg`; the
+  spec refuses to build without the `menubar` extra. `doctor` gains a `menu bar (menubar)`
+  check that WARNs when rumps is missing.
 - [ARCHITECTURE.md](ARCHITECTURE.md) with Mermaid diagrams, and a threat model in
   [SECURITY.md](SECURITY.md). (eb9be43)
 - CI fails a hung test after 60 s (`pytest-timeout`) instead of running to the job timeout.
