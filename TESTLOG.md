@@ -14,6 +14,40 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
 - **Next steps:**
 -->
 
+## [2026-10-30 09:45 +0100] - `watch` daemon as root, across a reboot (Mac)
+
+- **Environment:** macOS 27, arm64, root via sudo, branch `watch-daemon` at d5e7713; local
+  unsigned PyInstaller build copied to `/usr/local/libexec/safemaxxing`, `root:wheel`, `go-w`.
+- **Goal:** first real run of `daemon install|status|uninstall`.
+- **Code changes:** none during the run; afterwards `daemon status` also reports launchd's
+  `last terminating signal`.
+- **Commands run:** `sudo uv run safemaxxing daemon install` (source checkout);
+  `sudo /usr/local/libexec/safemaxxing/safemaxxing daemon install --udp-flows`; `daemon status`;
+  `sudo pkill -f "libexec/safemaxxing/safemaxxing watch"`; a reboot; `daemon uninstall`;
+  `pgrep -fl tcpdump`.
+- **Result:**
+  - From the source checkout: `refusing to install the daemon`, as intended.
+  - From the root-owned bundle: installed, `state: running pid=7038`, children `tcpdump -k`
+    (pktap) and `log stream`; the plist's command line as expected.
+  - After `pkill`: restarted by launchd, `pid=7074`, `runs = 2`, `last terminating signal =
+    Terminated: 15` (status did not show it yet: fixed after the run).
+  - After the reboot the job started on its own: alert ids restarted at 1 at 09:41:04, about
+    6 s after the console login. 50 alerts by 09:42:41.
+  - `daemon uninstall`: plist removed, no tcpdump left.
+- **Problems / regressions:** the alerts right after login are almost all false positives.
+  - Spotify (702) and Claude (699) send `TCCAccessRequest` for `kTCCServiceMicrophone` /
+    `ScreenCapture` while they start, then connect within 0.1–0.8 s: 18 alerts at **critical**
+    (`camera+microphone+tcc` for Spotify), against Spotify's, Google's and Anthropic's servers.
+    tccd answered `Auth Right: Unknown (None)` for Claude's microphone request.
+  - Avast (`ListenEvent`, `SystemPolicyAllFiles`, `FocusStatus`), Claude Code, Brave's
+    notification service, Microsoft AutoUpdate and Bitwarden: medium alerts from other TCC
+    services.
+  - Alert 44: Avast's `FocusStatus` check, chained to `com.apple.WebKit.Networking` (2043, the
+    networking process of Avast's web view), raised as `camera+microphone+tcc` **critical**.
+  - With `--auto-block` (threshold high) these would have blocked those servers at every
+    login.
+- **Next steps:** the Next Up item on TCC requests at app launch.
+
 ## [2026-10-28 12:00 +0100] - Redesigned TUI run as root with `--udp-flows` (Mac)
 
 - **Environment:** macOS 27.0.1, arm64, root, `main` at 1b31341 plus the uncommitted TUI

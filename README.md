@@ -385,6 +385,10 @@ quelle installate.
 - `daemon uninstall` ferma il demone e cancella il plist; log e blocchi fatti restano.
 - Con `--auto-block` i blocchi vengono salvati come gli altri, quindi `boot install` li
   riapplica dopo il riavvio.
+- **Attenzione con `--auto-block`:** oggi molte app chiedono a TCC il microfono o lo schermo
+  mentre si avviano (Spotify, Claude), e questo produce alert `critical` subito dopo il login.
+  Con `--auto-block` il demone bloccherebbe i loro server a ogni accesso. Usalo senza
+  `--auto-block` finché non è risolto (vedi [TODO.md](TODO.md)).
 
 Il demone esegue safemaxxing stesso come root, quindi `install` rifiuta qualunque copia che un
 utente non root possa modificare: funziona solo dal binario del `.pkg` in

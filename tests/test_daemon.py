@@ -143,6 +143,14 @@ def test_an_executable_reached_through_a_symlink_is_checked_where_it_lives(
     assert "writable" in check(link, tmp_path)
 
 
+def test_parse_print_reports_the_signal_that_killed_the_job() -> None:
+    # As seen after `pkill` on macOS 27: launchd restarted the job (runs = 2).
+    text = (
+        "\tstate = running\n\truns = 2\n\tpid = 7074\n\tlast terminating signal = Terminated: 15\n"
+    )
+    assert parse_print(text) == ("running", 7074, "Terminated: 15")
+
+
 def test_parse_print_takes_the_jobs_own_fields() -> None:
     assert parse_print(LAUNCHCTL_PRINT) == ("running", 4242, "1")
     assert parse_print("\tstate = not running\n\tlast exit code = 0\n") == (

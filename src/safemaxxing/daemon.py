@@ -151,11 +151,17 @@ class DaemonStatus:
     arguments: tuple[str, ...] = ()
 
 
-_PRINT_FIELD_RE = re.compile(r"^\s*(state|pid|last exit code) = (.+?)\s*$", re.MULTILINE)
+_PRINT_FIELD_RE = re.compile(
+    r"^\s*(state|pid|last exit code|last terminating signal) = (.+?)\s*$", re.MULTILINE
+)
 
 
 def parse_print(text: str) -> tuple[str | None, int | None, str | None]:
-    """State, pid and last exit code from `launchctl print system/<label>` (first of each)."""
+    """State, pid and how the job last ended from `launchctl print system/<label>`.
+
+    The job's own fields come first; nested endpoint blocks repeat `state`, so the first of
+    each wins. A job killed by a signal has `last terminating signal` instead of an exit code.
+    """
     fields: dict[str, str] = {}
     for key, value in _PRINT_FIELD_RE.findall(text):
         fields.setdefault(key, value)
@@ -163,7 +169,7 @@ def parse_print(text: str) -> tuple[str | None, int | None, str | None]:
     return (
         fields.get("state"),
         int(pid) if pid and pid.isdigit() else None,
-        fields.get("last exit code"),
+        fields.get("last terminating signal") or fields.get("last exit code"),
     )
 
 
