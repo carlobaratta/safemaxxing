@@ -228,7 +228,12 @@ def menubar(
         udp_flows,
     )
     config = MenuBarConfig(include_system=include_system)
-    run_menubar(supervisor, _firewall(), ProcessController(), config)
+    console.print("menubar running: look for the safemaxxing icon in the menu bar; Ctrl-C quits")
+
+    def warn(message: str) -> None:
+        console.print(f"[yellow]![/] {escape(message)}")
+
+    run_menubar(supervisor, _firewall(), ProcessController(), config, warn=warn)
 
 
 def _alert_json(alert: Alert) -> str:

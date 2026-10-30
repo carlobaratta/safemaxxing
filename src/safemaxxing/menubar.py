@@ -20,6 +20,9 @@ window after its last access rather than until a kernel signal says otherwise.
 
 from __future__ import annotations
 
+import os
+import shlex
+import sys
 import threading
 import time
 from collections import deque
@@ -307,13 +310,77 @@ def menubar_available() -> bool:
 
 MENUBAR_HINT = "the menu bar needs rumps: from a source checkout run  uv sync --extra menubar"
 
+HIDDEN_ICON_HINT = (
+    "macOS is not showing the menu-bar icon. Either the menu bar is full (on a Mac with a "
+    "notch, icons that do not fit beside it are hidden: quit or Cmd-drag some away), or it is "
+    "turned off under System Settings > Menu Bar. safemaxxing keeps running; Ctrl-C quits."
+)
+
+# Seconds to give AppKit to lay the status item out before judging whether it is on screen.
+ICON_CHECK_DELAY_S = 3
+
+
+def status_item_on_screen(item: Any) -> bool | None:
+    """Whether the `NSStatusItem` was laid out in a visible menu bar; None when it cannot tell.
+
+    A status item macOS has no room for, or has been told to hide, still exists and reports
+    `isVisible()`, but its window never gets a height and is never unoccluded: that is the
+    only trace, so it is what this checks.
+    """
+    try:
+        window = item.button().window()
+        laid_out = window.frame().size.height > 0
+        # NSWindowOcclusionStateVisible
+        unoccluded = bool(window.occlusionState() & 2)
+    except Exception:
+        return None
+    return laid_out and unoccluded
+
+
+def tui_command(executable: str, euid: int) -> str:
+    """The shell command that runs the TUI with the same binary and privileges as this process.
+
+    A bare `safemaxxing tui` only works when the command is on the user's PATH, and a source
+    checkout installs it inside `.venv` only, so the new Terminal shell answered "command not
+    found". `executable` is an absolute path instead; under root it goes through `sudo`, since
+    the TUI needs root for the firewall and pktap as much as the menu bar does.
+    """
+    argv = [executable, "tui"]
+    if euid == 0:
+        argv.insert(0, "sudo")
+    return shlex.join(argv)
+
+
+def current_executable() -> str:
+    """Absolute path of the running `safemaxxing`: the frozen binary or the console script."""
+    if getattr(sys, "frozen", False):
+        return sys.executable
+    return os.path.abspath(sys.argv[0])
+
+
+# The command goes in as an argument, not spliced into the script, so a path with quotes or
+# spaces needs no AppleScript escaping.
+_OPEN_TERMINAL_SCRIPT = (
+    "on run argv",
+    'tell application "Terminal"',
+    "activate",
+    "do script (item 1 of argv)",
+    "end tell",
+    "end run",
+)
+
 
 def open_tui() -> None:
-    """Open a Terminal window running `safemaxxing tui` (macOS `osascript`)."""
+    """Open a Terminal window running the TUI (macOS `osascript`)."""
     import subprocess
 
-    script = 'tell application "Terminal" to do script "safemaxxing tui"'
-    subprocess.run(["/usr/bin/osascript", "-e", script], check=False)
+    args = ["/usr/bin/osascript"]
+    for line in _OPEN_TERMINAL_SCRIPT:
+        args += ["-e", line]
+    args.append(tui_command(current_executable(), os.geteuid()))
+    # osascript prints the new tab ("tab 1 of window id ..."), which would land in the
+    # menu bar's own terminal.
+    subprocess.run(args, check=False, stdout=subprocess.DEVNULL)
 
 
 def run_menubar(
@@ -321,8 +388,12 @@ def run_menubar(
     firewall: Any,
     processes: Any,
     config: MenuBarConfig | None = None,
+    warn: Callable[[str], None] = print,
 ) -> None:
     """Render the menu bar and drive it from `supervisor.stream()` until the app quits.
+
+    `warn` reaches the terminal it was started from: whether the icon made it into the menu
+    bar, and why monitoring stopped, also show there, since a hidden icon shows nothing.
 
     macOS only, and requires the `menubar` extra; raises `RuntimeError` otherwise. The stream
     runs on a background asyncio thread feeding a `MenuModel` via `pump_updates`, which marks
@@ -446,15 +517,24 @@ def run_menubar(
     shown: MenuSnapshot | None = None
     ticks = 0
 
+    def check_icon() -> None:
+        # rumps keeps the NSStatusItem on its private delegate; without it there is nothing to say.
+        item = getattr(getattr(app, "_nsapp", None), "nsstatusitem", None)
+        if item is not None and status_item_on_screen(item) is False:
+            warn(HIDDEN_ICON_HINT)
+
     def refresh(_timer: Any) -> None:
         nonlocal notified_stop, shown, ticks
         snap = model.snapshot()
         app.title = snap.title
         if model.stopped_reason and not notified_stop:
             notified_stop = True
+            warn(model.stopped_reason)
             # rumps refuses to notify from an interpreter without a bundle id; the icon still shows.
             with contextlib.suppress(RuntimeError):
                 rumps.notification("safemaxxing", "Monitoring stopped", model.stopped_reason)
+        if ticks == ICON_CHECK_DELAY_S:
+            check_icon()
         if ticks % model.config.blocked_refresh_ticks == 0:
             refresh_blocked()
         ticks += 1
