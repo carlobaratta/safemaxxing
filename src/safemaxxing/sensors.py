@@ -15,7 +15,7 @@ from pathlib import PurePosixPath
 
 import psutil
 
-from safemaxxing.models import Event, SensorType, is_system_path
+from safemaxxing.models import Event, IndicatorState, SensorType, is_system_path
 from safemaxxing.network import bundle_id_for_app, bundle_id_for_exe, enclosing_apps
 
 ProcessInfo = Callable[[int], tuple[str, str | None] | None]
@@ -426,7 +426,13 @@ class SensorEventParser:
     It also drops coreaudiod's TCC *preflights*. Only tccd's REQUEST_MSG says `preflight=true`,
     but every line of one request shares its activityIdentifier (macOS 27.0.1)."""
 
-    def __init__(self, max_requests: int = 1024, merge_s: float = INDICATOR_MERGE_S) -> None:
+    def __init__(
+        self,
+        max_requests: int = 1024,
+        merge_s: float = INDICATOR_MERGE_S,
+        on_indicator: Callable[[IndicatorState], None] | None = None,
+    ) -> None:
+        self._on_indicator = on_indicator
         self._active: frozenset[tuple[str, str]] = frozenset()
         # Attributions that went off, and when: one coming back within `merge_s` is not new.
         self._off_since: dict[tuple[str, str], float] = {}
@@ -476,6 +482,12 @@ class SensorEventParser:
             self._off_since[gone] = timestamp
         horizon = timestamp - self._merge_s
         added = [a for a in current - self._active if self._off_since.pop(a, horizon) <= horizon]
+        if self._on_indicator is not None and current != self._active:
+            # Raw edges, off included and flicker not merged: the lockdown leases want both.
+            active = frozenset(
+                (INDICATOR_SENSORS.get(kind, SensorType.TCC), bundle) for kind, bundle in current
+            )
+            self._on_indicator(IndicatorState(timestamp, active))
         self._active = current
         self._off_since = {k: t for k, t in self._off_since.items() if t > horizon}
         return [
@@ -607,8 +619,10 @@ class SensorListener:
         bundle_exes: BundleExes = possible_exes_for_bundle,
         bundle_lookup_timeout_s: float = 1.0,
         buffer_entries: int = 1024,
+        on_indicator: Callable[[IndicatorState], None] | None = None,
     ) -> None:
         self._command = list(command) if command is not None else log_stream_command()
+        self._on_indicator = on_indicator
         self._cooldown = _Cooldown(cooldown_s)
         self._enrich = _ProcessEnricher(process_lookup)
         self._bundle_exes = bundle_exes
@@ -698,7 +712,7 @@ class SensorListener:
     async def events(self) -> AsyncIterator[Event]:
         queue: asyncio.Queue[dict[str, object] | None] = asyncio.Queue(maxsize=self._buffer_entries)
         reader = asyncio.create_task(self._read_into(queue))
-        parser = SensorEventParser()
+        parser = SensorEventParser(on_indicator=self._on_indicator)
         try:
             while True:
                 entry = await queue.get()

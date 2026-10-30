@@ -7,6 +7,7 @@ import contextlib
 import dataclasses
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
@@ -24,7 +25,12 @@ from safemaxxing.daemon import PLIST as DAEMON_PLIST
 from safemaxxing.daemon import WatchDaemon, WatchOptions, recent_alerts, unsafe_reason
 from safemaxxing.diagnostics import Status, collect_log_sample, run_doctor, summarize_sample
 from safemaxxing.firewall import BLOCKLIST, BlockList, PfFirewall, ProcessController, is_root
-from safemaxxing.models import ActionResult, Alert, Event, Severity
+from safemaxxing.lockdown.controller import LockdownController
+from safemaxxing.lockdown.dns import BLOCKLIST_CACHE, fetch_blocklist, load_blocklist
+from safemaxxing.lockdown.sni import client_hellos
+from safemaxxing.lockdown.watchdog import PLIST as WATCHDOG_PLIST
+from safemaxxing.lockdown.watchdog import WatchdogJob
+from safemaxxing.models import ActionResult, Alert, Event, IndicatorState, Severity
 from safemaxxing.pktap import pktap_unavailable
 from safemaxxing.sensors import (
     DISCOVERY_PREDICATE,
@@ -50,6 +56,10 @@ daemon_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(daemon_app, name="daemon")
+paranoia_app = typer.Typer(
+    help="Paranoia Mode: the dead-man watchdog and the DNS blocklist.", no_args_is_help=True
+)
+app.add_typer(paranoia_app, name="paranoia")
 
 WindowMs = Annotated[int, typer.Option("--window-ms", help="Correlation window in ms.", min=1)]
 DecayWindowMs = Annotated[
@@ -130,6 +140,7 @@ def _supervisor(
     tcp_flows: bool = False,
     throughput: bool = False,
     decay_window_ms: int = 0,
+    on_indicator: Callable[[IndicatorState], None] | None = None,
 ) -> Supervisor:
     if (udp_flows or tcp_flows or throughput) and (problem := pktap_unavailable()):
         flag = "--udp-flows" if udp_flows else "--tcp-flows" if tcp_flows else "--throughput"
@@ -150,6 +161,7 @@ def _supervisor(
         udp_flows=udp_flows,
         tcp_flows=tcp_flows,
         throughput=throughput,
+        on_indicator=on_indicator,
     )
 
 
@@ -203,6 +215,10 @@ def tui(
     from safemaxxing.tui.app import SafemaxxingApp
 
     _warn_if_not_root()
+    # Paranoia Mode (P) needs root; without it the button only says so.
+    lockdown = (
+        LockdownController(blocklist=load_blocklist(), hellos=client_hellos) if is_root() else None
+    )
     supervisor = _supervisor(
         window_ms,
         poll_ms,
@@ -215,8 +231,9 @@ def tui(
         tcp_flows,
         throughput,
         decay_window_ms,
+        on_indicator=lockdown.observe_indicator if lockdown is not None else None,
     )
-    SafemaxxingApp(supervisor).run()
+    SafemaxxingApp(supervisor, lockdown=lockdown).run()
 
 
 @app.command()
@@ -649,6 +666,40 @@ def sample(
             console.print(f"[bold]{name}[/]: {escape(sensors)}  levels: {escape(levels)}")
         for example in s.parsed_examples:
             console.print(f"[green]parsed {name}:[/] {escape(example)}")
+
+
+@paranoia_app.command("install")
+def paranoia_install() -> None:
+    """Load the watchdog that restores pf if safemaxxing stops while Paranoia Mode is on.
+
+    Idle until Paranoia Mode arms it; Paranoia Mode refuses to start without it.
+    """
+    _require_root()
+    problem = asyncio.run(WatchdogJob().install())
+    if problem:
+        console.print(f"[bold red]launchctl bootstrap failed:[/] {escape(problem)}")
+        raise typer.Exit(1)
+    console.print(f"[green]installed {WATCHDOG_PLIST}[/]")
+
+
+@paranoia_app.command("uninstall")
+def paranoia_uninstall() -> None:
+    """Unload and delete the watchdog job (Paranoia Mode will refuse to start)."""
+    _require_root()
+    asyncio.run(WatchdogJob().uninstall())
+    console.print(f"[green]removed {WATCHDOG_PLIST}[/]")
+
+
+@paranoia_app.command("blocklist")
+def paranoia_blocklist(
+    url: Annotated[str, typer.Option(help="HTTPS URL of a hosts or Adblock Plus list.")] = (
+        "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts"
+    ),
+) -> None:
+    """Download the DNS blocklist the sinkhole uses (run it outside Paranoia Mode)."""
+    _require_root()
+    blocklist = asyncio.run(fetch_blocklist(url))
+    console.print(f"[green]{len(blocklist)} domains saved to {BLOCKLIST_CACHE}[/]")
 
 
 if __name__ == "__main__":

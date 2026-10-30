@@ -31,10 +31,22 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.events import DescendantFocus
-from textual.widgets import DataTable, Footer, Header, Input, RichLog, TabbedContent, TabPane
+from textual.timer import Timer
+from textual.widgets import (
+    Button,
+    DataTable,
+    Footer,
+    Header,
+    Input,
+    RichLog,
+    TabbedContent,
+    TabPane,
+)
 
 from safemaxxing.codesign import signing_identity
 from safemaxxing.firewall import BlockList, PfFirewall, ProcessController, is_root
+from safemaxxing.lockdown.controller import LockdownController, LockdownNotice, LockdownState
+from safemaxxing.lockdown.leases import LeaseSource
 from safemaxxing.models import (
     PKTAP_STATUS,
     ActionResult,
@@ -43,6 +55,7 @@ from safemaxxing.models import (
     NetworkConnection,
     Severity,
 )
+from safemaxxing.network import bundle_id_for_exe
 from safemaxxing.supervisor import Supervisor
 from safemaxxing.tui.badges import (
     MUTED,
@@ -161,8 +174,14 @@ class SafemaxxingApp(App[None]):
         Binding("slash", "filter", "Filter", key_display="/"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("c", "clear_feed", "Clear feed"),
+        # Not a priority binding: typed into the filter box, P is just a letter.
+        Binding("P", "panic", "PANIC", key_display="P"),
+        Binding("g", "lease", "Grant app"),
         Binding("q", "quit", "Quit"),
     ]
+    PANIC_OFF = "◉ PANIC · LOCKDOWN"
+    PANIC_ON = "■ LOCKDOWN ON · press to leave"
+    BLINK_S = 0.5
 
     def __init__(
         self,
@@ -171,11 +190,17 @@ class SafemaxxingApp(App[None]):
         processes: ProcessController | None = None,
         signer: Signer = signing_identity,
         root: Callable[[], bool] = is_root,
+        lockdown: LockdownController | None = None,
     ) -> None:
         super().__init__()
         self.supervisor = supervisor
         self.firewall = firewall or PfFirewall(store=BlockList())
         self.processes = processes or ProcessController()
+        # Built by the CLI only when root; None leaves the panic button explaining why.
+        self.lockdown = lockdown
+        if lockdown is not None:
+            lockdown.notify = self.show_notice
+        self._blink_timer: Timer | None = None
         self._signer = signer
         self._root = root
         self.alerts: dict[str, Alert] = {}
@@ -215,6 +240,7 @@ class SafemaxxingApp(App[None]):
                     with TabPane("Active egress", id="tab-egress"):
                         yield DataTable(id="connections", cursor_type="row")
             with Vertical(id="side"):
+                yield Button(self.PANIC_OFF, id="panic", variant="error")
                 yield FirewallPanel(id="firewall", classes="pane")
                 yield InspectorPanel(id="inspector", classes="pane")
         yield StatusBar(id="status")
@@ -252,8 +278,11 @@ class SafemaxxingApp(App[None]):
                 elif isinstance(update, Event):
                     self._events_seen += 1
                     self.log_event(update)
-                elif update.status == PKTAP_STATUS:
-                    self._flows_seen += 1
+                elif isinstance(update, NetworkConnection):
+                    if update.status == PKTAP_STATUS:
+                        self._flows_seen += 1
+                    if self.lockdown is not None:
+                        self.lockdown.audit_flow(update)
         except Exception as exc:
             self.log_line(Text(f"supervisor stopped: {exc}", style="bold #e06c75"))
             self.notify(f"Supervisor stopped: {exc}", severity="error", timeout=10)
@@ -503,6 +532,11 @@ class SafemaxxingApp(App[None]):
             return
         self.refresh_connections()
         self._refresh_feed_rows()
+        if self.lockdown is not None:
+            self.sub_title = self.lockdown.summary()
+            # The watchdog may have taken pf back on its own: drop the red theme with it.
+            if self.lockdown.state is LockdownState.OFF and self._blink_timer is not None:
+                self._set_lockdown_theme(False)
         self.stats = self._sample_stats()
         self.query_one(FirewallPanel).show(self.pf_status, self.stats)
         self.query_one(StatusBar).show(self.stats)
@@ -695,6 +729,86 @@ class SafemaxxingApp(App[None]):
         box.value = ""
         box.remove_class("-open")
         self.query_one("#feed", DataTable).focus()
+
+    # Paranoia Mode
+
+    def show_notice(self, notice: LockdownNotice) -> None:
+        """A lockdown notice in the event log; HIGH and above also as a toast."""
+        ink = SEVERITY_INK[notice.severity]
+        self.log_line(Text.assemble(severity_badge(notice.severity), (f" {notice.message}", ink)))
+        if notice.severity >= Severity.HIGH:
+            self.notify(notice.message, title="Paranoia Mode", severity="error", timeout=10)
+        if notice.severity is Severity.CRITICAL:
+            self.bell()
+
+    def _set_lockdown_theme(self, on: bool) -> None:
+        """Turn the whole dashboard red with blinking borders, or back to normal."""
+        screen = self.screen_stack[0]
+        screen.set_class(on, "-lockdown")
+        if self._blink_timer is not None:
+            self._blink_timer.stop()
+            self._blink_timer = None
+        screen.remove_class("-blink")
+        if on:
+            self._blink_timer = self.set_interval(self.BLINK_S, self._blink)
+        self.query_one("#panic", Button).label = self.PANIC_ON if on else self.PANIC_OFF
+
+    def _blink(self) -> None:
+        self.screen_stack[0].toggle_class("-blink")
+
+    @on(Button.Pressed, "#panic")
+    async def _panic_pressed(self) -> None:
+        await self.action_panic()
+
+    async def action_panic(self) -> None:
+        """Enter Paranoia Mode at once; leaving asks first (it reopens egress)."""
+        lockdown = self.lockdown
+        if lockdown is None:
+            self.notify("Paranoia Mode needs root (run with sudo)", severity="error")
+            return
+        if lockdown.state is LockdownState.ARMING:
+            self.notify("Paranoia Mode is arming…", severity="warning")
+            return
+        if lockdown.state is LockdownState.OFF:
+            # The red is shown before pf is touched, so the press is felt at once.
+            self._set_lockdown_theme(True)
+            result = await lockdown.enter()
+            if not result.ok:
+                self._set_lockdown_theme(False)
+            self.report(result)
+            return
+
+        def on_answer(confirmed: bool | None) -> None:
+            if confirmed:
+                self.leave_lockdown()
+
+        self.push_screen(ConfirmScreen("Leave Paranoia Mode and reopen egress?"), on_answer)
+
+    @work(exclusive=True, group="lockdown")
+    async def leave_lockdown(self) -> None:
+        """Leave Paranoia Mode and drop the red theme once pf is back to v0.2."""
+        assert self.lockdown is not None
+        result = await self.lockdown.leave()
+        if result.ok:
+            self._set_lockdown_theme(False)
+        self.report(result)
+
+    def action_lease(self) -> None:
+        """Grant (or withdraw) the selected connection's app a manual lease."""
+        conn = self._require_selection()
+        if conn is None or self.lockdown is None:
+            return
+        bundle_id = conn.bundle_id or (bundle_id_for_exe(conn.exe_path) if conn.exe_path else None)
+        if bundle_id is None:
+            self.notify(f"{conn.process_name} is not inside an app bundle", severity="warning")
+            return
+        lease = self.lockdown.leases.get(bundle_id)
+        if lease is not None and LeaseSource.MANUAL in lease.sources:
+            self.lockdown.release_manual(bundle_id)
+            self.notify(f"manual lease withdrawn: {bundle_id}")
+        else:
+            self.lockdown.grant_manual(bundle_id)
+            self.notify(f"manual lease granted: {bundle_id}")
 
     def action_clear_feed(self) -> None:
         """Empty the feed and the alerts held by the UI; the event log and pf are untouched."""
