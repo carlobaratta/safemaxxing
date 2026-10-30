@@ -24,6 +24,8 @@ All notable changes are listed here. The format follows
   - The terminal it runs in says where to look and that Ctrl-C quits, warns after 3 s when
     macOS is not showing the icon (a full menu bar beside the notch, or the icon turned off in
     System Settings), and prints why monitoring stopped.
+  - Open TUI Dashboard runs the same binary by its absolute path, through `sudo` when the menu
+    bar runs as root, so it also works from a source checkout that is not on PATH.
 - `safemaxxing permissions` lists the apps holding camera, microphone, screen capture, input
   monitoring, accessibility and full disk access grants in the system and per-user TCC
   databases. It flags a grant as high-risk when the client is a script interpreter, lives

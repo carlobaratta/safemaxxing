@@ -20,6 +20,9 @@ window after its last access rather than until a kernel signal says otherwise.
 
 from __future__ import annotations
 
+import os
+import shlex
+import sys
 import threading
 import time
 from collections import deque
@@ -334,12 +337,50 @@ def status_item_on_screen(item: Any) -> bool | None:
     return laid_out and unoccluded
 
 
+def tui_command(executable: str, euid: int) -> str:
+    """The shell command that runs the TUI with the same binary and privileges as this process.
+
+    A bare `safemaxxing tui` only works when the command is on the user's PATH, and a source
+    checkout installs it inside `.venv` only, so the new Terminal shell answered "command not
+    found". `executable` is an absolute path instead; under root it goes through `sudo`, since
+    the TUI needs root for the firewall and pktap as much as the menu bar does.
+    """
+    argv = [executable, "tui"]
+    if euid == 0:
+        argv.insert(0, "sudo")
+    return shlex.join(argv)
+
+
+def current_executable() -> str:
+    """Absolute path of the running `safemaxxing`: the frozen binary or the console script."""
+    if getattr(sys, "frozen", False):
+        return sys.executable
+    return os.path.abspath(sys.argv[0])
+
+
+# The command goes in as an argument, not spliced into the script, so a path with quotes or
+# spaces needs no AppleScript escaping.
+_OPEN_TERMINAL_SCRIPT = (
+    "on run argv",
+    'tell application "Terminal"',
+    "activate",
+    "do script (item 1 of argv)",
+    "end tell",
+    "end run",
+)
+
+
 def open_tui() -> None:
-    """Open a Terminal window running `safemaxxing tui` (macOS `osascript`)."""
+    """Open a Terminal window running the TUI (macOS `osascript`)."""
     import subprocess
 
-    script = 'tell application "Terminal" to do script "safemaxxing tui"'
-    subprocess.run(["/usr/bin/osascript", "-e", script], check=False)
+    args = ["/usr/bin/osascript"]
+    for line in _OPEN_TERMINAL_SCRIPT:
+        args += ["-e", line]
+    args.append(tui_command(current_executable(), os.geteuid()))
+    # osascript prints the new tab ("tab 1 of window id ..."), which would land in the
+    # menu bar's own terminal.
+    subprocess.run(args, check=False, stdout=subprocess.DEVNULL)
 
 
 def run_menubar(
