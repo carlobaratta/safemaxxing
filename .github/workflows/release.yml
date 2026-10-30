@@ -42,6 +42,30 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
+      # Fail before any setup, naming each missing secret (never its value): without this the
+      # first sign of a missing secret is `security import` rejecting an empty .p12.
+      - name: Check signing and notarization secrets
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          MACOS_INSTALLER_IDENTITY: ${{ secrets.MACOS_INSTALLER_IDENTITY }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+          AC_API_PRIVATE_KEY: ${{ secrets.AC_API_PRIVATE_KEY }}
+        run: |
+          missing=0
+          for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD KEYCHAIN_PASSWORD \
+            MACOS_SIGN_IDENTITY MACOS_INSTALLER_IDENTITY \
+            AC_API_KEY_ID AC_API_ISSUER_ID AC_API_PRIVATE_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error title=Missing secret::$name is not set; see packaging/README.md#required-repository-secrets"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
         with:
