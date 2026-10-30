@@ -226,7 +226,9 @@ async def test_tui_shows_alert_and_enforces() -> None:
     signals: list[tuple[int, int]] = []
     app = make_app(pf, signals)
     async with app.run_test() as pilot:
-        await wait_for(pilot, lambda: bool(app.alerts))
+        # The alert lands in `alerts` at once; its selection follows a message later, when the
+        # feed handles RowHighlighted (macos-latest, 3.12, 2026-10-30: asserted in between).
+        await wait_for(pilot, lambda: bool(app.alerts) and app.selection is not None)
         table = app.query_one("#feed", DataTable)
         assert table.row_count == 1
         assert app.selection is not None and app.selection.alert is not None
