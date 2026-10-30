@@ -644,15 +644,12 @@ class SensorListener:
                 await proc.wait()
             stderr_task.cancel()
 
-    def _mark_indicator_system(self, event: Event) -> Event:
-        """Indicator events carry only a bundle id, which any app can claim. They count as system
-        (hidden from display; still correlated) only if every process that may carry that id
-        runs from a SIP-protected path."""
-        if (
-            event.subsystem != SUBSYSTEM_CONTROLCENTER
-            or event.pid is not None
-            or not event.bundle_id
-        ):
+    def _mark_bundle_system(self, event: Event) -> Event:
+        """Indicator events, and locationd's for a client named by bundle id, carry only that
+        id, which any app can claim. They count as system (hidden from display; still
+        correlated) only if every process that may carry that id runs from a SIP-protected
+        path."""
+        if event.pid is not None or not event.bundle_id or event.system:
             return event
         exes = self._bundle_exes(event.bundle_id)
         if exes and all(is_system_path(exe) for exe in exes):
@@ -710,12 +707,13 @@ class SensorListener:
                 for event in parser.parse(entry):
                     if not self._cooldown.accept(event):
                         continue
-                    if event.subsystem == SUBSYSTEM_CONTROLCENTER:
+                    if event.pid is None and event.bundle_id and not event.system:
                         # Walks the process table (~60-100 ms cold): keep it off the event loop,
-                        # and leave the event visible if it takes too long.
+                        # and leave the event visible if it takes too long. Voice Memos' location
+                        # (`Client: <user>:icom.apple.VoiceMemos:`) showed without this.
                         with contextlib.suppress(TimeoutError):
                             event = await asyncio.wait_for(
-                                asyncio.to_thread(self._mark_indicator_system, event),
+                                asyncio.to_thread(self._mark_bundle_system, event),
                                 self._bundle_lookup_timeout_s,
                             )
                     yield self._enrich(event)

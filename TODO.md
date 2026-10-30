@@ -15,12 +15,11 @@ elsewhere makes the next `git pull` there fail); everything else in `testlogs/` 
 
 ## Next Up
 
-- [ ] [P2] Watch the redesigned `sudo uv run safemaxxing tui --udp-flows` for freezes for a few minutes of normal browsing plus a Meet call in Brave: feed, pf panel (ENABLED/ACTIVE), pktap pkt/s, timeline, `b`/`s` badges, `/` filter, codesign line @ui #tui #dns
-- [ ] [P2] Live `watch` with Photo Booth / Voice Memos: confirm they are hidden as system apps (`/System/Applications`) and shown with `--include-system` @correlation #macos
+- [ ] [P2] TUI with alerts in it: timeline (Enter/space), `/` filter, codesign line in the inspector, `b`/`s` badges. A Meet call on 2026-10-30 ran without a freeze but raised no alert (no UDP on that network), so these were not exercised @ui #tui
 - [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design; proposal: keep it and say so in SECURITY.md)
-- [ ] [P2] After the TCC-request fix, log in with the daemon running and check the first minutes of `/var/log/safemaxxing-watch.log`: no critical or high alert for Spotify/Claude/Avast; then a Meet call in Brave still gives camera+microphone critical @correlation #tcc
+- [ ] [P2] Meet call in Brave on a network that lets UDP through (e.g. a phone hotspot), with the daemon and `tui --udp-flows`: camera+microphone critical expected. On `Host-001` pktap saw 0 UDP pkt/s during the call (TESTLOG 2026-10-30 11:07), as on 2026-10-27; there, try `--tcp-flows --throughput` @correlation #udp
 - [ ] [P2] Dry-run signing and notarization with a real Developer ID before the first tag: `build_release.sh` with `SIGN_IDENTITY`/`INSTALLER_IDENTITY`, `notarytool submit`, then run the signed binary (are `allow-jit` / `allow-unsigned-executable-memory` both needed?) @packaging #release
-- [ ] [P2] First run of `safemaxxing menubar` in a real GUI session: glyphs, submenus while open, Block/Unblock/Freeze outcomes, ⊘ when the stream stops @ui #menubar
+- [ ] [P2] Menu bar actions with a real alert: Block IP, Unblock, Freeze process and their ✓/✗ lines, submenus while open (glyph ● during a call and ⊘ plus notification after killing `log stream` verified 2026-10-30) @ui #menubar
 
 ## Backlog / Future
 
@@ -32,6 +31,7 @@ elsewhere makes the next `git pull` there fail); everything else in `testlogs/` 
 
 ## Completed
 
+- [x] [P2] v0.2 root checks (TESTLOG 2026-10-30 11:07): `macos_validate.sh` all green (doctor 0 FAIL, live suite 5 passed / 2 skipped because 1.1.1.1 was already blocked); Photo Booth and Voice Memos camera/mic hidden without `--include-system` and shown with it; Voice Memos' location leaked (locationd names it by bundle id only), fixed by checking bundle-only location events like indicator ones; daemon after a reboot: 27 alerts in the first minute after login, all medium `tcc`, none high or critical; TUI ran through a Meet call without freezing @macos #validation (done: 2026-10-30)
 - [x] [P1] False critical alerts at app launch: a TCC request is `tcc` (medium) whatever the service; camera/mic/screen only from the indicator and cmio; `strongest` folds a request into the use that follows. Real samples: the indicator is 50-400 ms after the request (Brave, Photo Booth, ScreenCaptureKit). Simulator: Spotify-at-login scenario is one medium `tcc` alert; Photo Booth is high camera @correlation #tcc (done: 2026-10-30)
 - [x] [P2] `watch` daemon run as root: refuses the source checkout, installs from a root-owned bundle under `/usr/local/libexec`, restarted by launchd after `pkill`, started on its own after a reboot, `uninstall` leaves no tcpdump; `daemon status` now shows the terminating signal. Found the launch-time false positives (Next Up P1) @packaging #launchd (done: 2026-10-30, TESTLOG 09:45)
 - [x] [P2] launchd daemon for headless `watch`: `daemon install|status|uninstall`, KeepAlive LaunchDaemon running `watch --json` with watch's options, alerts to `/var/log/safemaxxing-watch.log`; installs only from a root-owned frozen bundle (`unsafe_reason`); `LaunchdJob` shared with `boot`. Frozen build runs `daemon status`; not yet run as root @packaging #launchd (done: 2026-10-30)

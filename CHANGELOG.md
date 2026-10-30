@@ -86,6 +86,10 @@ All notable changes are listed here. The format follows
 
 ### Changed
 
+- Location events that locationd attributes by bundle id alone (Voice Memos:
+  `<user>:icom.apple.VoiceMemos:`) count as system when every process carrying that id runs
+  from a SIP path, as indicator events already did, so they are hidden without
+  `--include-system`.
 - A TCC request no longer counts as use of the camera, microphone or screen: it is a `tcc`
   event (medium), whatever the service. Apps send these requests while they start, so the
   first daemon run saw ~18 critical alerts right after login (Spotify, Claude) that
