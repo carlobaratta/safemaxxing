@@ -13,16 +13,16 @@
 class Safemaxxing < Formula
   desc "Headless privacy supervisor and egress firewall for macOS"
   homepage "https://github.com/carlobaratta/safemaxxing"
-  version "0.1.1"
+  version "0.2.0"
   license "MIT"
 
   on_arm do
-    url "https://github.com/carlobaratta/safemaxxing/releases/download/v0.1.1/safemaxxing-0.1.1-arm64.tar.gz"
+    url "https://github.com/carlobaratta/safemaxxing/releases/download/v0.2.0/safemaxxing-0.2.0-arm64.tar.gz"
     sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   end
 
   on_intel do
-    url "https://github.com/carlobaratta/safemaxxing/releases/download/v0.1.1/safemaxxing-0.1.1-x86_64.tar.gz"
+    url "https://github.com/carlobaratta/safemaxxing/releases/download/v0.2.0/safemaxxing-0.2.0-x86_64.tar.gz"
     sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   end
 
