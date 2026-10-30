@@ -6,6 +6,12 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-30
+
+A menu bar, a TCC permissions audit, a root daemon for `watch`, a UDP egress source (pktap)
+and a redesigned TUI. Checked as root on macOS 27.0.1 on 2026-10-30: see TESTLOG.md. The
+release build is not signed or notarized yet.
+
 ### Added
 
 - `safemaxxing daemon install|status|uninstall`: a root LaunchDaemon that keeps `watch --json`
@@ -199,6 +205,7 @@ First tagged release (alpha). Validated on macOS 27.0.1, Apple Silicon: see TEST
   It no longer reports a missing anchor. (34c9f53, fb802ee)
 - Severity markup (`[high]`) was swallowed in the text output of `watch`. (c6cdc44)
 
-[Unreleased]: https://github.com/carlobaratta/safemaxxing/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/carlobaratta/safemaxxing/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/carlobaratta/safemaxxing/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/carlobaratta/safemaxxing/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/carlobaratta/safemaxxing/releases/tag/v0.1.0

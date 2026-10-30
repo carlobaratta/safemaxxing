@@ -32,6 +32,6 @@ body:
     attributes:
       label: macOS version, and safemaxxing version or commit
       description: "`sw_vers -productVersion`, `uname -m`, and `safemaxxing version` or `git rev-parse --short HEAD`."
-      placeholder: 27.0.1 arm64, 0.1.1 (or f3e5144)
+      placeholder: 27.0.1 arm64, 0.2.0 (or f3e5144)
     validations:
       required: true

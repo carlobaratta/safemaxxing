@@ -27,7 +27,7 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
      └── k  → SIGKILL 4242
 ```
 
-> **Stato:** alpha (0.1.1). Validato su macOS 27.0.1, Apple Silicon (vedi
+> **Stato:** alpha (0.2.0). Validato su macOS 27.0.1, Apple Silicon (vedi
 > [TESTLOG.md](TESTLOG.md)); test unitari in CI su macOS arm64 e Intel. Gira come root e
 > modifica pf: leggi [SECURITY.md](SECURITY.md) prima di usare le azioni automatiche.
 
