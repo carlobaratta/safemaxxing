@@ -53,8 +53,8 @@ def tcc_access(ts: float, service: str, pid: int, bundle: str | None, binary: st
 
 
 def screencapture(ts: float, pid: int, binary: str = "/usr/sbin/screencapture") -> Entry:
-    """A ScreenCapture grant logged by the capturing process itself (pid == the entry's pid),
-    the only TCC form the parser treats as a real capture."""
+    """A ScreenCapture request logged by the capturing process itself (pid == the entry's pid),
+    the only ScreenCapture TCC line the parser keeps (as a `tcc` request, not a capture)."""
     block = f"TCCDProcess: pid={pid}, auid=501, euid=501, binary_path={binary}"
     message = (
         f"AUTHREQ_ATTRIBUTION: msgID={TCCD_PID}.9, "

@@ -26,9 +26,10 @@ from typing import ClassVar
 import psutil
 from rich.text import Text
 from textual import on, work
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.events import DescendantFocus
 from textual.widgets import DataTable, Footer, Header, Input, RichLog, TabbedContent, TabPane
 
@@ -566,14 +567,20 @@ class SafemaxxingApp(App[None]):
         self.action_timeline()
 
     def _show_inspector(self) -> None:
+        # Focus moves while Textual tears the screen down, and the DescendantFocus that follows
+        # (or a late signature lookup) finds no inspector (macos-15-intel, 2026-10-30).
+        try:
+            panel = self.query_one(InspectorPanel)
+        except (NoMatches, ScreenStackError):
+            return
         selection = self.selection
         if selection is None:
-            self.query_one(InspectorPanel).show(None, None, False, False)
+            panel.show(None, None, False, False)
             return
         conn = self._named(selection.connection)
         named = dataclasses.replace(selection, connection=conn)
         signature = self._signatures.get(conn.exe_path) if conn.exe_path else None
-        self.query_one(InspectorPanel).show(named, signature, *self._mitigated(conn))
+        panel.show(named, signature, *self._mitigated(conn))
 
     def _check_signature(self, conn: NetworkConnection) -> None:
         if conn.exe_path and conn.exe_path not in self._signatures:

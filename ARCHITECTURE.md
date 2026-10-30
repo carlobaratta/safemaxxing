@@ -27,7 +27,8 @@ runners (arm64 and Intel).
 | `menubar.py` | `MenuModel` (pure, clock-injected) and `run_menubar`, the rumps status-bar view over the same `stream()`. |
 | `tcc_inspector.py` | Read-only audit of the TCC databases: who already holds a sensitive grant, and which holders look risky. |
 | `diagnostics.py` | `doctor`'s checks and `sample`'s summary of a raw log capture. |
-| `boot.py` | The launchd job that reapplies the saved blocklist at boot (`/bin/sh` and `/sbin/pfctl` only). |
+| `boot.py` | The launchd job that reapplies the saved blocklist at boot (`/bin/sh` and `/sbin/pfctl` only), and `LaunchdJob`, the load/unload/inspect shared with the daemon. |
+| `daemon.py` | `WatchDaemon`: a root LaunchDaemon running `watch --json`, installed only from a root-owned frozen bundle (`unsafe_reason`). |
 | `codesign.py` | Signing identity of a binary's app, for the inspector and the TCC audit. |
 | `cli.py` | The Typer entry point. |
 
@@ -115,10 +116,16 @@ flowchart TB
 
 ## Severity escalation
 
-An alert's severity starts from the base level of the sensor behind it — medium for a generic
-TCC service, high for camera, microphone, screen capture or location — and rises one step, up to
-critical, when a second distinct sensor is attributed to the same connection. Each further
-sensor re-emits the same alert (same id) at the new, higher level, capped at critical.
+An alert's severity starts from the base level of the sensor behind it — medium for `tcc`, high
+for camera, microphone, screen capture or location — and rises one step, up to critical, when a
+second distinct sensor is attributed to the same connection. Each further sensor re-emits the
+same alert (same id) at the new, higher level, capped at critical.
+
+`tcc` is any TCC *request*, whatever the service: a request for the camera is a permission
+check, not use, and apps send them while they start (Spotify and Claude at login). Camera,
+microphone and screen come only from use: the Control Center indicator and cmio's stream start,
+50-400 ms after the request. When use follows, the request is folded into that sensor
+(`strongest`), so a request plus the indicator is one high camera alert, not two sensors.
 
 ```mermaid
 stateDiagram-v2
@@ -126,7 +133,7 @@ stateDiagram-v2
     buffered --> [*]: no egress within the window
     buffered --> medium: egress correlated — single<br/>generic-TCC access
     buffered --> high: egress correlated — single camera /<br/>microphone / screen / location access
-    medium --> critical: another distinct sensor<br/>matches the same connection
+    medium --> high: the indicator or a stream start<br/>shows use (tcc folded in)
     high --> critical: another distinct sensor<br/>matches the same connection
     critical --> critical: further sensors (capped at critical)
 ```

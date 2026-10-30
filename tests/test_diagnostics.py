@@ -251,7 +251,7 @@ def test_summary_shows_category_and_parsed_examples() -> None:
     stats = summarize_sample(entries)
     assert stats["com.apple.controlcenter"].unparsed_examples == ["[sensor] Cameras"]
     assert stats["com.apple.TCC"].parsed_examples == [
-        "camera pid:42 pid=42 [?] sender_pid=42, service=kTCCServiceCamera"
+        "tcc pid:42 pid=42 [?] sender_pid=42, service=kTCCServiceCamera"
     ]
 
 

@@ -18,7 +18,7 @@ elsewhere makes the next `git pull` there fail); everything else in `testlogs/` 
 - [ ] [P2] Watch the redesigned `sudo uv run safemaxxing tui --udp-flows` for freezes for a few minutes of normal browsing plus a Meet call in Brave: feed, pf panel (ENABLED/ACTIVE), pktap pkt/s, timeline, `b`/`s` badges, `/` filter, codesign line @ui #tui #dns
 - [ ] [P2] Live `watch` with Photo Booth / Voice Memos: confirm they are hidden as system apps (`/System/Applications`) and shown with `--include-system` @correlation #macos
 - [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design; proposal: keep it and say so in SECURITY.md)
-- [ ] [P2] launchd daemon for headless `watch` (the 0.2.0 feature; reuses the `boot` job's launchd setup) @packaging #launchd
+- [ ] [P2] After the TCC-request fix, log in with the daemon running and check the first minutes of `/var/log/safemaxxing-watch.log`: no critical or high alert for Spotify/Claude/Avast; then a Meet call in Brave still gives camera+microphone critical @correlation #tcc
 - [ ] [P2] Dry-run signing and notarization with a real Developer ID before the first tag: `build_release.sh` with `SIGN_IDENTITY`/`INSTALLER_IDENTITY`, `notarytool submit`, then run the signed binary (are `allow-jit` / `allow-unsigned-executable-memory` both needed?) @packaging #release
 - [ ] [P2] First run of `safemaxxing menubar` in a real GUI session: glyphs, submenus while open, Block/Unblock/Freeze outcomes, ⊘ when the stream stops @ui #menubar
 
@@ -32,6 +32,9 @@ elsewhere makes the next `git pull` there fail); everything else in `testlogs/` 
 
 ## Completed
 
+- [x] [P1] False critical alerts at app launch: a TCC request is `tcc` (medium) whatever the service; camera/mic/screen only from the indicator and cmio; `strongest` folds a request into the use that follows. Real samples: the indicator is 50-400 ms after the request (Brave, Photo Booth, ScreenCaptureKit). Simulator: Spotify-at-login scenario is one medium `tcc` alert; Photo Booth is high camera @correlation #tcc (done: 2026-10-30)
+- [x] [P2] `watch` daemon run as root: refuses the source checkout, installs from a root-owned bundle under `/usr/local/libexec`, restarted by launchd after `pkill`, started on its own after a reboot, `uninstall` leaves no tcpdump; `daemon status` now shows the terminating signal. Found the launch-time false positives (Next Up P1) @packaging #launchd (done: 2026-10-30, TESTLOG 09:45)
+- [x] [P2] launchd daemon for headless `watch`: `daemon install|status|uninstall`, KeepAlive LaunchDaemon running `watch --json` with watch's options, alerts to `/var/log/safemaxxing-watch.log`; installs only from a root-owned frozen bundle (`unsafe_reason`); `LaunchdJob` shared with `boot`. Frozen build runs `daemon status`; not yet run as root @packaging #launchd (done: 2026-10-30)
 - [x] [P3] Bundle rumps into the standalone build so `menubar` works from the `.pkg`: spec requires the `menubar` extra, release build syncs it, doctor checks it. Unsigned arm64 build: frozen `doctor` reports rumps available; GUI run and signed build not yet tried @packaging #menubar (done: 2026-10-29)
 
 - [x] [P2] Review fixes for #6–#10: menu bar stop state, once-per-alert auto-actions, action outcomes, glyphs, model lock, system-event filter, rebuild only on change; TCC WAL-aware read-only open, doctor WARN on an unread database, versioned interpreters, SUDO_USER; entitlements without library-validation/DYLD relaxations; Homebrew install fix and no root service; sign every Mach-O. 335 passed @review (done: 2026-10-29, b4cd714, 47c51e4)

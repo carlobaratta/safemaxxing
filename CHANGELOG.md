@@ -8,6 +8,16 @@ All notable changes are listed here. The format follows
 
 ### Added
 
+- `safemaxxing daemon install|status|uninstall`: a root LaunchDaemon that keeps `watch --json`
+  running in the background, with `watch`'s options, restarted by launchd when it exits (at
+  most every 10 s).
+  - Alerts go to `/var/log/safemaxxing-watch.log` as JSON lines, errors to `.err`.
+  - `status` shows launchd's state, pid and last exit code, the exact command line and the
+    last 5 alerts.
+  - `install` refuses anything a non-root user could change: only a frozen bundle whose files
+    and parent directories are root-owned and not group/world-writable, i.e. the `.pkg`
+    install. A source checkout, virtualenv or Homebrew install is refused.
+  - `boot.LaunchdJob` holds the launchctl load/unload/inspect shared by both jobs.
 - `safemaxxing menubar`, a macOS status-bar companion over the same supervisor (needs the
   `menubar` extra, i.e. rumps). (4b0bdfb, b4cd714, 47c51e4)
   - The icon is a monochrome glyph: ○ idle, ● a sensor in use, ⚠︎ a recent alert, ⊘
@@ -76,6 +86,12 @@ All notable changes are listed here. The format follows
 
 ### Changed
 
+- A TCC request no longer counts as use of the camera, microphone or screen: it is a `tcc`
+  event (medium), whatever the service. Apps send these requests while they start, so the
+  first daemon run saw ~18 critical alerts right after login (Spotify, Claude) that
+  `--auto-block` would have acted on. Camera, microphone and screen now come only from the
+  Control Center indicator and cmio's stream start; a request followed by that use is folded
+  into one sensor, so a Photo Booth camera access is high, not critical.
 - The TUI is a dark dashboard of panels, with its styles in `tui/safemaxxing.tcss`.
   - **Live feed** of alerts with pill badges for severity, sensors (`CAM`, `MIC`, `LOC`,
     `SCR`, `TCC`) and mitigation (`BLK`, `STOP`). An alert re-emitted with more sensors

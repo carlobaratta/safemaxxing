@@ -27,7 +27,9 @@ def test_screencapture_is_hidden_unless_system_is_included() -> None:
     scenario = scenarios.screencapture_cmd_shift_5()
     assert replay(scenario) == []
     (alert,) = replay(scenario, CorrelationConfig(include_system=True))
-    assert alert.sensors == {SensorType.SCREEN_CAPTURE}
+    # Only screencapture's own TCC request, no indicator for it (Cmd+Shift+5 lights
+    # `scr:com.apple.systemuiserver`): a permission request, so `tcc`.
+    assert alert.sensors == {SensorType.TCC}
 
 
 def test_camera_then_curl_upload_caught_by_the_process_chain() -> None:
@@ -48,6 +50,21 @@ def test_photo_booth_system_app_is_hidden_unless_system_is_included() -> None:
     assert replay(scenario) == []
     (alert,) = replay(scenario, CorrelationConfig(include_system=True))
     assert alert.sensors == {SensorType.CAMERA}
+    assert alert.severity is Severity.HIGH
+
+
+def test_a_permission_check_at_launch_is_only_a_medium_tcc_alert() -> None:
+    # Before, the microphone and camera requests made this a critical camera+microphone alert,
+    # and --auto-block (threshold high) blocked Spotify's server at every login.
+    (alert,) = replay(scenarios.app_launch_permission_check())
+    assert alert.sensors == {SensorType.TCC}
+    assert alert.severity is Severity.MEDIUM
+
+
+def test_a_request_followed_by_use_is_one_sensor_not_two() -> None:
+    (alert,) = replay(scenarios.camera_request_then_use())
+    assert alert.sensors == {SensorType.CAMERA}
+    assert alert.severity is Severity.HIGH
 
 
 def test_background_noise_neither_creates_nor_suppresses_an_alert() -> None:

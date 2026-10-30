@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import dataclasses
 import json
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -17,6 +18,10 @@ from rich.table import Table
 from safemaxxing import __version__
 from safemaxxing.boot import LOG, PLIST, BootJob
 from safemaxxing.correlation import CorrelationConfig
+from safemaxxing.daemon import ERR_LOG as DAEMON_ERR_LOG
+from safemaxxing.daemon import LOG as DAEMON_LOG
+from safemaxxing.daemon import PLIST as DAEMON_PLIST
+from safemaxxing.daemon import WatchDaemon, WatchOptions, recent_alerts, unsafe_reason
 from safemaxxing.diagnostics import Status, collect_log_sample, run_doctor, summarize_sample
 from safemaxxing.firewall import BLOCKLIST, BlockList, PfFirewall, ProcessController, is_root
 from safemaxxing.models import ActionResult, Alert, Event, Severity
@@ -39,6 +44,12 @@ boot_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(boot_app, name="boot")
+daemon_app = typer.Typer(
+    help="Keep `watch --json` running as root in the background with a launchd daemon "
+    "(install/uninstall need root; installs only from the root-owned .pkg build).",
+    no_args_is_help=True,
+)
+app.add_typer(daemon_app, name="daemon")
 
 WindowMs = Annotated[int, typer.Option("--window-ms", help="Correlation window in ms.", min=1)]
 DecayWindowMs = Annotated[
@@ -85,6 +96,18 @@ ThroughputOpt = Annotated[
         "--throughput",
         help="Flag a pre-established connection when its outbound byte rate spikes (pktap, "
         "needs root). Covers TCP only with --tcp-flows, else UDP flows.",
+    ),
+]
+AutoBlock = Annotated[
+    bool, typer.Option("--auto-block", help="Block the destination IP of qualifying alerts.")
+]
+AutoSuspend = Annotated[
+    bool, typer.Option("--auto-suspend", help="SIGSTOP the process of qualifying alerts.")
+]
+MinSeverity = Annotated[
+    str,
+    typer.Option(
+        "--min-severity", help="Threshold for --auto-* actions: low, medium, high, critical."
     ),
 ]
 Ignore = Annotated[
@@ -236,6 +259,13 @@ def menubar(
     run_menubar(supervisor, _firewall(), ProcessController(), config, warn=warn)
 
 
+def _severity(name: str) -> Severity:
+    try:
+        return Severity[name.upper()]
+    except KeyError:
+        raise typer.BadParameter(f"unknown severity {name!r}") from None
+
+
 def _alert_json(alert: Alert) -> str:
     payload = dataclasses.asdict(alert)
     payload["severity"] = alert.severity.label
@@ -261,24 +291,12 @@ def watch(
     show_events: Annotated[
         bool, typer.Option("--events", help="Also print sensor events (not with --json).")
     ] = False,
-    auto_block: Annotated[
-        bool, typer.Option("--auto-block", help="Block the destination IP of qualifying alerts.")
-    ] = False,
-    auto_suspend: Annotated[
-        bool, typer.Option("--auto-suspend", help="SIGSTOP the process of qualifying alerts.")
-    ] = False,
-    min_severity: Annotated[
-        str,
-        typer.Option(
-            "--min-severity", help="Threshold for --auto-* actions: low, medium, high, critical."
-        ),
-    ] = "high",
+    auto_block: AutoBlock = False,
+    auto_suspend: AutoSuspend = False,
+    min_severity: MinSeverity = "high",
 ) -> None:
     """Headless mode: stream alerts to stdout, optionally enforcing automatically."""
-    try:
-        threshold = Severity[min_severity.upper()]
-    except KeyError:
-        raise typer.BadParameter(f"unknown severity {min_severity!r}") from None
+    threshold = _severity(min_severity)
     if not as_json:
         _warn_if_not_root()
     supervisor = _supervisor(
@@ -407,6 +425,84 @@ def boot_status() -> None:
         console.print(f"[yellow]saved, not live:[/] {ip}")
     for ip in sorted(set(live) - set(saved)):
         console.print(f"[yellow]live, not saved:[/] {ip}")
+
+
+@daemon_app.command("install")
+def daemon_install(
+    window_ms: WindowMs = 2000,
+    decay_window_ms: DecayWindowMs = 0,
+    poll_ms: PollMs = 200,
+    include_loopback: Loopback = False,
+    no_dns: NoDns = False,
+    ignore: Ignore = None,
+    include_system: IncludeSystem = False,
+    include_dns: IncludeDns = False,
+    udp_flows: UdpFlows = False,
+    tcp_flows: TcpFlows = False,
+    throughput: ThroughputOpt = False,
+    auto_block: AutoBlock = False,
+    auto_suspend: AutoSuspend = False,
+    min_severity: MinSeverity = "high",
+) -> None:
+    """Load a launchd daemon running `watch --json` with these options, restarted if it exits.
+
+    Alerts go to the daemon's log as JSON lines. Running it again replaces the options.
+    """
+    _require_root()
+    _severity(min_severity)
+    # The resolved bundle path, so the plist does not go through a symlink someone else may own.
+    executable = Path(sys.executable).resolve()
+    if problem := unsafe_reason(executable, frozen=bool(getattr(sys, "frozen", False))):
+        console.print(f"[bold red]refusing to install the daemon:[/] {escape(problem)}")
+        raise typer.Exit(1)
+    if (udp_flows or tcp_flows or throughput) and (pktap_problem := pktap_unavailable()):
+        console.print(f"[bold red]pktap:[/] {escape(pktap_problem)}")
+        raise typer.Exit(1)
+    options = WatchOptions(
+        window_ms=window_ms,
+        decay_window_ms=decay_window_ms,
+        poll_ms=poll_ms,
+        include_loopback=include_loopback,
+        no_dns=no_dns,
+        ignore=tuple(ignore or ()),
+        include_system=include_system,
+        include_dns=include_dns,
+        udp_flows=udp_flows,
+        tcp_flows=tcp_flows,
+        throughput=throughput,
+        auto_block=auto_block,
+        auto_suspend=auto_suspend,
+        min_severity=min_severity.lower(),
+    )
+    problem = asyncio.run(WatchDaemon().install(str(executable), options))
+    if problem:
+        console.print(f"[bold red]launchctl bootstrap failed:[/] {escape(problem)}")
+        raise typer.Exit(1)
+    console.print(f"[green]installed {DAEMON_PLIST}[/]: alerts go to {DAEMON_LOG}")
+
+
+@daemon_app.command("uninstall")
+def daemon_uninstall() -> None:
+    """Stop the daemon and delete its plist; its logs and any blocks it made stay."""
+    _require_root()
+    asyncio.run(WatchDaemon().uninstall())
+    console.print(f"[green]removed {DAEMON_PLIST}[/]")
+
+
+@daemon_app.command("status")
+def daemon_status() -> None:
+    """Show whether the daemon is installed and running, its command line and last alerts."""
+    status = asyncio.run(WatchDaemon().daemon_status())
+    console.print(f"job {DAEMON_PLIST}: installed={status.installed} loaded={status.loaded}")
+    if status.loaded:
+        pid = f" pid={status.pid}" if status.pid else ""
+        last = f" last exit: {status.last_exit}" if status.last_exit else ""
+        console.print(f"state: {escape(status.state or 'unknown')}{pid}{escape(last)}")
+    if status.arguments:
+        console.print(f"runs: {escape(' '.join(status.arguments))}")
+    console.print(f"log: {DAEMON_LOG}  errors: {DAEMON_ERR_LOG}")
+    for line in recent_alerts():
+        console.print(f"  {escape(line)}")
 
 
 @app.command()

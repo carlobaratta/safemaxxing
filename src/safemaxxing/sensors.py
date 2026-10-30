@@ -339,6 +339,10 @@ def parse_entry(entry: Mapping[str, object]) -> Event | None:
             and _screen_capture_subject(message) is None
         ):
             return None
+        # A request is a permission check, not use: apps send them for the camera, microphone
+        # and screen while they start (Spotify and Claude at login, macOS 27). Use is what the
+        # privacy indicator (or a cmio stream start) shows, 50-400 ms after the request.
+        sensor = SensorType.TCC
     elif subsystem.startswith(SUBSYSTEM_CMIO):
         # "CMIODeviceStartStream backtrace N ..." dumps the stack of the start line before it:
         # 30-50 lines per camera start on macOS 27.0.1, none of them a new start.
