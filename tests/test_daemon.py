@@ -248,7 +248,7 @@ def test_daemon_install_refuses_a_source_checkout(monkeypatch: pytest.MonkeyPatc
     def never(*_: object) -> None:
         raise AssertionError("must not reach launchd")
 
-    monkeypatch.setattr(cli.WatchDaemon, "install", never)
+    monkeypatch.setattr(WatchDaemon, "install", never)
     result = CliRunner().invoke(cli.app, ["daemon", "install"])
     assert result.exit_code == 1
     assert "refusing to install the daemon" in result.output
