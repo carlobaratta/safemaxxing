@@ -63,6 +63,8 @@ class ActionKind(StrEnum):
     SUSPEND = "suspend"
     RESUME = "resume"
     KILL = "kill"
+    LOCKDOWN_ON = "lockdown_on"
+    LOCKDOWN_OFF = "lockdown_off"
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +92,23 @@ class Event:
     def from_indicator(self) -> bool:
         """Whether Control Center's sensor indicator reported it: its identity is a bundle id."""
         return self.service is not None and self.service.startswith("indicator:")
+
+
+@dataclass(frozen=True, slots=True)
+class IndicatorState:
+    """Control Center's full set of sensor attributions after a change, as (sensor, bundle id).
+
+    Unlike `Event`, which fires once when a use starts, this also reports a use ending: the
+    lockdown leases need the off edge to start their grace period. It is not merged across
+    flicker; the lease grace (longer than `INDICATOR_MERGE_S`) absorbs that.
+    """
+
+    timestamp: float
+    active: frozenset[tuple[SensorType, str]]
+
+    def bundles(self, sensors: frozenset[SensorType]) -> frozenset[str]:
+        """Bundle ids holding any of `sensors`."""
+        return frozenset(bundle for sensor, bundle in self.active if sensor in sensors)
 
 
 @dataclass(frozen=True, slots=True)

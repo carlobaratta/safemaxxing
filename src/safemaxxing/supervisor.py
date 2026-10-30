@@ -8,7 +8,7 @@ from collections.abc import AsyncIterable, AsyncIterator, Callable
 from typing import Final, TypeVar
 
 from safemaxxing.correlation import CorrelationConfig, CorrelationEngine
-from safemaxxing.models import Alert, Event, NetworkConnection
+from safemaxxing.models import Alert, Event, IndicatorState, NetworkConnection
 from safemaxxing.network import HostnameResolver, NetworkMonitor
 from safemaxxing.pktap import PktapCapture, PktapFlowTracker, capture_filter, pktap_command
 from safemaxxing.process_tree import ProcessChainResolver
@@ -54,6 +54,7 @@ class Supervisor:
         tcp_flows: bool = False,
         throughput: bool = False,
         attribute_children: bool = True,
+        on_indicator: Callable[[IndicatorState], None] | None = None,
     ) -> Supervisor:
         """Build a Supervisor on the real sensor listener and a polling NetworkMonitor.
 
@@ -65,7 +66,8 @@ class Supervisor:
         pre-established flow when its outbound rate spikes (over TCP only when `tcp_flows` is
         also on, since it needs the TCP packets). `attribute_children` links a socket back to
         the app that spawned its owner or is responsible for it (off macOS, or without the
-        privilege to inspect a process, this resolves to a no-op).
+        privilege to inspect a process, this resolves to a no-op). `on_indicator` receives
+        every change of Control Center's sensor attributions (Paranoia Mode's leases).
         """
         config = config or CorrelationConfig()
         resolver = HostnameResolver() if resolve_hostnames else None
@@ -81,7 +83,7 @@ class Supervisor:
                 config, include_loopback, resolver, udp_flows, tcp_flows, throughput
             )
         return cls(
-            events=SensorListener().events(),
+            events=SensorListener(on_indicator=on_indicator).events(),
             connections=monitor.connections(),
             engine=CorrelationEngine(config, actor_chain=actor_chain),
             monitor=monitor,
