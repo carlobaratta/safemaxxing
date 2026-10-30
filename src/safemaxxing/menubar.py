@@ -307,6 +307,32 @@ def menubar_available() -> bool:
 
 MENUBAR_HINT = "the menu bar needs rumps: from a source checkout run  uv sync --extra menubar"
 
+HIDDEN_ICON_HINT = (
+    "macOS is not showing the menu-bar icon. Either the menu bar is full (on a Mac with a "
+    "notch, icons that do not fit beside it are hidden: quit or Cmd-drag some away), or it is "
+    "turned off under System Settings > Menu Bar. safemaxxing keeps running; Ctrl-C quits."
+)
+
+# Seconds to give AppKit to lay the status item out before judging whether it is on screen.
+ICON_CHECK_DELAY_S = 3
+
+
+def status_item_on_screen(item: Any) -> bool | None:
+    """Whether the `NSStatusItem` was laid out in a visible menu bar; None when it cannot tell.
+
+    A status item macOS has no room for, or has been told to hide, still exists and reports
+    `isVisible()`, but its window never gets a height and is never unoccluded: that is the
+    only trace, so it is what this checks.
+    """
+    try:
+        window = item.button().window()
+        laid_out = window.frame().size.height > 0
+        # NSWindowOcclusionStateVisible
+        unoccluded = bool(window.occlusionState() & 2)
+    except Exception:
+        return None
+    return laid_out and unoccluded
+
 
 def open_tui() -> None:
     """Open a Terminal window running `safemaxxing tui` (macOS `osascript`)."""
@@ -321,8 +347,12 @@ def run_menubar(
     firewall: Any,
     processes: Any,
     config: MenuBarConfig | None = None,
+    warn: Callable[[str], None] = print,
 ) -> None:
     """Render the menu bar and drive it from `supervisor.stream()` until the app quits.
+
+    `warn` reaches the terminal it was started from: whether the icon made it into the menu
+    bar, and why monitoring stopped, also show there, since a hidden icon shows nothing.
 
     macOS only, and requires the `menubar` extra; raises `RuntimeError` otherwise. The stream
     runs on a background asyncio thread feeding a `MenuModel` via `pump_updates`, which marks
@@ -446,15 +476,24 @@ def run_menubar(
     shown: MenuSnapshot | None = None
     ticks = 0
 
+    def check_icon() -> None:
+        # rumps keeps the NSStatusItem on its private delegate; without it there is nothing to say.
+        item = getattr(getattr(app, "_nsapp", None), "nsstatusitem", None)
+        if item is not None and status_item_on_screen(item) is False:
+            warn(HIDDEN_ICON_HINT)
+
     def refresh(_timer: Any) -> None:
         nonlocal notified_stop, shown, ticks
         snap = model.snapshot()
         app.title = snap.title
         if model.stopped_reason and not notified_stop:
             notified_stop = True
+            warn(model.stopped_reason)
             # rumps refuses to notify from an interpreter without a bundle id; the icon still shows.
             with contextlib.suppress(RuntimeError):
                 rumps.notification("safemaxxing", "Monitoring stopped", model.stopped_reason)
+        if ticks == ICON_CHECK_DELAY_S:
+            check_icon()
         if ticks % model.config.blocked_refresh_ticks == 0:
             refresh_blocked()
         ticks += 1

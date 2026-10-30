@@ -248,6 +248,12 @@ Il menu mostra:
   e dopo ogni azione;
 - **Open TUI Dashboard**, che apre `safemaxxing tui` in una finestra di Terminal.
 
+Il terminale da cui la lanci resta occupato (Ctrl-C la chiude) e mostra gli avvisi. Se macOS
+non mostra l'icona, dopo 3 s lo dice lì: succede quando la barra dei menu è piena (su un Mac
+con il notch le icone che non ci stanno accanto vengono nascoste, anche a seconda dei menu
+dell'app in primo piano) o quando l'icona è disattivata in Impostazioni di Sistema > Barra dei
+menu. Anche il motivo di un monitoraggio fermo viene stampato lì.
+
 Un sensore conta come "in uso" per qualche secondo dopo l'ultimo accesso: il log riporta gli
 accessi, non lo spegnimento. Gli accessi dei binari di sistema non accendono l'icona, salvo
 `--include-system`; gli eventi dell'indicatore di Control Center contano sempre.

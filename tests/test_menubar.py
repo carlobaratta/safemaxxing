@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import Any
 
 from conftest import T0, make_conn, make_event
@@ -16,6 +17,7 @@ from safemaxxing.menubar import (
     action_label,
     menubar_available,
     pump_updates,
+    status_item_on_screen,
 )
 from safemaxxing.models import ActionKind, ActionResult, Alert, Finding, SensorType, Severity
 
@@ -266,3 +268,26 @@ def test_snapshot_status_carries_the_stop_reason() -> None:
     snap = model.snapshot(now=T0)
     assert snap.status == "monitoring stopped: log stream exited"
     assert snap.title == ICON_GLYPHS[IconState.STOPPED]
+
+
+def _status_item(height: float, occlusion: int) -> Any:
+    """A stand-in for NSStatusItem exposing only what `status_item_on_screen` reads."""
+    window = SimpleNamespace(
+        frame=lambda: SimpleNamespace(size=SimpleNamespace(height=height)),
+        occlusionState=lambda: occlusion,
+    )
+    return SimpleNamespace(button=lambda: SimpleNamespace(window=lambda: window))
+
+
+def test_a_laid_out_unoccluded_status_item_is_on_screen() -> None:
+    assert status_item_on_screen(_status_item(height=24, occlusion=8194)) is True
+
+
+def test_a_status_item_macos_hid_is_not_on_screen() -> None:
+    # What a hidden item reports on a full menu bar (seen on macOS 27.0.1): no height, occluded.
+    assert status_item_on_screen(_status_item(height=0, occlusion=8192)) is False
+    assert status_item_on_screen(_status_item(height=24, occlusion=0)) is False
+
+
+def test_an_unexpected_status_item_shape_is_undecided() -> None:
+    assert status_item_on_screen(SimpleNamespace()) is None
