@@ -21,6 +21,7 @@ from safemaxxing.models import PKTAP_STATUS, Alert, Finding, SensorType, Severit
 from safemaxxing.tui.app import SafemaxxingApp
 from safemaxxing.tui.badges import mitigation_badges, sensor_pills, severity_badge
 from safemaxxing.tui.panels import (
+    InspectorPanel,
     PfStatus,
     RuntimeStats,
     Selection,
@@ -338,6 +339,17 @@ async def test_inspector_reads_the_signature_once() -> None:
         await pilot.pause()
         assert calls == [exe]
         assert "Software Signing" in plain(app.query_one("#inspector", Static).content)
+
+
+async def test_focus_after_the_inspector_is_gone_does_not_crash() -> None:
+    # At shutdown focus moves after the inspector is removed (macos-15-intel, 2026-10-30): the
+    # DescendantFocus handler selected the row and queried the missing panel.
+    app = make_app()
+    async with app.run_test() as pilot:
+        await wait_for(pilot, lambda: bool(app.alerts))
+        await app.query_one(InspectorPanel).remove()
+        app._select_from(app.query_one("#feed", DataTable))
+        assert app.selection is not None
 
 
 async def test_timers_firing_during_shutdown_do_not_crash(monkeypatch: pytest.MonkeyPatch) -> None:
