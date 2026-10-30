@@ -44,14 +44,16 @@ problems/regressions, next steps. Raw logs from `scripts/macos_validate.sh` go i
     neither in the TUI nor in the daemon log: the media did not go over a new UDP flow (the
     same as on 2026-10-27 on this network).
   - Cleanup: the daemon was uninstalled, the bundle was removed, and no tcpdump was left.
+  - Menu bar (as reported by the user): the icon was ● during the call; after
+    `sudo pkill -f "log stream --style json"` it showed ⊘ and sent a notification. With no
+    alert, Block IP, Unblock and Freeze from the menu were not exercised.
 - **Problems / regressions:**
   - Without `--include-system`, `location com.apple.VoiceMemos pid=None` was shown twice.
     locationd names the client only by bundle id (`<user>:icom.apple.VoiceMemos:`), and only
     indicator events were checked against the processes that carry the id. Fixed afterwards
     (`_mark_bundle_system`), with a test that fails without the fix.
-  - The menu bar checks (phases 4–5) were not reported in detail.
-- **Next steps:** a Meet call on a network that allows UDP; the TUI timeline, filter and
-  codesign line with real alerts; the menu bar report.
+- **Next steps:** a Meet call on a network that allows UDP; with real alerts, the TUI
+  timeline, filter and codesign line, and the menu bar's Block/Unblock/Freeze.
 
 ## [2026-10-30 09:45 +0100] - `watch` daemon as root, across a reboot (Mac)
 

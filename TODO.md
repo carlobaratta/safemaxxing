@@ -19,7 +19,7 @@ elsewhere makes the next `git pull` there fail); everything else in `testlogs/` 
 - [ ] [P2] Decide whether the `pfctl -E` reference token should be released (`pfctl -X <token>`) on `flush` @firewall #pf (today pf stays enabled after the first block, by design; proposal: keep it and say so in SECURITY.md)
 - [ ] [P2] Meet call in Brave on a network that lets UDP through (e.g. a phone hotspot), with the daemon and `tui --udp-flows`: camera+microphone critical expected. On `Host-001` pktap saw 0 UDP pkt/s during the call (TESTLOG 2026-10-30 11:07), as on 2026-10-27; there, try `--tcp-flows --throughput` @correlation #udp
 - [ ] [P2] Dry-run signing and notarization with a real Developer ID before the first tag: `build_release.sh` with `SIGN_IDENTITY`/`INSTALLER_IDENTITY`, `notarytool submit`, then run the signed binary (are `allow-jit` / `allow-unsigned-executable-memory` both needed?) @packaging #release
-- [ ] [P2] First run of `safemaxxing menubar` in a real GUI session: glyphs, submenus while open, Block/Unblock/Freeze outcomes, ⊘ when the stream stops @ui #menubar
+- [ ] [P2] Menu bar actions with a real alert: Block IP, Unblock, Freeze process and their ✓/✗ lines, submenus while open (glyph ● during a call and ⊘ plus notification after killing `log stream` verified 2026-10-30) @ui #menubar
 
 ## Backlog / Future
 
