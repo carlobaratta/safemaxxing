@@ -199,7 +199,7 @@ inviare segnali a processi altrui. Senza root safemaxxing funziona in modalità 
 |---------|---------|---------|
 | `--window-ms N` | `2000` | Finestra di correlazione sensore → egress |
 | `--poll-ms N` | `200` | Intervallo di polling della tabella socket (min 20) |
-| `--ignore ID` | — | Bundle id o nome processo da ignorare (match esatto, ripetibile) |
+| `--ignore ID` | — | Bundle id o nome processo da ignorare (match esatto, ripetibile). Vale solo se la firma del processo lo conferma: identificatore di firma uguale al bundle id (o un suo helper), firmato da Apple o da un Team ID; un nome processo vale solo per i binari Apple. Per le app di terze parti usa il bundle id |
 | `--include-system` | off | Mostra gli eventi dei binari di sistema e correla anche i loro socket |
 | `--include-dns` | off | Alert anche sulle risoluzioni DNS (porte 53/853/5353) |
 | `--include-loopback` | off | Traccia anche `127.0.0.1` / `::1` |

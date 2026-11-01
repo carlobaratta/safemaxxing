@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import plistlib
+import resource
 import signal
 from collections.abc import AsyncIterator, Callable, Sequence
 from pathlib import Path
 
+import pytest
 from test_supervisor_tui import supervisor
 from test_tui import wait_for
 
@@ -28,6 +30,7 @@ from safemaxxing.lockdown.controller import (
     ParanoiaConfig,
     PinStore,
     SocketOwner,
+    raise_fd_limit,
 )
 from safemaxxing.lockdown.dns import DomainBlocklist, Record
 from safemaxxing.lockdown.leases import LeaseSource
@@ -46,7 +49,13 @@ from safemaxxing.models import (
 )
 from safemaxxing.tui.app import SafemaxxingApp
 
-ZOOM, SPY = 4242, 6666
+ZOOM, SPY, IMPOSTOR = 4242, 6666, 7777
+# What the kernel holds for each pid: Zoom's team, and an impostor signed by another one.
+HARDENED = CS_VALID | CS_SIGNED | CS_RUNTIME | CS_HARD
+CODE = {
+    ZOOM: CodeStatus(ZOOM, HARDENED, None, "ZOOMTEAM01", frozenset(), "us.zoom.xos"),
+    IMPOSTOR: CodeStatus(IMPOSTOR, HARDENED, None, "EVILTEAM01", frozenset(), "us.zoom.xos"),
+}
 FAST = {LeaseSource.SENSOR: 0.1, LeaseSource.FOREGROUND: 0.05, LeaseSource.MANUAL: 0.0}
 
 
@@ -110,7 +119,14 @@ def build(
 ]:
     zoom_exe = app_bundle(tmp_path, "zoom.us", "us.zoom.xos")
     spy_exe = app_bundle(tmp_path, "Spy", "com.example.spy")
-    exes = {ZOOM: zoom_exe, SPY: spy_exe, 99: "/usr/libexec/nsurlsessiond"}
+    # Its Info.plist claims Zoom's bundle id; its signature cannot.
+    impostor_exe = app_bundle(tmp_path, "Impostor", "us.zoom.xos")
+    exes = {
+        ZOOM: zoom_exe,
+        SPY: spy_exe,
+        IMPOSTOR: impostor_exe,
+        99: "/usr/libexec/nsurlsessiond",
+    }
     heartbeat = Heartbeat(run_dir=tmp_path / "run", interval_s=0.02)
     mac = FakeMac(heartbeat, watchdog_loaded)
     queue: asyncio.Queue[BlockedPacket] = asyncio.Queue()
@@ -145,6 +161,7 @@ def build(
         lock_path=tmp_path / "run" / "owner.lock",
         grace_s=FAST,
         started=lambda pid: 1000.0 if pid in exes else None,
+        code_status=CODE.get,
     )
     return controller, mac, queue, notices, signals
 
@@ -266,6 +283,22 @@ async def test_piggyback_is_stopped_but_system_daemons_are_only_flagged(tmp_path
         await controller.leave()
 
 
+async def test_an_app_claiming_the_owners_bundle_id_is_still_a_piggyback(tmp_path: Path) -> None:
+    controller, _, _, notices, signals = build(tmp_path)
+    controller.observe_indicator(camera("us.zoom.xos"))
+    assert (await controller.enter()).ok
+    try:
+        conn = NetworkConnection(
+            IMPOSTOR, "Impostor", Protocol.TCP, "10.0.0.5", 50003, "203.0.113.9", 443,
+            "ESTABLISHED", 1.0,
+        )  # fmt: skip
+        controller.audit_flow(conn)
+        assert signals == [(IMPOSTOR, signal.SIGSTOP)]
+        assert "piggyback: us.zoom.xos (7777)" in notices[-1].message
+    finally:
+        await controller.leave()
+
+
 async def test_sni_audit_flags_trackers_and_its_end_does_not_drop_lockdown(tmp_path: Path) -> None:
     async def hellos() -> AsyncIterator[ClientHelloSeen]:
         packet = PktapEvent(
@@ -313,3 +346,21 @@ async def test_panic_button_turns_the_tui_red_and_leaving_asks_first(tmp_path: P
         await pilot.press("y")
         await wait_for(pilot, lambda: controller.state is LockdownState.OFF)
         await wait_for(pilot, lambda: not screen.has_class("-lockdown"))
+
+
+@pytest.mark.parametrize(
+    "limits, expected",
+    [
+        ((256, resource.RLIM_INFINITY), (4096, resource.RLIM_INFINITY)),  # macOS's default
+        ((256, 1024), (1024, 1024)),  # capped at the hard limit
+        ((8192, resource.RLIM_INFINITY), None),  # already enough: left alone
+    ],
+)
+def test_raise_fd_limit(
+    monkeypatch: pytest.MonkeyPatch, limits: tuple[int, int], expected: tuple[int, int] | None
+) -> None:
+    set_to: list[tuple[int, int]] = []
+    monkeypatch.setattr(resource, "getrlimit", lambda which: limits)
+    monkeypatch.setattr(resource, "setrlimit", lambda which, value: set_to.append(value))
+    raise_fd_limit()
+    assert set_to == ([expected] if expected else [])

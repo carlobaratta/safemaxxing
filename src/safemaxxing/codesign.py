@@ -75,6 +75,7 @@ async def signing_identity(
 CS_OPS_STATUS = 0
 CS_OPS_CDHASH = 5
 CS_OPS_ENTITLEMENTS_BLOB = 7
+CS_OPS_IDENTITY = 11
 CS_OPS_TEAMID = 14
 CS_VALID = 0x00000001
 CS_ADHOC = 0x00000002
@@ -120,6 +121,9 @@ class CodeStatus:
     team_id: str | None
     # Entitlement keys whose value is true (the only kind the policy below looks at).
     entitlements: frozenset[str]
+    # The signing identifier (`com.apple.finder`): sealed by the signature, unlike a bundle's
+    # Info.plist, which any unsigned app can fill with another app's bundle id.
+    identifier: str | None = None
 
     def has(self, flag: int) -> bool:
         """Whether every bit of `flag` is set."""
@@ -163,14 +167,54 @@ def kernel_code_status(pid: int, csops: Csops | None = _CSOPS) -> CodeStatus | N
     cd = ctypes.create_string_buffer(CS_CDHASH_LEN)
     rc, _ = csops(pid, CS_OPS_CDHASH, cd, CS_CDHASH_LEN)
     cdhash = cd.raw.hex() if rc == 0 else None
-    team = ctypes.create_string_buffer(8 + 64)
-    rc, _ = csops(pid, CS_OPS_TEAMID, team, len(team))
-    # Behind an 8-byte header, NUL-terminated; ENOENT for platform binaries, which have none.
-    team_id = team.raw[8:].split(b"\x00", 1)[0].decode("ascii", "replace") if rc == 0 else None
+    # Team ID and identifier: behind an 8-byte header, NUL-terminated; the Team ID is ENOENT
+    # for platform binaries, which have none.
+    team_id = _string(pid, CS_OPS_TEAMID, 64, csops)
+    identifier = _string(pid, CS_OPS_IDENTITY, 256, csops)
     entitlements = _entitlements(pid, csops)
     if entitlements is None:
         return None
-    return CodeStatus(pid, flags, cdhash, team_id or None, entitlements)
+    return CodeStatus(pid, flags, cdhash, team_id, entitlements, identifier)
+
+
+def _string(pid: int, op: int, size: int, csops: Csops) -> str | None:
+    buf = ctypes.create_string_buffer(8 + size)
+    rc, _ = csops(pid, op, buf, len(buf))
+    text = buf.raw[8:].split(b"\x00", 1)[0].decode("ascii", "replace") if rc == 0 else ""
+    return text or None
+
+
+def backs(status: CodeStatus | None, name: str) -> bool:
+    """Whether the signature in `status` vouches for the identity `name` a process claims.
+
+    `name` is a bundle id or a process name, both of which a process chooses for itself; its
+    signing identifier it cannot change without re-signing. The code must be validly signed,
+    not ad hoc, by Apple or a Team ID, and its identifier must be `name` or a helper of it
+    (`com.brave.Browser.helper` backs `com.brave.Browser`). A bare process name is backed only
+    by an Apple binary whose identifier ends in it, case aside (`Finder` is
+    `com.apple.finder`, `nsurlsessiond` is `com.apple.nsurlsessiond`): a copy of
+    `curl` keeps Apple's signature but not the name, and a Team ID can sign any identifier.
+    An identifier under `com.apple.` is Apple's only if the binary is a platform binary.
+    """
+    if status is None or status.identifier is None:
+        return False
+    if not status.has(CS_VALID | CS_SIGNED) or status.has(CS_ADHOC):
+        return False
+    if not status.platform and (
+        status.team_id is None or status.identifier.startswith("com.apple.")
+    ):
+        return False
+    ident = status.identifier
+    if ident == name or ident.startswith(f"{name}."):
+        return True
+    return status.platform and ident.rsplit(".", 1)[-1].lower() == name.lower()
+
+
+def vouches(
+    pid: int | None, name: str, status: Callable[[int], CodeStatus | None] = kernel_code_status
+) -> bool:
+    """`backs` for a running pid; a claim with no pid is never vouched for."""
+    return pid is not None and backs(status(pid), name)
 
 
 class Strictness(StrEnum):

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import errno
+import os
 import shutil
+import socket
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -11,6 +14,7 @@ from safemaxxing.firewall import CommandResult, FirewallError
 from safemaxxing.lockdown.pf import LockdownFirewall
 from safemaxxing.lockdown.rules import (
     GRANTS_ANCHOR,
+    SINKHOLE_UPSTREAM_PORTS,
     Grant,
     LockdownConfig,
     grant_rules,
@@ -63,6 +67,33 @@ def test_without_sinkhole_dns_goes_only_to_the_resolver_table() -> None:
     text = lockdown_rules(LockdownConfig(sinkhole=False))
     assert "rdr" not in text and "route-to" not in text
     assert "to <safemaxxing_dns> port 53" in text
+
+
+@pytest.mark.parametrize("config", [LockdownConfig(), LockdownConfig(sinkhole=False)])
+def test_rules_passing_on_a_source_port_require_a_root_socket(config: LockdownConfig) -> None:
+    # Any user may bind a low port on macOS, so a source port alone would let any app out:
+    # UDP to any host on 67/547, or DNS straight to the resolvers around the sinkhole.
+    by_port = [
+        line
+        for line in lockdown_rules(config).splitlines()
+        if line.startswith("pass") and " from any port " in line
+    ]
+    assert by_port
+    assert all(line.endswith(" user root") for line in by_port), by_port
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS's bind policy")
+def test_an_unprivileged_process_can_bind_a_low_port_on_macos() -> None:
+    # The premise of the test above: if macOS ever restores the old rule, it still holds.
+    if os.geteuid() == 0:
+        pytest.skip("root may bind any port")
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        try:
+            sock.bind(("0.0.0.0", SINKHOLE_UPSTREAM_PORTS[0]))
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                pytest.skip("port taken")
+            raise
 
 
 def test_apple_443_is_opt_in() -> None:

@@ -25,9 +25,14 @@ NTP_TABLE = "safemaxxing_ntp"
 APPLE_TABLE = "safemaxxing_apple"
 # Static exceptions the user lists (a VPN endpoint, a corporate proxy).
 USER_TABLE = "safemaxxing_user"
-# Only root can bind a source port below 1024, so a rule that matches this range cannot be
-# ridden by an unprivileged process: the sinkhole sends its upstream queries from here.
+# The sinkhole sends its upstream queries from this range. A low source port is no privilege
+# on macOS: since Mojave any user may bind one on the wildcard address (0.0.0.0:750, :68 and
+# [::]:546 all bind as uid 501 on macOS 27.0.1). Rules that pass a packet for its source port
+# therefore also require a root-owned socket (ROOT_ONLY), or any app could ride them out.
 SINKHOLE_UPSTREAM_PORTS = (700, 799)
+# pf looks up the sending socket and matches its owner's uid; a packet whose socket it cannot
+# find does not match, so the rule fails closed.
+ROOT_ONLY = "user root"
 SINKHOLE_PORT = 53
 # Apple owns 17.0.0.0/8 outright, and 2620:149::/32 is its ARIN IPv6 block.
 APPLE_NETWORKS = ("17.0.0.0/8", "2620:149::/32")
@@ -77,9 +82,10 @@ def lockdown_rules(config: LockdownConfig = DEFAULT_CONFIG) -> str:
     lines += [
         f"block drop out quick from any to <{TABLE}>",
         "pass out quick on lo0 all",
-        # DHCP and DHCPv6 clients send from privileged ports: only root (configd) can.
-        "pass out quick inet proto udp from any port 68 to any port 67",
-        "pass out quick inet6 proto udp from any port 546 to any port 547",
+        # DHCP and DHCPv6 go to any address (renewals are unicast to the server), so only the
+        # client itself, configd, running as root, may send them.
+        f"pass out quick inet proto udp from any port 68 to any port 67 {ROOT_ONLY}",
+        f"pass out quick inet6 proto udp from any port 546 to any port 547 {ROOT_ONLY}",
         f"pass out quick inet6 proto ipv6-icmp from any to any icmp6-type {_ports(ICMP6_TYPES)}",
         f"pass out quick inet proto udp from any to {MDNS_V4} port 5353",
         f"pass out quick inet6 proto udp from any to {MDNS_V6} port 5353",
@@ -87,7 +93,7 @@ def lockdown_rules(config: LockdownConfig = DEFAULT_CONFIG) -> str:
     if config.sinkhole:
         lines += [
             f"pass out quick proto {{ udp tcp }} from any port {low}:{high} "
-            f"to <{DNS_TABLE}> port 53",
+            f"to <{DNS_TABLE}> port 53 {ROOT_ONLY}",
             *(
                 f"pass out quick route-to lo0 {family} proto {{ udp tcp }} "
                 "from any to any port 53 keep state"

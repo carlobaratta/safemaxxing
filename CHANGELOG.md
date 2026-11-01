@@ -6,6 +6,32 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Paranoia Mode's default-deny could be ridden by any unprivileged app. The DHCP, DHCPv6 and
+  sinkhole-upstream rules passed packets for their source port alone, assuming only root can
+  bind below 1024; on macOS any user can bind such a port on the wildcard address. An app could
+  send UDP to any host on port 67 (IPv4) or 547 (IPv6), or query the system resolvers directly
+  around the sinkhole and its blocklist. Those rules now also require a root-owned socket
+  (`user root`).
+- A process could ride Paranoia Mode's grants by claiming the bundle id of the app that held
+  them: the piggyback audit took the bundle id from the process's own Info.plist. A process
+  claiming a lease owner's bundle id must now pass the grant policy, against the Team ID pinned
+  for it, on its kernel code status; otherwise it is stopped like any other piggyback.
+- `--ignore` matched the bundle id and process name a process gives itself, so a spy naming
+  itself after an ignored app raised no alert. An entry now holds only when the process's
+  signing identifier, read from the kernel, is that bundle id or a helper of it, signed by
+  Apple or a Team ID (a `com.apple.` identifier by Apple only). A bare process name matches
+  only an Apple platform binary whose identifier ends in it: ignore third-party apps by bundle
+  id.
+- Any local process could turn Paranoia Mode off by holding idle TCP connections to the DNS
+  sinkhole (or flooding it with queries to a name that never resolves): every one held a file
+  descriptor in the lockdown's process, whose soft limit is 256 on macOS, until the heartbeat
+  could not write its counter and the watchdog restored the v0.2 rules. The sinkhole now keeps
+  at most 64 UDP queries in flight (more are dropped; clients retry) and 32 TCP connections
+  (more are closed at once), each closed after 5 s idle; entering Paranoia Mode raises the
+  descriptor soft limit to 4096.
+
 ### Changed
 
 - `release.yml`'s build job first checks the 8 signing and notarization secrets and fails
