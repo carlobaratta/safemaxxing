@@ -186,9 +186,14 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           files="$(find artifacts -type f \( -name 'safemaxxing-*.tar.gz' -o -name 'safemaxxing-*.pkg' -o -name 'safemaxxing.rb' \))"
-          flags=""
-          # A tag with a suffix (v0.2.1-rc1) is a test release, not the latest one.
-          case "$TAG" in *-*) flags="--prerelease" ;; esac
+          # Before 1.0 every release is an alpha, and a tag with a suffix (v1.0.0-rc1) is a test
+          # release: both are pre-releases, never the latest one.
+          title="safemaxxing ${TAG#v}"
+          flags="--latest"
+          case "$TAG" in
+            v0.*) title="$title (alpha)"; flags="--prerelease --latest=false" ;;
+            *-*) flags="--prerelease --latest=false" ;;
+          esac
           notes=""
           if ! printf '%s\n' "$files" | grep -q '\.pkg$'; then
             notes="Unsigned build: no Developer ID signature, no notarization and no .pkg. On first run macOS blocks the binary; allow it with \`xattr -dr com.apple.quarantine\` on the extracted folder."
@@ -196,7 +201,7 @@ jobs:
           # shellcheck disable=SC2086
           gh release create "$TAG" \
             --repo "$REPO" \
-            --title "$TAG" \
+            --title "$title" \
             --notes "$notes" \
             --generate-notes \
             $flags \

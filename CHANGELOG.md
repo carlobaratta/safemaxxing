@@ -6,6 +6,12 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Every release before 1.0 publishes as a pre-release titled `safemaxxing X.Y.Z (alpha)` and
+  never as the latest, like 0.1.x and 0.2.x were by hand. From 1.0 only a suffixed tag
+  (`v1.0.0-rc1`) is a pre-release.
+
 ## [0.2.1] - 2026-11-03
 
 ### Security
