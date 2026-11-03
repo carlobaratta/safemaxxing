@@ -154,3 +154,38 @@ async def test_replace_table_flushes_when_empty() -> None:
     await fw.replace_table("safemaxxing_user", [])
     assert pf.calls[0][0][-3:] == ["-T", "replace", "17.253.4.125"]
     assert pf.calls[1][0][-2:] == ["-T", "flush"]
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "1 table created.\n1 addresses added.\n",  # the first replace (macOS 27.2)
+        "no changes.\n",  # the same addresses again
+        "2/3 addresses added.\n1 addresses deleted.\n",
+        "3 addresses deleted.\n",  # flush
+    ],
+)
+async def test_table_summaries_are_not_errors(summary: str) -> None:
+    async def pfctl(argv: Sequence[str], stdin: str | None = None) -> CommandResult:
+        return CommandResult(0, "", summary)
+
+    await LockdownFirewall(pfctl).replace_table("safemaxxing_dns", ["192.168.1.1"])
+    await LockdownFirewall(pfctl).replace_table("safemaxxing_dns", [])
+
+
+async def test_a_table_error_still_fails() -> None:
+    async def pfctl(argv: Sequence[str], stdin: str | None = None) -> CommandResult:
+        return CommandResult(1, "", "pfctl: Invalid argument.\n")
+
+    with pytest.raises(FirewallError, match="Invalid argument"):
+        await LockdownFirewall(pfctl).replace_table("safemaxxing_dns", ["192.168.1.1"])
+    with pytest.raises(FirewallError, match="Invalid argument"):
+        await LockdownFirewall(pfctl).replace_table("safemaxxing_user", [])
+
+
+async def test_emptying_a_table_that_was_never_created_is_a_no_op() -> None:
+    # No `user_allow` entries: the first flush meets a table pf has not created yet.
+    async def pfctl(argv: Sequence[str], stdin: str | None = None) -> CommandResult:
+        return CommandResult(1, "", "pfctl: Table does not exist.\n")
+
+    await LockdownFirewall(pfctl).replace_table("safemaxxing_user", [])

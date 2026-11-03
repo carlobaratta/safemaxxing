@@ -109,6 +109,10 @@ def test_parse_pf_status() -> None:
 def test_meaningful_stderr_ignores_darwin_chatter() -> None:
     assert meaningful_stderr(ALTQ + "pf enabled\nToken : 99\n") == []
     assert meaningful_stderr(ALTQ + "stdin:1: syntax error\n") == ["stdin:1: syntax error"]
+    assert meaningful_stderr("1 table created.\n1/2 addresses added.\nno changes.\n") == []
+    assert meaningful_stderr("1 addresses added.\npfctl: Invalid argument.\n") == [
+        "pfctl: Invalid argument."
+    ]
 
 
 async def test_block_enables_disabled_pf_and_loads_anchor() -> None:

@@ -95,6 +95,12 @@ _BENIGN_STDERR = (
     "present in the main ruleset added by the system at startup",
     "See /etc/pf.conf for further details",
 )
+# The summary pfctl prints after every `-T` command that succeeds ("1 table created.",
+# "2/3 addresses added.", "no changes."): an exit code of 0 already says it worked.
+_TABLE_SUMMARY_RE = re.compile(
+    r"^(?:no changes|\d+(?:/\d+)? (?:tables?|addresses) "
+    r"(?:created|added|deleted|changed|zeroed|expired))\.?$"
+)
 PARENT_ANCHOR_RULE = 'anchor "com.apple/*"'
 
 
@@ -123,7 +129,9 @@ def meaningful_stderr(stderr: str) -> list[str]:
     return [
         line.strip()
         for line in stderr.splitlines()
-        if line.strip() and not any(b in line for b in _BENIGN_STDERR)
+        if line.strip()
+        and not any(b in line for b in _BENIGN_STDERR)
+        and not _TABLE_SUMMARY_RE.match(line.strip())
     ]
 
 

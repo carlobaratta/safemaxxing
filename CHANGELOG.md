@@ -6,6 +6,8 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-03
+
 ### Security
 
 - CI and release workflows pin every action to a commit SHA, so a moved tag cannot run in the
@@ -41,6 +43,16 @@ All notable changes are listed here. The format follows
   at most 64 UDP queries in flight (more are dropped; clients retry) and 32 TCP connections
   (more are closed at once), each closed after 5 s idle; entering Paranoia Mode raises the
   descriptor soft limit to 4096.
+
+### Fixed
+
+- Entering Paranoia Mode failed at the first exception table (`-T replace ... FAILED: 1 table
+  created.; 1 addresses added.`): pfctl's success summary on stderr was read as an error.
+  `meaningful_stderr` now drops pfctl's `-T` summaries, so a table command fails only on a
+  real error.
+- With no `user_allow` entries, entering Paranoia Mode then failed on `-T flush` of
+  `safemaxxing_user` (`Table does not exist`). Emptying a table pf never created is now a
+  no-op.
 
 ### Changed
 
@@ -246,7 +258,8 @@ First tagged release (alpha). Validated on macOS 27.0.1, Apple Silicon: see TEST
   It no longer reports a missing anchor. (34c9f53, fb802ee)
 - Severity markup (`[high]`) was swallowed in the text output of `watch`. (c6cdc44)
 
-[Unreleased]: https://github.com/carlobaratta/safemaxxing/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/carlobaratta/safemaxxing/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/carlobaratta/safemaxxing/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/carlobaratta/safemaxxing/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/carlobaratta/safemaxxing/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/carlobaratta/safemaxxing/releases/tag/v0.1.0
