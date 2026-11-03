@@ -42,9 +42,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      # Fail before any setup, naming each missing secret (never its value): without this the
-      # first sign of a missing secret is `security import` rejecting an empty .p12.
+      # With none of the 8 secrets the build is unsigned (tarball only, no .pkg). With some but
+      # not all, fail before any setup, naming each missing secret (never its value): otherwise
+      # the first sign of one is `security import` rejecting an empty .p12.
       - name: Check signing and notarization secrets
+        id: secrets
         env:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -55,16 +57,23 @@ jobs:
           AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
           AC_API_PRIVATE_KEY: ${{ secrets.AC_API_PRIVATE_KEY }}
         run: |
-          missing=0
-          for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD KEYCHAIN_PASSWORD \
-            MACOS_SIGN_IDENTITY MACOS_INSTALLER_IDENTITY \
-            AC_API_KEY_ID AC_API_ISSUER_ID AC_API_PRIVATE_KEY; do
-            if [ -z "${!name}" ]; then
-              echo "::error title=Missing secret::$name is not set; see packaging/README.md#required-repository-secrets"
-              missing=1
-            fi
+          names="MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD KEYCHAIN_PASSWORD
+            MACOS_SIGN_IDENTITY MACOS_INSTALLER_IDENTITY
+            AC_API_KEY_ID AC_API_ISSUER_ID AC_API_PRIVATE_KEY"
+          set=0 missing=""
+          for name in $names; do
+            if [ -n "${!name}" ]; then set=$((set + 1)); else missing="$missing $name"; fi
           done
-          exit "$missing"
+          if [ "$set" -eq 0 ]; then
+            echo "::notice title=Unsigned build::no signing secrets set; building an unsigned tarball without a .pkg"
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          for name in $missing; do
+            echo "::error title=Missing secret::$name is not set; see packaging/README.md#required-repository-secrets"
+          done
+          [ -z "$missing" ] || exit 1
+          echo "signed=true" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
@@ -75,6 +84,7 @@ jobs:
       - run: uv pip install pyinstaller
 
       - name: Import Developer ID signing identities
+        if: steps.secrets.outputs.signed == 'true'
         env:
           MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
@@ -102,6 +112,7 @@ jobs:
         run: ./packaging/build_release.sh
 
       - name: Notarize and staple the installer
+        if: steps.secrets.outputs.signed == 'true'
         env:
           AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
           AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
@@ -147,7 +158,11 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          version="${TAG#v}"
+          # The version is the package's (__init__.py), which a test tag like v0.2.1-rc1 need
+          # not match; the URLs point at this tag's release either way.
+          version="$(find artifacts -type f -name 'safemaxxing-*-arm64.tar.gz' \
+            | sed -n 's/.*safemaxxing-\(.*\)-arm64\.tar\.gz$/\1/p' | head -1)"
+          [ -n "$version" ] || { echo "::error::no arm64 tarball"; exit 1; }
           sha() {
             f="$(find artifacts -type f -name "safemaxxing-$version-$1.tar.gz")"
             [ -n "$f" ] || { echo "::error::no $1 tarball for $version"; exit 1; }
@@ -156,9 +171,9 @@ jobs:
           arm="$(sha arm64)"
           intel="$(sha x86_64)"
           mkdir -p artifacts/formula
-          awk -v v="$version" -v arm="$arm" -v intel="$intel" '
+          awk -v v="$version" -v tag="$TAG" -v arm="$arm" -v intel="$intel" '
             /^  version "/ { sub(/"[^"]*"/, "\"" v "\"") }
-            /url "/ { gsub(/v[0-9][^\/]*\/safemaxxing-[^-]*-/, "v" v "/safemaxxing-" v "-") }
+            /url "/ { gsub(/v[0-9][^\/]*\/safemaxxing-[^-]*-/, tag "/safemaxxing-" v "-") }
             /on_arm do/ { arch = arm } /on_intel do/ { arch = intel }
             /sha256 "/ { sub(/"[^"]*"/, "\"" arch "\"") }
             { print }
@@ -171,9 +186,18 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           files="$(find artifacts -type f \( -name 'safemaxxing-*.tar.gz' -o -name 'safemaxxing-*.pkg' -o -name 'safemaxxing.rb' \))"
+          flags=""
+          # A tag with a suffix (v0.2.1-rc1) is a test release, not the latest one.
+          case "$TAG" in *-*) flags="--prerelease" ;; esac
+          notes=""
+          if ! printf '%s\n' "$files" | grep -q '\.pkg$'; then
+            notes="Unsigned build: no Developer ID signature, no notarization and no .pkg. On first run macOS blocks the binary; allow it with \`xattr -dr com.apple.quarantine\` on the extracted folder."
+          fi
           # shellcheck disable=SC2086
           gh release create "$TAG" \
             --repo "$REPO" \
             --title "$TAG" \
+            --notes "$notes" \
             --generate-notes \
+            $flags \
             $files

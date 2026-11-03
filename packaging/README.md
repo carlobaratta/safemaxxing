@@ -47,8 +47,13 @@ Undo with `daemon uninstall`, then remove `/usr/local/libexec/safemaxxing`.
 Tag `vX.Y.Z` and push: `release.yml` runs the full gate on `macos-latest` and `macos-15-intel`
 (Python 3.12/3.13), then on each architecture builds, signs with the hardened runtime,
 packages a `.pkg`, submits it to Apple with `notarytool submit --wait`, staples the ticket, and
-attaches the per-arch tarballs and `.pkg`s to the GitHub release. Update the tap's formula with
-the version and the SHA-256s the build job prints to the run summary.
+attaches the per-arch tarballs and `.pkg`s to the GitHub release, with `safemaxxing.rb`: the
+tap's formula filled in with the version and the tarballs' SHA-256s. A tag with a suffix
+(`v0.2.1-rc1`) publishes a pre-release.
+
+With **none** of the secrets below set, the release is unsigned: tarballs and formula only, no
+`.pkg` and no notarization, and the release notes say so. With some but not all, the build fails
+naming the missing ones.
 
 ## Required repository secrets
 

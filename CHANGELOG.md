@@ -14,6 +14,9 @@ All notable changes are listed here. The format follows
   interpolation.
 - The release attaches `safemaxxing.rb`, the Homebrew formula with this version and the
   tarballs' real SHA-256s, instead of leaving the checksums to be copied by hand.
+- Without a Developer ID the release still publishes: with none of the signing secrets set it
+  builds unsigned tarballs (no `.pkg`, no notarization) and says so in the release notes. A
+  tag with a suffix (`v0.2.1-rc1`) publishes a pre-release.
 
 - Paranoia Mode's default-deny could be ridden by any unprivileged app. The DHCP, DHCPv6 and
   sinkhole-upstream rules passed packets for their source port alone, assuming only root can
