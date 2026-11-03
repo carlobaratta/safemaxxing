@@ -7,8 +7,8 @@
 # daemon run from it (`sudo brew services`) would let any code running as that user replace the
 # bundle and gain root at the next start (see SECURITY.md). Root use goes through the .pkg,
 # which installs a root-owned copy under /usr/local/libexec. It installs the signed, notarized onedir bundle from the GitHub release (one per arch). The
-# url/sha256 pairs below are placeholders until the first tagged release; the release workflow
-# prints each tarball's SHA-256 so the tap can be updated. Keep this file in the tap repo
+# url/sha256 pairs below are placeholders; each tagged release attaches this file as
+# safemaxxing.rb with its version and the tarballs' real SHA-256s, which is what the tap gets. Keep this file in the tap repo
 # (carlobaratta/homebrew-tap) as Formula/safemaxxing.rb; it lives here as the source of truth.
 class Safemaxxing < Formula
   desc "Headless privacy supervisor and egress firewall for macOS"

@@ -8,6 +8,13 @@ All notable changes are listed here. The format follows
 
 ### Security
 
+- CI and release workflows pin every action to a commit SHA, so a moved tag cannot run in the
+  job that holds the signing and notarization secrets. The `.p12` and `.p8` files are now
+  owner-only and removed on failure too, and the tag reaches the shell through `env`, not
+  interpolation.
+- The release attaches `safemaxxing.rb`, the Homebrew formula with this version and the
+  tarballs' real SHA-256s, instead of leaving the checksums to be copied by hand.
+
 - Paranoia Mode's default-deny could be ridden by any unprivileged app. The DHCP, DHCPv6 and
   sinkhole-upstream rules passed packets for their source port alone, assuming only root can
   bind below 1024; on macOS any user can bind such a port on the wildcard address. An app could

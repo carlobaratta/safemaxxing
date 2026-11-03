@@ -22,8 +22,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --locked
@@ -66,8 +66,8 @@ jobs:
           done
           exit "$missing"
 
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           python-version: "3.12"
       # The menubar extra (rumps + PyObjC) goes into the bundle; the spec refuses to build without it.
@@ -82,6 +82,9 @@ jobs:
         run: |
           keychain="$RUNNER_TEMP/build.keychain-db"
           cert="$RUNNER_TEMP/cert.p12"
+          # Remove the certificate even when a later command fails, and keep it owner-only.
+          trap 'rm -f "$cert"' EXIT
+          umask 077
           echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$cert"
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain"
           security set-keychain-settings -lut 3600 "$keychain"
@@ -91,7 +94,6 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PASSWORD" "$keychain"
           security list-keychains -d user -s "$keychain" login.keychain-db
-          rm -f "$cert"
 
       - name: Build, sign and package
         env:
@@ -106,19 +108,21 @@ jobs:
           AC_API_PRIVATE_KEY: ${{ secrets.AC_API_PRIVATE_KEY }}
         run: |
           key="$RUNNER_TEMP/ac_api_key.p8"
+          # Remove the key even when notarization fails, and keep it owner-only.
+          trap 'rm -f "$key"' EXIT
+          umask 077
           printf '%s' "$AC_API_PRIVATE_KEY" > "$key"
           pkg="$(ls dist/safemaxxing-*.pkg)"
           xcrun notarytool submit "$pkg" \
             --key "$key" --key-id "$AC_API_KEY_ID" --issuer "$AC_API_ISSUER_ID" --wait
           xcrun stapler staple "$pkg"
           xcrun stapler validate "$pkg"
-          rm -f "$key"
 
       - name: Record checksums
         run: |
           shasum -a 256 dist/safemaxxing-*.tar.gz | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: safemaxxing-${{ matrix.os }}
           path: |
@@ -131,17 +135,45 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     timeout-minutes: 10
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          sparse-checkout: Formula
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
+      # The tap's formula with this release's version and real checksums, attached to the
+      # release so the tap is updated from it instead of by hand.
+      - name: Fill in the Homebrew formula
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          sha() {
+            f="$(find artifacts -type f -name "safemaxxing-$version-$1.tar.gz")"
+            [ -n "$f" ] || { echo "::error::no $1 tarball for $version"; exit 1; }
+            sha256sum "$f" | cut -d' ' -f1
+          }
+          arm="$(sha arm64)"
+          intel="$(sha x86_64)"
+          mkdir -p artifacts/formula
+          awk -v v="$version" -v arm="$arm" -v intel="$intel" '
+            /^  version "/ { sub(/"[^"]*"/, "\"" v "\"") }
+            /url "/ { gsub(/v[0-9][^\/]*\/safemaxxing-[^-]*-/, "v" v "/safemaxxing-" v "-") }
+            /on_arm do/ { arch = arm } /on_intel do/ { arch = intel }
+            /sha256 "/ { sub(/"[^"]*"/, "\"" arch "\"") }
+            { print }
+          ' Formula/safemaxxing.rb > artifacts/formula/safemaxxing.rb
+          cat artifacts/formula/safemaxxing.rb >> "$GITHUB_STEP_SUMMARY"
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
         run: |
-          files="$(find artifacts -type f \( -name 'safemaxxing-*.tar.gz' -o -name 'safemaxxing-*.pkg' \))"
+          files="$(find artifacts -type f \( -name 'safemaxxing-*.tar.gz' -o -name 'safemaxxing-*.pkg' -o -name 'safemaxxing.rb' \))"
           # shellcheck disable=SC2086
-          gh release create "${{ github.ref_name }}" \
-            --repo "${{ github.repository }}" \
-            --title "${{ github.ref_name }}" \
+          gh release create "$TAG" \
+            --repo "$REPO" \
+            --title "$TAG" \
             --generate-notes \
             $files
