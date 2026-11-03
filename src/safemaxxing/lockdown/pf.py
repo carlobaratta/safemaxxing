@@ -7,13 +7,22 @@ from collections.abc import Iterable
 from safemaxxing.firewall import (
     ANCHOR,
     PFCTL,
+    CommandResult,
     FirewallError,
     Runner,
     anchor_rules,
     meaningful_stderr,
     run_command,
+    table_missing,
 )
 from safemaxxing.lockdown.rules import GRANTS_ANCHOR, Grant, grant_rules
+
+
+def _raise_on_failure(argv: list[str], res: CommandResult) -> None:
+    problems = meaningful_stderr(res.stderr)
+    if res.returncode != 0 or problems:
+        detail = "; ".join(problems) or f"exit {res.returncode}"
+        raise FirewallError(f"{' '.join(argv[1:])}: {detail}")
 
 
 class LockdownFirewall:
@@ -27,11 +36,7 @@ class LockdownFirewall:
         self.grants_anchor = GRANTS_ANCHOR if anchor == ANCHOR else f"{anchor}/grants"
 
     async def _pfctl(self, argv: list[str], stdin: str | None = None) -> None:
-        res = await self._run(argv, stdin=stdin)
-        problems = meaningful_stderr(res.stderr)
-        if res.returncode != 0 or problems:
-            detail = "; ".join(problems) or f"exit {res.returncode}"
-            raise FirewallError(f"{' '.join(argv[1:])}: {detail}")
+        _raise_on_failure(argv, await self._run(argv, stdin=stdin))
 
     async def check(self, rules: str, anchor: str | None = None) -> None:
         """Parse `rules` without loading them; raises FirewallError if pf rejects them."""
@@ -49,8 +54,14 @@ class LockdownFirewall:
     async def replace_table(self, table: str, addresses: Iterable[str]) -> None:
         """Make `table` hold exactly `addresses` (emptied when there are none)."""
         addrs = sorted(set(addresses))
-        verb = ["replace", *addrs] if addrs else ["flush"]
-        await self._pfctl([PFCTL, "-a", self.anchor, "-t", table, "-T", *verb])
+        if addrs:
+            await self._pfctl([PFCTL, "-a", self.anchor, "-t", table, "-T", "replace", *addrs])
+            return
+        argv = [PFCTL, "-a", self.anchor, "-t", table, "-T", "flush"]
+        res = await self._run(argv)
+        # pf creates a table on its first address: one never filled is already empty.
+        if not table_missing(res.stderr):
+            _raise_on_failure(argv, res)
 
     async def restore_normal(self) -> None:
         """Back to v0.2: block table only, no grants. The same two steps the watchdog runs."""

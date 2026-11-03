@@ -5,6 +5,7 @@ import ipaddress
 import socket
 import ssl
 import struct
+from collections.abc import Callable
 
 import pytest
 
@@ -162,6 +163,61 @@ async def test_sinkhole_end_to_end_over_udp_and_tcp() -> None:
         client.close()
         await sinkhole.close()
         upstream.close()
+
+
+async def until(condition: Callable[[], bool]) -> None:
+    for _ in range(200):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not met")
+
+
+async def test_sinkhole_caps_tcp_clients_and_closes_idle_ones() -> None:
+    # Any local process may connect: unbounded, idle connections would use up the lockdown
+    # process's descriptors, and with them its heartbeat.
+    sinkhole = Sinkhole(
+        DomainBlocklist(), DnsMap(), ["127.0.0.1"], listen=["127.0.0.1"], port=25354,
+        upstream_ports=(26000, 26999), max_clients=2, idle_s=0.2,
+    )  # fmt: skip
+    await sinkhole.start()
+    try:
+        held = [await asyncio.open_connection("127.0.0.1", 25354) for _ in range(2)]
+        await until(lambda: sinkhole.clients == 2)
+        reader, writer = await asyncio.open_connection("127.0.0.1", 25354)
+        assert await asyncio.wait_for(reader.read(), 1.0) == b""  # closed at once
+        writer.close()
+        for reader, writer in held:  # silent for idle_s: closed
+            assert await asyncio.wait_for(reader.read(), 1.0) == b""
+            writer.close()
+        await until(lambda: sinkhole.clients == 0)
+        assert sinkhole.dropped == 1
+    finally:
+        await sinkhole.close()
+
+
+async def test_sinkhole_drops_udp_queries_beyond_max_pending() -> None:
+    loop = asyncio.get_running_loop()
+    # An upstream that never answers: every query holds its upstream socket until timeout_s.
+    silent, _ = await loop.create_datagram_endpoint(
+        asyncio.DatagramProtocol, local_addr=("127.0.0.1", 0)
+    )
+    sinkhole = Sinkhole(
+        DomainBlocklist(), DnsMap(), ["127.0.0.1"], listen=["127.0.0.1"], port=25355,
+        upstream_port=silent.get_extra_info("sockname")[1], upstream_ports=(26000, 26999),
+        timeout_s=5.0, max_pending=3,
+    )  # fmt: skip
+    await sinkhole.start()
+    client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        for ident in range(10):
+            client.sendto(query("slow.example.org", ident), ("127.0.0.1", 25355))
+        await until(lambda: sinkhole.pending + sinkhole.dropped == 10)
+        assert (sinkhole.pending, sinkhole.dropped) == (3, 7)
+    finally:
+        client.close()
+        await sinkhole.close()
+        silent.close()
 
 
 def test_sinkhole_refuses_to_start_without_upstreams() -> None:

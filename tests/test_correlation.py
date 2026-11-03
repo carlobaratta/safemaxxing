@@ -81,6 +81,21 @@ def test_ignore_list() -> None:
     assert eng.ingest_connection(make_conn(bundle_id="com.example.spy")) == []
 
 
+def test_ignore_holds_only_for_a_process_whose_signature_backs_the_claim() -> None:
+    # pid 4242 really is FaceTime; pid 6666 only says so (Info.plist, process name).
+    config = CorrelationConfig(ignore=frozenset({"com.apple.FaceTime", "FaceTime"}))
+    eng = CorrelationEngine(config, clock=lambda: T0, vouch=lambda pid, name: pid == 4242)
+    for pid in (4242, 6666):
+        eng.ingest_event(
+            make_event(pid=pid, bundle_id="com.apple.FaceTime", process_name="FaceTime")
+        )
+    assert eng.ingest_connection(make_conn(pid=4242, bundle_id="com.apple.FaceTime")) == []
+    (alert,) = eng.ingest_connection(
+        make_conn(pid=6666, bundle_id="com.apple.FaceTime", process_name="FaceTime")
+    )
+    assert alert.finding.connection.pid == 6666
+
+
 def test_old_items_evicted() -> None:
     eng = engine(window_s=0.5, late_arrival_s=1.0)
     eng.ingest_event(make_event())

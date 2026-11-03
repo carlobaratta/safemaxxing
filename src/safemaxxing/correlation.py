@@ -113,9 +113,13 @@ class CorrelationEngine:
         config: CorrelationConfig | None = None,
         clock: Callable[[], float] = time.time,
         actor_chain: Callable[[int], frozenset[int]] | None = None,
+        vouch: Callable[[int | None, str], bool] | None = None,
     ) -> None:
         self.config = config or CorrelationConfig()
         self._clock = clock
+        # Whether a pid's signature backs the bundle id or process name it matched `ignore`
+        # with (both are the process's own choice). None takes every claim at its word.
+        self._vouch = vouch
         # Maps a connection's owning pid to the pids accountable for it (the app that spawned a
         # helper, or delegated to a daemon). None disables it, leaving matching on pid/bundle.
         self._actor_chain = actor_chain
@@ -135,8 +139,12 @@ class CorrelationEngine:
         """Snapshot of the buffered events still inside the retention period."""
         return tuple(self._events)
 
-    def _ignored(self, *names: str | None) -> bool:
-        return any(n in self.config.ignore for n in names if n)
+    def _ignored(self, pid: int | None, *names: str | None) -> bool:
+        hits = [n for n in names if n and n in self.config.ignore]
+        if self._vouch is None:
+            return bool(hits)
+        # A spy naming itself after an ignored app must not vanish with it.
+        return any(self._vouch(pid, n) for n in hits)
 
     def _advance(self, ts: float) -> None:
         if ts <= self._horizon:
@@ -249,7 +257,7 @@ class CorrelationEngine:
         Indicator events are always kept: their system flag rests on a bundle id any app can
         claim, and the genuine Apple app's sockets are dropped as system anyway.
         """
-        if self._ignored(event.bundle_id, event.process_name):
+        if self._ignored(event.pid, event.bundle_id, event.process_name):
             return []
         if event.system and not event.from_indicator and not self.config.include_system:
             return []
@@ -269,7 +277,7 @@ class CorrelationEngine:
         critical, when several distinct sensors precede the same connection (`tcc` is folded
         into the sensor it precedes, see `strongest`).
         """
-        if self._ignored(conn.bundle_id, conn.process_name):
+        if self._ignored(conn.pid, conn.bundle_id, conn.process_name):
             return []
         if not self.config.include_dns and conn.remote_port in DNS_PORTS:
             return []

@@ -7,6 +7,7 @@ from collections import deque
 from collections.abc import AsyncIterable, AsyncIterator, Callable
 from typing import Final, TypeVar
 
+from safemaxxing.codesign import vouches
 from safemaxxing.correlation import CorrelationConfig, CorrelationEngine
 from safemaxxing.models import Alert, Event, IndicatorState, NetworkConnection
 from safemaxxing.network import HostnameResolver, NetworkMonitor
@@ -85,7 +86,7 @@ class Supervisor:
         return cls(
             events=SensorListener(on_indicator=on_indicator).events(),
             connections=monitor.connections(),
-            engine=CorrelationEngine(config, actor_chain=actor_chain),
+            engine=CorrelationEngine(config, actor_chain=actor_chain, vouch=vouches),
             monitor=monitor,
             pktap=pktap,
             resolver=resolver,

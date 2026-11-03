@@ -6,6 +6,54 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-03
+
+### Security
+
+- CI and release workflows pin every action to a commit SHA, so a moved tag cannot run in the
+  job that holds the signing and notarization secrets. The `.p12` and `.p8` files are now
+  owner-only and removed on failure too, and the tag reaches the shell through `env`, not
+  interpolation.
+- The release attaches `safemaxxing.rb`, the Homebrew formula with this version and the
+  tarballs' real SHA-256s, instead of leaving the checksums to be copied by hand.
+- Without a Developer ID the release still publishes: with none of the signing secrets set it
+  builds unsigned tarballs (no `.pkg`, no notarization) and says so in the release notes. A
+  tag with a suffix (`v0.2.1-rc1`) publishes a pre-release.
+
+- Paranoia Mode's default-deny could be ridden by any unprivileged app. The DHCP, DHCPv6 and
+  sinkhole-upstream rules passed packets for their source port alone, assuming only root can
+  bind below 1024; on macOS any user can bind such a port on the wildcard address. An app could
+  send UDP to any host on port 67 (IPv4) or 547 (IPv6), or query the system resolvers directly
+  around the sinkhole and its blocklist. Those rules now also require a root-owned socket
+  (`user root`).
+- A process could ride Paranoia Mode's grants by claiming the bundle id of the app that held
+  them: the piggyback audit took the bundle id from the process's own Info.plist. A process
+  claiming a lease owner's bundle id must now pass the grant policy, against the Team ID pinned
+  for it, on its kernel code status; otherwise it is stopped like any other piggyback.
+- `--ignore` matched the bundle id and process name a process gives itself, so a spy naming
+  itself after an ignored app raised no alert. An entry now holds only when the process's
+  signing identifier, read from the kernel, is that bundle id or a helper of it, signed by
+  Apple or a Team ID (a `com.apple.` identifier by Apple only). A bare process name matches
+  only an Apple platform binary whose identifier ends in it: ignore third-party apps by bundle
+  id.
+- Any local process could turn Paranoia Mode off by holding idle TCP connections to the DNS
+  sinkhole (or flooding it with queries to a name that never resolves): every one held a file
+  descriptor in the lockdown's process, whose soft limit is 256 on macOS, until the heartbeat
+  could not write its counter and the watchdog restored the v0.2 rules. The sinkhole now keeps
+  at most 64 UDP queries in flight (more are dropped; clients retry) and 32 TCP connections
+  (more are closed at once), each closed after 5 s idle; entering Paranoia Mode raises the
+  descriptor soft limit to 4096.
+
+### Fixed
+
+- Entering Paranoia Mode failed at the first exception table (`-T replace ... FAILED: 1 table
+  created.; 1 addresses added.`): pfctl's success summary on stderr was read as an error.
+  `meaningful_stderr` now drops pfctl's `-T` summaries, so a table command fails only on a
+  real error.
+- With no `user_allow` entries, entering Paranoia Mode then failed on `-T flush` of
+  `safemaxxing_user` (`Table does not exist`). Emptying a table pf never created is now a
+  no-op.
+
 ### Changed
 
 - `release.yml`'s build job first checks the 8 signing and notarization secrets and fails
@@ -210,7 +258,8 @@ First tagged release (alpha). Validated on macOS 27.0.1, Apple Silicon: see TEST
   It no longer reports a missing anchor. (34c9f53, fb802ee)
 - Severity markup (`[high]`) was swallowed in the text output of `watch`. (c6cdc44)
 
-[Unreleased]: https://github.com/carlobaratta/safemaxxing/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/carlobaratta/safemaxxing/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/carlobaratta/safemaxxing/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/carlobaratta/safemaxxing/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/carlobaratta/safemaxxing/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/carlobaratta/safemaxxing/releases/tag/v0.1.0

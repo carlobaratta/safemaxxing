@@ -25,6 +25,7 @@ import ipaddress
 import json
 import os
 import re
+import resource
 import socket
 import tempfile
 import time
@@ -37,7 +38,14 @@ from typing import IO
 import psutil
 
 from safemaxxing.boot import LaunchdJob
-from safemaxxing.codesign import CodeVerifier, Verdict, assess, kernel_code_status, start_time
+from safemaxxing.codesign import (
+    CodeStatus,
+    CodeVerifier,
+    Verdict,
+    assess,
+    kernel_code_status,
+    start_time,
+)
 from safemaxxing.firewall import (
     STATE_DIR,
     FirewallError,
@@ -98,6 +106,9 @@ DOH_RESOLVERS = frozenset(
         "2620:fe::9",
     }
 )
+# macOS starts a process with a soft limit of 256 descriptors, shared here by the sinkhole,
+# pfctl, tcpdump and the TUI; running out would stop the heartbeat and drop the lockdown.
+FD_LIMIT = 4096
 _RETRY_TTL_S = 5.0
 _SOCKETS_TTL_S = 0.25
 _VERIFIED_TTL_S = 10.0
@@ -229,6 +240,16 @@ async def frontmost_bundle(runner: Runner = run_command) -> str | None:
     return match.group(1) if match else None
 
 
+def raise_fd_limit(target: int = FD_LIMIT) -> None:
+    """Raise the soft descriptor limit to `target` (or the hard limit, if lower). Best effort:
+    the sinkhole's own bounds already keep a flood from exhausting the default."""
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    want = target if hard == resource.RLIM_INFINITY else min(target, hard)
+    if soft != resource.RLIM_INFINITY and soft < want:
+        with contextlib.suppress(ValueError, OSError):
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+
+
 async def resolve_hosts(hosts: Iterable[str]) -> list[str]:
     """Addresses of `hosts`, resolved now (before lockdown, while DNS still works)."""
     found: set[str] = set()
@@ -264,6 +285,7 @@ class LockdownController:
         lock_path: Path = LOCK,
         grace_s: Mapping[LeaseSource, float] = GRACE_S,
         started: Callable[[int], float | None] = start_time,
+        code_status: Callable[[int], CodeStatus | None] = kernel_code_status,
     ) -> None:
         self.config = config
         self.firewall = firewall or LockdownFirewall(runner)
@@ -288,6 +310,7 @@ class LockdownController:
         self.heartbeat.healthy = self._healthy
         self.leases = LeaseBook(self._on_revoke, grace_s)
         self._started = started
+        self._code_status = code_status
         self.state = LockdownState.OFF
         self.sinkhole: Sinkhole | None = None
         self.denied = 0
@@ -353,6 +376,7 @@ class LockdownController:
                 "the watchdog is not loaded: run `sudo safemaxxing paranoia install` first"
             )
         self._take_lock()
+        raise_fd_limit()
         await ensure_interface(self._run)
         rules = lockdown_rules(self.config.rules)
         await self.firewall.check(rules)
@@ -587,7 +611,7 @@ class LockdownController:
         while True:
             await asyncio.sleep(interval_s)
             for (pid, _), (bundle_id, _) in list(self._verified.items()):
-                status = kernel_code_status(pid)
+                status = self._code_status(pid)
                 if status is None:
                     continue
                 verdict = assess(status, self.pins.get(bundle_id), self.verifier.strictness)
@@ -640,7 +664,7 @@ class LockdownController:
             return
         exe = conn.exe_path or self._exe(conn.pid)
         bundle_id = conn.bundle_id or (bundle_id_for_exe(exe) if exe else None)
-        if bundle_id in owners:
+        if bundle_id in owners and self._is_owner(conn.pid, bundle_id):
             return
         who = bundle_id or conn.process_name
         message = f"piggyback: {who} ({conn.pid}) reached {conn.remote}, granted to {owners}"
@@ -649,6 +673,15 @@ class LockdownController:
             self.notify(LockdownNotice(Severity.HIGH, message, conn.pid))
             return
         self._suspend(conn.pid, message)
+
+    def _is_owner(self, pid: int, bundle_id: str) -> bool:
+        """Whether `pid` really is `bundle_id`'s code. The bundle id comes from an Info.plist
+        any app can fill in, so its kernel status must pass the policy that granted the lease,
+        against the Team ID pinned at that grant."""
+        status = self._code_status(pid)
+        if status is None:
+            return False
+        return assess(status, self.pins.get(bundle_id), self.verifier.strictness).ok
 
     def _suspend(self, pid: int, message: str) -> None:
         result = self.processes.suspend(pid)

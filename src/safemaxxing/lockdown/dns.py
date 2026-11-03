@@ -6,7 +6,7 @@ app's pid; what it does carry is the name, and the answer ties that name to the 
 connects to next. In lockdown pf redirects every outbound :53 query to this forwarder
 (`route-to lo0` + `rdr`, see rules.py). It answers NXDOMAIN for a blocked name, or for an
 answer whose CNAME chain reaches one (CNAME cloaking), and forwards the rest to the resolvers
-the system had, from a privileged source port so that pf can let only it through.
+the system had, from a root-owned socket on a known source port, the only DNS pf lets out.
 """
 
 from __future__ import annotations
@@ -321,7 +321,8 @@ def system_resolvers(scutil_dns: str) -> list[str]:
 
 
 def _privileged_socket(family: int, kind: int, ports: tuple[int, int]) -> socket.socket:
-    """A socket bound to a random port in `ports`; below 1024 only root may bind one."""
+    """A socket bound to a random port in `ports` on the wildcard address. On macOS any user
+    may bind a low port there, so pf trusts the socket's owner (root), not the port."""
     low, high = ports
     candidates = random.sample(range(low, high + 1), k=high - low + 1)
     for port in candidates:
@@ -348,6 +349,10 @@ class _UdpServer(asyncio.DatagramProtocol):
         self._transport = transport
 
     def datagram_received(self, data: bytes, addr: tuple[str | object, ...]) -> None:
+        if self._sinkhole.saturated:
+            # Each query in flight holds an upstream socket: drop it, the client retries.
+            self._sinkhole.dropped += 1
+            return
         self._sinkhole.spawn(self._answer(data, addr))
 
     async def _answer(self, data: bytes, addr: tuple[str | object, ...]) -> None:
@@ -361,6 +366,12 @@ class Sinkhole:
 
     `on_block(name)` is called for every refused query. `listen`, `port` and
     `upstream_ports` are parameters only so the tests can run it unprivileged.
+
+    Any local process can talk to it, and it shares the lockdown's process: a file
+    descriptor it holds is one the heartbeat may lack, and a missed beat drops the lockdown.
+    So it bounds them: at most `max_pending` UDP queries in flight (more are dropped), at most
+    `max_clients` TCP connections (more are closed at once), each closed after `idle_s`
+    without a whole query or a drained reply.
     """
 
     def __init__(
@@ -374,6 +385,9 @@ class Sinkhole:
         upstream_port: int = 53,
         upstream_ports: tuple[int, int] = SINKHOLE_UPSTREAM_PORTS,
         timeout_s: float = 2.0,
+        max_pending: int = 64,
+        max_clients: int = 32,
+        idle_s: float = 5.0,
     ) -> None:
         if not upstreams:
             raise ValueError("no upstream resolver: refusing a sinkhole that cannot resolve")
@@ -386,10 +400,25 @@ class Sinkhole:
         self._upstream_port = upstream_port
         self._upstream_ports = upstream_ports
         self._timeout_s = timeout_s
+        self._max_pending = max_pending
+        self._max_clients = max_clients
+        self._idle_s = idle_s
         self._closers: list[Callable[[], object]] = []
         self._tasks: set[asyncio.Task[None]] = set()
+        self.clients = 0
         self.blocked = 0
         self.forwarded = 0
+        self.dropped = 0
+
+    @property
+    def pending(self) -> int:
+        """UDP queries being answered now."""
+        return len(self._tasks)
+
+    @property
+    def saturated(self) -> bool:
+        """Whether a new UDP query would exceed `max_pending`."""
+        return self.pending >= self._max_pending
 
     def spawn(self, coro: object) -> None:
         """Run a reply in the background, keeping a reference until it finishes."""
@@ -422,17 +451,26 @@ class Sinkhole:
             task.cancel()
 
     async def _tcp_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        if self.clients >= self._max_clients:
+            self.dropped += 1
+            writer.close()
+            return
+        self.clients += 1
+        idle = self._idle_s
         try:
             while True:
-                (length,) = struct.unpack("!H", await reader.readexactly(2))
-                reply = await self.resolve(await reader.readexactly(length))
+                head = await asyncio.wait_for(reader.readexactly(2), idle)
+                (length,) = struct.unpack("!H", head)
+                query = await asyncio.wait_for(reader.readexactly(length), idle)
+                reply = await self.resolve(query)
                 if reply is None:
                     break
                 writer.write(struct.pack("!H", len(reply)) + reply)
-                await writer.drain()
-        except (asyncio.IncompleteReadError, ConnectionError):
+                await asyncio.wait_for(writer.drain(), idle)
+        except (asyncio.IncompleteReadError, ConnectionError, TimeoutError):
             pass
         finally:
+            self.clients -= 1
             writer.close()
 
     def _refuses(self, names: Iterable[str]) -> str | None:

@@ -17,6 +17,7 @@ from safemaxxing.codesign import (
     CS_KILL,
     CS_OPS_CDHASH,
     CS_OPS_ENTITLEMENTS_BLOB,
+    CS_OPS_IDENTITY,
     CS_OPS_STATUS,
     CS_OPS_TEAMID,
     CS_PLATFORM_BINARY,
@@ -27,6 +28,7 @@ from safemaxxing.codesign import (
     CodeVerifier,
     Strictness,
     assess,
+    backs,
     kernel_code_status,
     team_requirement,
 )
@@ -37,10 +39,13 @@ DLV = "com.apple.security.cs.disable-library-validation"
 
 
 def status(
-    flags: int = GOOD, team: str | None = "KL8N8XSYF4", ents: Sequence[str] = ()
+    flags: int = GOOD,
+    team: str | None = "KL8N8XSYF4",
+    ents: Sequence[str] = (),
+    ident: str | None = "com.brave.Browser",
 ) -> CodeStatus:
     return CodeStatus(
-        4242, flags, "5aba0c03d96072bd582b1b678eab59ddbe220c18", team, frozenset(ents)
+        4242, flags, "5aba0c03d96072bd582b1b678eab59ddbe220c18", team, frozenset(ents), ident
     )
 
 
@@ -90,6 +95,45 @@ def test_team_requirement_refuses_injection() -> None:
         team_requirement('X" or anchor apple')
 
 
+APPLE = GOOD | CS_PLATFORM_BINARY
+
+
+@pytest.mark.parametrize(
+    "code, name",
+    [
+        (status(), "com.brave.Browser"),
+        (status(ident="com.brave.Browser.helper"), "com.brave.Browser"),
+        (status(APPLE, team=None, ident="com.apple.FaceTime"), "com.apple.FaceTime"),
+        (status(APPLE, team=None, ident="com.apple.nsurlsessiond"), "nsurlsessiond"),
+        (status(APPLE, team=None, ident="com.apple.finder"), "Finder"),
+    ],
+)
+def test_a_signature_backs_its_own_identity(code: CodeStatus, name: str) -> None:
+    assert backs(code, name)
+
+
+@pytest.mark.parametrize(
+    "code, name",
+    [
+        # An Info.plist or a process name is the app's own claim; the signature is not.
+        (status(ident="com.example.spy"), "com.brave.Browser"),
+        (status(ident="com.brave.BrowserX"), "com.brave.Browser"),
+        (status(GOOD | CS_ADHOC, team=None, ident="com.brave.Browser"), "com.brave.Browser"),
+        (status(GOOD & ~CS_VALID), "com.brave.Browser"),
+        (status(team=None), "com.brave.Browser"),
+        (status(ident=None), "com.brave.Browser"),
+        # A Team ID can sign any identifier, Apple's included, and any process name.
+        (status(ident="com.apple.FaceTime"), "com.apple.FaceTime"),
+        (status(ident="com.evil.nsurlsessiond"), "nsurlsessiond"),
+        # A copy of an Apple binary keeps Apple's signature, not the name it was given.
+        (status(APPLE, team=None, ident="com.apple.curl"), "zoom.us"),
+        (None, "com.brave.Browser"),
+    ],
+)
+def test_a_signature_does_not_back_a_borrowed_identity(code: CodeStatus | None, name: str) -> None:
+    assert not backs(code, name)
+
+
 class FakeKernel:
     """csops answering like macOS 27.0.1 did for Brave's helper (pid 937)."""
 
@@ -108,6 +152,9 @@ class FakeKernel:
         elif op == CS_OPS_TEAMID:
             raw = b"\x00\x00\x00\x00\x00\x00\x00\x13KL8N8XSYF4\x00"
             ctypes.memmove(buf, raw, len(raw))
+        elif op == CS_OPS_IDENTITY:
+            raw = b"\x00\x00\x00\x00\x00\x00\x00\x21com.brave.Browser.helper\x00"
+            ctypes.memmove(buf, raw, len(raw))
         elif op == CS_OPS_ENTITLEMENTS_BLOB:
             if size < len(self.blob):
                 ctypes.memmove(buf, b"\x00" * 4 + len(self.blob).to_bytes(4, "big"), 8)
@@ -121,12 +168,14 @@ def test_kernel_status_decodes_team_header_and_entitlement_blob() -> None:
     assert got is not None
     assert got.team_id == "KL8N8XSYF4" and got.cdhash is not None and got.cdhash.startswith("872d")
     assert got.entitlements == {DLV, "com.apple.security.device.camera"}
+    assert got.identifier == "com.brave.Browser.helper"
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="csops is macOS-only")
 def test_kernel_status_of_this_process_on_macos() -> None:
     got = kernel_code_status(os.getpid())
     assert got is not None and got.has(CS_VALID) and got.cdhash is not None
+    assert got.identifier
 
 
 async def test_verifier_runs_codesign_on_the_pid_and_detects_pid_reuse() -> None:
