@@ -5,14 +5,19 @@ import ipaddress
 import socket
 import ssl
 import struct
+import urllib.request
 from collections.abc import Callable
+from email.message import Message
 
 import pytest
 
 from safemaxxing.lockdown.dns import (
+    BLOCKLIST_OPENER,
+    DOH_NAMES,
     DnsError,
     DnsMap,
     DomainBlocklist,
+    HttpsOnlyRedirects,
     Record,
     Sinkhole,
     parse_blocklist,
@@ -223,6 +228,53 @@ async def test_sinkhole_drops_udp_queries_beyond_max_pending() -> None:
 def test_sinkhole_refuses_to_start_without_upstreams() -> None:
     with pytest.raises(ValueError, match="no upstream"):
         Sinkhole(DomainBlocklist(), DnsMap(), [])
+
+
+def test_blocklist_download_refuses_a_redirect_off_https() -> None:
+    # urllib follows https -> http on its own; the list would then cross the wire in clear.
+    handler = HttpsOnlyRedirects()
+    request = urllib.request.Request("https://lists.example/hosts")
+    with pytest.raises(ValueError, match="non-HTTPS redirect"):
+        handler.redirect_request(request, None, 302, "Found", Message(), "http://evil.example/")
+    moved = handler.redirect_request(
+        request, None, 301, "Moved", Message(), "https://mirror.example/hosts"
+    )
+    assert moved is not None and moved.full_url == "https://mirror.example/hosts"
+    handlers = BLOCKLIST_OPENER.handlers  # type: ignore[attr-defined]  # missing from the stubs
+    assert any(isinstance(h, HttpsOnlyRedirects) for h in handlers)
+
+
+async def test_sinkhole_refuses_public_doh_endpoints_and_the_firefox_canary() -> None:
+    # Refused with an empty blocklist, and even when the list allows them (R5.4). The
+    # upstream is never asked, so a documentation address is enough.
+    refused: list[str] = []
+    sinkhole = Sinkhole(
+        DomainBlocklist(allowed={"cloudflare-dns.com", "dns.google"}),
+        DnsMap(),
+        ["192.0.2.1"],
+        on_block=refused.append,
+    )
+    names = [
+        "mozilla.cloudflare-dns.com",
+        "chrome.cloudflare-dns.com",
+        "security.cloudflare-dns.com",
+        "odoh.cloudflare-dns.com",
+        "dns.google",
+        "dns.quad9.net",
+        # Other resolvers the browsers offer in their DoH settings.
+        "chromium.dns.nextdns.io",
+        "firefox.dns.nextdns.io",
+        "doh.opendns.com",
+        "dns.adguard-dns.com",
+        "private.canadianshield.cira.ca",
+        "use-application-dns.net",
+    ]
+    for name in names:
+        reply = await sinkhole.resolve(query(name))
+        assert reply is not None and parse_message(reply).flags & 0xF == 3, name
+    assert refused == names and len(sinkhole.dns_map) == 0
+    for name in ("cloudflare.com", "google.com", "nextdns.io", "opendns.com", "mullvad.net"):
+        assert not DOH_NAMES.blocks(name), name
 
 
 # --- SNI -----------------------------------------------------------------------------------

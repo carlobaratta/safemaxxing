@@ -31,7 +31,6 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.events import DescendantFocus
-from textual.timer import Timer
 from textual.widgets import (
     Button,
     DataTable,
@@ -44,7 +43,7 @@ from textual.widgets import (
 )
 
 from safemaxxing.codesign import signing_identity
-from safemaxxing.firewall import BlockList, PfFirewall, ProcessController, is_root
+from safemaxxing.firewall import BlockList, PfFirewall, PfReference, ProcessController, is_root
 from safemaxxing.lockdown.controller import LockdownController, LockdownNotice, LockdownState
 from safemaxxing.lockdown.leases import LeaseSource
 from safemaxxing.models import (
@@ -181,7 +180,6 @@ class SafemaxxingApp(App[None]):
     ]
     PANIC_OFF = "◉ PANIC · LOCKDOWN"
     PANIC_ON = "■ LOCKDOWN ON · press to leave"
-    BLINK_S = 0.5
 
     def __init__(
         self,
@@ -194,13 +192,12 @@ class SafemaxxingApp(App[None]):
     ) -> None:
         super().__init__()
         self.supervisor = supervisor
-        self.firewall = firewall or PfFirewall(store=BlockList())
+        self.firewall = firewall or PfFirewall(store=BlockList(), reference=PfReference())
         self.processes = processes or ProcessController()
         # Built by the CLI only when root; None leaves the panic button explaining why.
         self.lockdown = lockdown
         if lockdown is not None:
             lockdown.notify = self.show_notice
-        self._blink_timer: Timer | None = None
         self._signer = signer
         self._root = root
         self.alerts: dict[str, Alert] = {}
@@ -535,7 +532,8 @@ class SafemaxxingApp(App[None]):
         if self.lockdown is not None:
             self.sub_title = self.lockdown.summary()
             # The watchdog may have taken pf back on its own: drop the red theme with it.
-            if self.lockdown.state is LockdownState.OFF and self._blink_timer is not None:
+            lockdown_shown = self.screen_stack[0].has_class("-lockdown")
+            if self.lockdown.state is LockdownState.OFF and lockdown_shown:
                 self._set_lockdown_theme(False)
         self.stats = self._sample_stats()
         self.query_one(FirewallPanel).show(self.pf_status, self.stats)
@@ -742,19 +740,9 @@ class SafemaxxingApp(App[None]):
             self.bell()
 
     def _set_lockdown_theme(self, on: bool) -> None:
-        """Turn the whole dashboard red with blinking borders, or back to normal."""
-        screen = self.screen_stack[0]
-        screen.set_class(on, "-lockdown")
-        if self._blink_timer is not None:
-            self._blink_timer.stop()
-            self._blink_timer = None
-        screen.remove_class("-blink")
-        if on:
-            self._blink_timer = self.set_interval(self.BLINK_S, self._blink)
+        """Turn the whole dashboard red with steady borders (nothing blinks), or back to normal."""
+        self.screen_stack[0].set_class(on, "-lockdown")
         self.query_one("#panic", Button).label = self.PANIC_ON if on else self.PANIC_OFF
-
-    def _blink(self) -> None:
-        self.screen_stack[0].toggle_class("-blink")
 
     @on(Button.Pressed, "#panic")
     async def _panic_pressed(self) -> None:

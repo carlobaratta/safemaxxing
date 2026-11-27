@@ -4,6 +4,7 @@ import os
 import signal
 import stat
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -16,10 +17,13 @@ from safemaxxing.firewall import (
     BlockList,
     CommandResult,
     PfFirewall,
+    PfReference,
     ProcessController,
     anchor_missing,
     meaningful_stderr,
+    parse_pf_runtime,
     parse_pf_status,
+    parse_pf_token,
     run_command,
     validate_ip,
 )
@@ -38,7 +42,11 @@ DEFAULT_MAIN_RULES = (
 
 
 class FakePf:
-    """Simulates Darwin pfctl, including its benign ALTQ chatter on stderr."""
+    """Simulates Darwin pfctl, including its benign ALTQ chatter on stderr.
+
+    pf's references are modelled as in xnu: `-E` adds a token, `-X` drops one, and pf stops
+    when no token and no other holder (`others`) is left. `pfctl -d` is never expected.
+    """
 
     def __init__(
         self,
@@ -46,14 +54,35 @@ class FakePf:
         main_rules: str = DEFAULT_MAIN_RULES,
         honour_big_e: bool = True,
         reject_rules: bool = False,
+        others: int | None = None,
     ) -> None:
         self.enabled = enabled
+        # A pf already on is held by someone else, unless the test says otherwise.
+        self.others = (1 if enabled else 0) if others is None else others
+        self.since = time.time() - 3600
+        self.tokens: set[str] = set()
+        self._next_token = 1234
         self.main_rules = main_rules
         self.honour_big_e = honour_big_e
         self.reject_rules = reject_rules
         self.anchor_rules = ""
         self.table: set[str] = set()
         self.calls: list[list[str]] = []
+
+    def restart(self) -> None:
+        """Someone ran `pfctl -d` (every token invalidated), then enabled pf again."""
+        self.tokens.clear()
+        self._next_token = 1234  # the kernel may reuse a token value
+        self.since = time.time()
+        self.enabled, self.others = True, 1
+
+    def _info(self) -> str:
+        if not self.enabled:
+            return "Status: Disabled                              Debug: Urgent\n"
+        runtime = int(time.time() - self.since)
+        hours, rest = divmod(runtime, 3600)
+        clock = f"{hours:02d}:{rest // 60:02d}:{rest % 60:02d}"
+        return f"Status: Enabled for 0 days {clock}           Debug: Urgent\n"
 
     async def __call__(self, argv: Sequence[str], stdin: str | None = None) -> CommandResult:
         args = list(argv)
@@ -64,8 +93,7 @@ class FakePf:
         if anchored:
             rest = rest[2:]
         if rest == ["-s", "info"]:
-            status = "Enabled" if self.enabled else "Disabled"
-            return CommandResult(0, f"Status: {status}       Debug: Urgent\n", ALTQ)
+            return CommandResult(0, self._info(), ALTQ)
         if rest == ["-s", "rules"]:
             return CommandResult(0, self.anchor_rules if anchored else self.main_rules, ALTQ)
         if rest in (["-n", "-f", "-"], ["-f", "-"]):
@@ -75,12 +103,25 @@ class FakePf:
                 self.anchor_rules = (stdin or "").replace("from any to", "all to")
             return CommandResult(0, "", F_FLAG_WARNING + ALTQ)
         if rest == ["-E"]:
-            self.enabled = self.enabled or self.honour_big_e
-            return CommandResult(0, "", ALTQ + "pf enabled\nToken : 1234\n")
+            if not self.honour_big_e:
+                return CommandResult(0, "", ALTQ + "pf enabled\nToken : 0\n")
+            token = str(self._next_token)
+            self._next_token += 1
+            self.tokens.add(token)
+            if not self.enabled:
+                self.enabled, self.since = True, time.time()
+            return CommandResult(0, "", ALTQ + f"pf enabled\nToken : {token}\n")
+        if rest[:1] == ["-X"]:
+            if rest[1] not in self.tokens:
+                return CommandResult(1, "", "pfctl: DIOCSTOPREF: No such file or directory\n")
+            self.tokens.discard(rest[1])
+            if not self.tokens and not self.others:
+                self.enabled = False
+            return CommandResult(0, "", "pf: 0 references remaining\n")
         if rest == ["-e"]:
             if self.enabled:
                 return CommandResult(1, "", "pfctl: pf already enabled\n")
-            self.enabled = True
+            self.enabled, self.since, self.others = True, time.time(), self.others + 1
             return CommandResult(0, "", ALTQ + "pf enabled\n")
         if rest[:4] == ["-t", TABLE, "-T", "add"]:
             self.table.add(rest[4])
@@ -133,14 +174,23 @@ async def test_block_falls_back_to_lowercase_e() -> None:
     assert [PFCTL, "-e"] in pf.calls and pf.enabled
 
 
-async def test_setup_is_idempotent_and_skips_enable_when_on() -> None:
+async def test_setup_loads_the_anchor_once_and_skips_enable_when_on() -> None:
     pf = FakePf(enabled=True)
     fw = PfFirewall(runner=pf)
     await fw.block("203.0.113.9")
     calls_after_first = len(pf.calls)
     await fw.block("198.51.100.1")
     assert [PFCTL, "-E"] not in pf.calls
-    assert len(pf.calls) - calls_after_first == 2  # add + kill states, no re-setup
+    assert len(pf.calls) - calls_after_first == 3  # pf status + add + kill states
+
+
+async def test_a_long_lived_firewall_re_enables_pf_turned_off_elsewhere() -> None:
+    pf = FakePf(enabled=False)
+    fw = PfFirewall(runner=pf)
+    assert (await fw.block("203.0.113.9")).ok
+    pf.enabled, pf.tokens = False, set()  # another process's flush released the last holder
+    assert (await fw.block("198.51.100.1")).ok
+    assert pf.enabled
 
 
 async def test_existing_anchor_not_reloaded() -> None:
@@ -313,3 +363,112 @@ async def test_unwritable_store_keeps_the_block_and_says_so(tmp_path: Path) -> N
     assert result.ok
     assert pf.table == {"203.0.113.9"}
     assert "not saved for reboot: [Errno 20]" in result.detail
+
+
+def own_reference(tmp_path: Path) -> PfReference:
+    return PfReference(tmp_path / "state" / "pf-reference", owner_uid=os.getuid())
+
+
+def test_parse_pf_runtime_and_token() -> None:
+    info = "Status: Enabled for 2 days 03:04:05           Debug: Urgent\n"
+    assert parse_pf_runtime(info) == ((2 * 24 + 3) * 60 + 4) * 60 + 5
+    assert parse_pf_runtime("Status: Disabled              Debug: Urgent\n") is None
+    assert parse_pf_token(ALTQ + "pf enabled\nToken : 18446742974214806528\n") == (
+        "18446742974214806528"
+    )
+    assert parse_pf_token("Token : 0\n") is None  # the kernel's "no token"
+    assert parse_pf_token(f"Token : {2**64}\n") is None
+    assert parse_pf_token("Token : 12; rm -rf /\n") is None
+
+
+async def test_flush_releases_the_reference_and_pf_stops_without_other_holders(
+    tmp_path: Path,
+) -> None:
+    pf, reference = FakePf(enabled=False), own_reference(tmp_path)
+    fw = PfFirewall(runner=pf, reference=reference)
+    assert (await fw.block("203.0.113.9")).ok
+    record = reference.load()
+    assert record is not None and record.token in pf.tokens
+    assert stat.S_IMODE(reference.path.stat().st_mode) == 0o600
+    result = await fw.flush()
+    assert result.ok, result.detail
+    assert [PFCTL, "-X", record.token] in pf.calls
+    assert not pf.enabled and "pf disabled (no other holder)" in result.detail
+    assert reference.load() is None
+    assert not any(c[1:] == ["-d"] for c in pf.calls)
+
+
+async def test_flush_leaves_pf_on_for_its_other_holders(tmp_path: Path) -> None:
+    pf = FakePf(enabled=True)  # e.g. Internet Sharing already holds pf
+    fw = PfFirewall(runner=pf, reference=own_reference(tmp_path))
+    assert (await fw.block("203.0.113.9")).ok
+    assert [PFCTL, "-E"] in pf.calls  # our own reference, even though pf was on
+    result = await fw.flush()
+    assert result.ok and pf.enabled and pf.tokens == set()
+    assert "stays enabled for its other holders" in result.detail
+
+
+async def test_our_reference_keeps_pf_on_when_another_holder_leaves(tmp_path: Path) -> None:
+    pf = FakePf(enabled=True)
+    assert (await PfFirewall(runner=pf, reference=own_reference(tmp_path)).block("192.0.2.7")).ok
+    pf.others = 0  # the VPN that had enabled pf releases its reference
+    assert pf.tokens and pf.enabled
+
+
+async def test_flush_keeps_the_reference_while_paranoia_rules_are_loaded(tmp_path: Path) -> None:
+    pf, reference = FakePf(enabled=False), own_reference(tmp_path)
+    fw = PfFirewall(runner=pf, reference=reference)
+    assert (await fw.block("203.0.113.9")).ok
+    pf.anchor_rules += "block drop out log quick all\npass out quick proto udp to <dns>\n"
+    result = await fw.flush()
+    assert result.ok and pf.table == set()
+    assert "Paranoia Mode's rules are loaded" in result.detail
+    assert pf.enabled and reference.load() is not None
+    assert not any(c[1:2] == ["-X"] for c in pf.calls)
+
+
+async def test_a_token_from_an_earlier_run_of_pf_is_forgotten_not_released(
+    tmp_path: Path,
+) -> None:
+    pf, reference = FakePf(enabled=True), own_reference(tmp_path)  # pf on for an hour
+    fw = PfFirewall(runner=pf, reference=reference)
+    assert (await fw.block("203.0.113.9")).ok
+    pf.restart()
+    vpn = PfFirewall(runner=pf)  # a stand-in for another program taking a reference
+    await vpn._run([PFCTL, "-E"])
+    assert pf.tokens == {"1234"}  # the value our stale record also holds
+    result = await fw.flush()
+    assert result.ok and "restarted since safemaxxing enabled it" in result.detail
+    assert pf.tokens == {"1234"} and pf.enabled
+    assert not any(c[1:2] == ["-X"] for c in pf.calls)
+    assert reference.load() is None
+
+
+async def test_a_record_others_can_write_is_ignored(tmp_path: Path) -> None:
+    pf, reference = FakePf(enabled=False), own_reference(tmp_path)
+    fw = PfFirewall(runner=pf, reference=reference)
+    assert (await fw.block("203.0.113.9")).ok
+    reference.path.chmod(0o666)
+    result = await fw.flush()
+    assert result.ok and "no recorded reference" in result.detail
+    assert pf.enabled and not any(c[1:2] == ["-X"] for c in pf.calls)
+
+
+async def test_lowercase_e_fallback_has_nothing_to_release(tmp_path: Path) -> None:
+    pf = FakePf(enabled=False, honour_big_e=False)
+    fw = PfFirewall(runner=pf, reference=own_reference(tmp_path))
+    result = await fw.block("203.0.113.9")
+    assert result.ok and "flush cannot release it" in result.detail
+    flushed = await fw.flush()
+    assert flushed.ok and "no recorded reference" in flushed.detail and pf.enabled
+
+
+async def test_block_waits_for_a_flush_holding_the_lock(tmp_path: Path) -> None:
+    pf = FakePf(enabled=True)
+    held, waiting = own_reference(tmp_path), own_reference(tmp_path)
+    waiting.LOCK_TIMEOUT_S = 0.05
+    async with held.locked():
+        result = await PfFirewall(runner=pf, reference=waiting).block("203.0.113.9")
+    assert not result.ok and "holds" in result.detail
+    assert pf.table == set()
+    assert (await PfFirewall(runner=pf, reference=waiting).block("203.0.113.9")).ok

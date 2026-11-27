@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import email.message
 import errno
 import ipaddress
 import os
@@ -27,6 +28,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 from safemaxxing.firewall import STATE_DIR
 from safemaxxing.lockdown.rules import SINKHOLE_PORT, SINKHOLE_UPSTREAM_PORTS
@@ -219,10 +221,62 @@ class DomainBlocklist:
         return any(s in self._blocked for s in suffixes)
 
 
+# Public DNS-over-HTTPS/TLS endpoints, by name: browsers reach Cloudflare's on addresses no
+# fixed IP list keeps up with (mozilla.cloudflare-dns.com, chrome.cloudflare-dns.com, ...).
+# The sinkhole refuses them whatever the blocklist allows, so the browser falls back to the
+# system resolver, that is to the sinkhole (R5.4). use-application-dns.net is Firefox's
+# canary: NXDOMAIN there turns off the DoH Firefox enables by default.
+DOH_NAMES = DomainBlocklist(
+    {
+        "cloudflare-dns.com",
+        "dns.google",
+        "dns.google.com",
+        "dns.quad9.net",
+        "dns9.quad9.net",
+        "dns10.quad9.net",
+        "dns11.quad9.net",
+        # The other resolvers Chrome, Edge, Brave and Firefox offer in their DoH settings.
+        # A DoH server the user types in by hand is out of reach of any list (README).
+        "dns.nextdns.io",
+        "doh.opendns.com",
+        "doh.cleanbrowsing.org",
+        "dns.adguard-dns.com",
+        "doh.xfinity.com",
+        "dns.alidns.com",
+        "doh.dns.sb",
+        "dns.mullvad.net",
+        "canadianshield.cira.ca",
+        "wikimedia-dns.org",
+        "use-application-dns.net",
+    }
+)
+
+
+class HttpsOnlyRedirects(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to another HTTPS URL. urllib on its own follows https -> http,
+    and the list would then cross the wire in clear for anyone on the path to rewrite."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes] | None,
+        code: int,
+        msg: str,
+        headers: email.message.Message,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        if not newurl.startswith("https://"):
+            raise ValueError(f"refusing a non-HTTPS redirect for the blocklist: {newurl}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)  # type: ignore[arg-type]
+
+
+BLOCKLIST_OPENER = urllib.request.build_opener(HttpsOnlyRedirects)
+
+
 def _download(url: str, limit: int, timeout_s: float) -> bytes:
     if not url.startswith("https://"):
         raise ValueError(f"refusing a non-HTTPS blocklist URL: {url}")
-    with urllib.request.urlopen(url, timeout=timeout_s) as response:
+    with BLOCKLIST_OPENER.open(url, timeout=timeout_s) as response:
         data: bytes = response.read(limit + 1)
     if len(data) > limit:
         raise ValueError(f"blocklist larger than {limit} bytes")
@@ -474,7 +528,9 @@ class Sinkhole:
             writer.close()
 
     def _refuses(self, names: Iterable[str]) -> str | None:
-        return next((n for n in names if n and self.blocklist.blocks(n)), None)
+        return next(
+            (n for n in names if n and (DOH_NAMES.blocks(n) or self.blocklist.blocks(n))), None
+        )
 
     async def resolve(self, query: bytes) -> bytes | None:
         """The reply to `query`: NXDOMAIN for a blocked name, else the upstream answer

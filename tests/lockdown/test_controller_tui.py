@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import plistlib
 import resource
 import signal
@@ -12,6 +13,7 @@ from pathlib import Path
 import pytest
 from test_supervisor_tui import supervisor
 from test_tui import wait_for
+from textual.color import Color
 
 from safemaxxing.codesign import (
     CS_HARD,
@@ -20,16 +22,23 @@ from safemaxxing.codesign import (
     CS_VALID,
     CodeStatus,
     CodeVerifier,
+    Strictness,
     Verdict,
 )
-from safemaxxing.firewall import CommandResult, ProcessController
+from safemaxxing.firewall import PFCTL, CommandResult, PfReference, ProcessController
 from safemaxxing.lockdown.controller import (
+    DEFAULT_PARANOIA,
+    DOH_RESOLVERS,
+    MAX_PARANOIA,
+    PROFILES,
     LockdownController,
     LockdownNotice,
     LockdownState,
     ParanoiaConfig,
+    ParanoiaProfile,
     PinStore,
     SocketOwner,
+    network_extensions,
     raise_fd_limit,
 )
 from safemaxxing.lockdown.dns import DomainBlocklist, Record
@@ -74,18 +83,25 @@ class FakeMac:
         self.heartbeat = heartbeat
         self.watchdog_loaded = watchdog_loaded
         self.armed_at_load: bool | None = None
+        self.extensions = "0 extension(s)\n"
 
     async def __call__(self, argv: Sequence[str], stdin: str | None = None) -> CommandResult:
         args = list(argv)
         self.calls.append((args, stdin))
         if args[0] == "/bin/launchctl":
             return CommandResult(0 if self.watchdog_loaded else 113, "state = running", "")
+        if args[0] == "/usr/bin/systemextensionsctl":
+            return CommandResult(0, self.extensions, "")
         if args[0] == "/usr/sbin/scutil":
             return CommandResult(0, "  nameserver[0] : 192.168.1.1\n", "")
         if args == ["/sbin/ifconfig", "pflog0"]:
             # As on macOS 27.0.1: no pflog0 until it is created.
             created = any(a[-1] == "create" for a, _ in self.calls)
             return CommandResult(0 if created else 1, "", "")
+        if args[1:] == ["-s", "info"]:
+            return CommandResult(0, "Status: Enabled for 0 days 00:10:00    Debug: Urgent\n", "")
+        if args[1:] == ["-E"]:
+            return CommandResult(0, "", "pf enabled\nToken : 77\n")
         if args[-2:] == ["-f", "-"] and "-n" not in args and stdin and "log quick all" in stdin:
             self.armed_at_load = self.heartbeat.armed
         return CommandResult(0, "", "")
@@ -162,6 +178,7 @@ def build(
         grace_s=FAST,
         started=lambda pid: 1000.0 if pid in exes else None,
         code_status=CODE.get,
+        reference=PfReference(tmp_path / "state" / "pf-reference", owner_uid=os.getuid()),
     )
     return controller, mac, queue, notices, signals
 
@@ -195,6 +212,21 @@ async def test_enter_seeds_the_call_and_arms_before_default_deny(tmp_path: Path)
     assert mac.calls[-1][0][-2:] == ["-F", "rules"]
 
 
+async def test_enter_holds_a_pf_reference_before_loading_default_deny(tmp_path: Path) -> None:
+    controller, mac, _, _, _ = build(tmp_path)
+    result = await controller.enter()
+    try:
+        assert result.ok, result.detail
+        argvs = [argv for argv, _ in mac.calls]
+        enable = argvs.index([PFCTL, "-E"])
+        load = next(i for i, (a, st) in enumerate(mac.calls) if st and "log quick all" in st)
+        assert enable < load
+        record = controller.reference.load()
+        assert record is not None and record.token == "77"
+    finally:
+        await controller.leave()
+
+
 async def test_enter_refuses_without_the_watchdog(tmp_path: Path) -> None:
     controller, mac, _, _, _ = build(tmp_path, watchdog_loaded=False)
     result = await controller.enter()
@@ -224,6 +256,46 @@ async def test_learns_only_for_leased_apps_and_applies_dns_checks(tmp_path: Path
         assert controller.denied == 1
         reasons = " | ".join(n.message for n in notices)
         assert "DNS-over-HTTPS" in reasons and "blocklisted telemetry.zoom.us" in reasons
+    finally:
+        await controller.leave()
+
+
+async def test_cloudflare_filtering_resolvers_are_never_granted(tmp_path: Path) -> None:
+    # 1.1.1.2 / 1.1.1.3 (Malware / Families) speak DoH and DoT like 1.1.1.1 does.
+    assert {"2606:4700:4700::1112", "2606:4700:4700::1003"} <= DOH_RESOLVERS
+    # Quad9's other services (dns9 / dns10 / dns11.quad9.net) answer on these.
+    quad9 = {"149.112.112.9", "9.9.9.10", "149.112.112.11", "2620:fe::10", "2620:fe::fe:11"}
+    assert quad9 <= DOH_RESOLVERS
+    controller, mac, queue, notices, _ = build(tmp_path)
+    controller.observe_indicator(camera("us.zoom.xos"))
+    assert (await controller.enter()).ok
+    try:
+        for ip, port in (("1.1.1.2", 443), ("1.0.0.3", 853)):
+            queue.put_nowait(BlockedPacket(1.0, Protocol.TCP, "10.0.0.5", 50001, ip, port))
+        await until(lambda: sum("DNS-over-HTTPS" in n.message for n in notices) == 2)
+        loaded = "".join(mac.grants_loads())
+        assert "1.1.1.2" not in loaded and "1.0.0.3" not in loaded
+    finally:
+        await controller.leave()
+
+
+async def test_sni_audit_flags_a_doh_endpoint_reached_by_address(tmp_path: Path) -> None:
+    # A client with a hard-coded DoH address never asks the sinkhole for the name; the
+    # ClientHello still names the endpoint.
+    async def hellos() -> AsyncIterator[ClientHelloSeen]:
+        packet = PktapEvent(
+            1.0, "en0", ZOOM, "zoom.us", Protocol.TCP, "10.0.0.5", 50001, "162.159.61.4", 443,
+            Direction.OUTBOUND,
+        )  # fmt: skip
+        yield ClientHelloSeen(packet, ClientHello(SniOutcome.FOUND, "mozilla.cloudflare-dns.com"))
+
+    controller, _, _, notices, _ = build(tmp_path, hellos=hellos)
+    assert (await controller.enter()).ok
+    try:
+        await until(lambda: any("capture ended" in n.message for n in notices))
+        flagged = [n for n in notices if "SNI mozilla.cloudflare-dns.com" in n.message]
+        assert flagged and flagged[0].severity is Severity.HIGH
+        assert "DNS-over-HTTPS" in flagged[0].message
     finally:
         await controller.leave()
 
@@ -338,14 +410,170 @@ async def test_panic_button_turns_the_tui_red_and_leaving_asks_first(tmp_path: P
         screen = app.screen_stack[0]
         assert screen.has_class("-lockdown")
         assert "LOCKDOWN ON" in str(app.query_one("#panic").render())
-        await pilot.pause(app.BLINK_S + 0.1)
-        assert app._blink_timer is not None
+        # Steady red: the borders keep one colour over time, nothing blinks.
+        pane = app.query(".pane").first()
+        border = pane.styles.border_top
+        assert border[1] == Color.parse("#ff2e4d")
+        for _ in range(6):  # sampled more often than any blink would toggle
+            await pilot.pause(0.2)
+            assert pane.styles.border_top == border
         await pilot.press("P")  # leaving reopens egress: it asks
         await pilot.pause()
         assert controller.state is LockdownState.ON
         await pilot.press("y")
         await wait_for(pilot, lambda: controller.state is LockdownState.OFF)
         await wait_for(pilot, lambda: not screen.has_class("-lockdown"))
+
+
+def test_max_profile_turns_every_refusal_on() -> None:
+    assert PROFILES[ParanoiaProfile.STANDARD] is DEFAULT_PARANOIA
+    assert PROFILES[ParanoiaProfile.MAX] is MAX_PARANOIA
+    assert MAX_PARANOIA.strictness is Strictness.STRICT
+    assert MAX_PARANOIA.foreground_leases is False
+    assert MAX_PARANOIA.sni_action == "revoke"
+    assert MAX_PARANOIA.require_dns_for_https is True
+    # Already the strict choice by default: iCloud stays shut and DNS goes through the sinkhole.
+    assert MAX_PARANOIA.rules == LockdownConfig(sinkhole=True, apple_443=False)
+    assert MAX_PARANOIA.user_allow == ()
+
+
+def test_the_default_verifier_follows_the_profile() -> None:
+    assert LockdownController().verifier.strictness is Strictness.STANDARD
+    assert LockdownController(MAX_PARANOIA).verifier.strictness is Strictness.STRICT
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [([], DEFAULT_PARANOIA), (["--paranoia-profile", "max"], MAX_PARANOIA)],
+)
+def test_tui_hands_the_chosen_profile_to_paranoia_mode(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], expected: ParanoiaConfig
+) -> None:
+    from typer.testing import CliRunner
+
+    from safemaxxing import cli
+    from safemaxxing.tui import app as tui_app
+
+    configs: list[ParanoiaConfig] = []
+
+    class Controller:
+        def __init__(self, config: ParanoiaConfig, **_: object) -> None:
+            configs.append(config)
+
+        def observe_indicator(self, state: IndicatorState) -> None:
+            pass
+
+    monkeypatch.setattr(cli, "is_root", lambda: True)
+    monkeypatch.setattr(cli, "LockdownController", Controller)
+    monkeypatch.setattr(cli, "load_blocklist", DomainBlocklist)
+    monkeypatch.setattr(cli, "_supervisor", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tui_app.SafemaxxingApp, "run", lambda self: None)
+    monkeypatch.setattr(tui_app.SafemaxxingApp, "__init__", lambda self, *a, **kw: None)
+    result = CliRunner().invoke(cli.app, ["tui", *argv])
+    assert result.exit_code == 0, result.output
+    assert configs == [expected]
+
+
+def test_tui_refuses_an_unknown_profile() -> None:
+    from typer.testing import CliRunner
+
+    from safemaxxing import cli
+
+    result = CliRunner().invoke(cli.app, ["tui", "--paranoia-profile", "tinfoil"])
+    assert result.exit_code == 2
+
+
+# `systemextensionsctl list` on a Mac with Avast and Proton VPN (macOS 27.2).
+EXTENSIONS = (
+    "4 extension(s)\n"
+    "--- com.apple.system_extension.network_extension (Go to 'System Settings > General > "
+    "Login Items & Extensions > Network Extensions' to modify these system extension(s))\n"
+    "enabled\tactive\tteamID\tbundleID (version)\tname\t[state]\n"
+    "*\t*\tJ6S6Q257EK\tch.protonvpn.mac.Transparent-Proxy (6.4.0/2903266.2602091446)\t"
+    "Proton VPN Split Tunneling (experimental)\t[activated enabled]\n"
+    "*\t*\t6H4HRTU5E3\tcom.avast.Antivirus.SystemExtension (17.9.700/17.9.700)\t"
+    "Avast Security\t[activated enabled]\n"
+    "\t*\tJ6S6Q257EK\tch.protonvpn.mac.OldExtension (6.0.0/1)\tProton VPN Old\t"
+    "[terminated waiting to uninstall on reboot]\n"
+    "--- com.apple.system_extension.cmio (Go to 'System Settings > General > Login Items & "
+    "Extensions > Camera Extensions' to modify these system extension(s))\n"
+    "enabled\tactive\tteamID\tbundleID (version)\tname\t[state]\n"
+    "\t*\tQ248YREB53\tcom.reincubate.macos.cam.avextension (2.9.0/25534)\t"
+    "Camera Extension\t[activated waiting for user]\n"
+)
+
+
+def test_network_extensions_lists_only_the_enabled_network_ones() -> None:
+    assert network_extensions(EXTENSIONS) == [
+        "Proton VPN Split Tunneling (experimental)",
+        "Avast Security",
+    ]
+    assert network_extensions("0 extension(s)\n") == []
+
+
+async def test_entering_names_the_network_extensions_that_may_proxy(tmp_path: Path) -> None:
+    controller, mac, _, notices, _ = build(tmp_path)
+    mac.extensions = EXTENSIONS
+    assert (await controller.enter()).ok
+    try:
+        warning = next(n for n in notices if "network extensions" in n.message)
+        assert "Avast Security" in warning.message and "Camera Extension" not in warning.message
+    finally:
+        await controller.leave()
+    notices.clear()
+    mac.extensions = "0 extension(s)\n"
+    assert (await controller.enter()).ok
+    try:
+        assert not any("network extensions" in n.message for n in notices)
+    finally:
+        await controller.leave()
+
+
+async def test_an_unleased_app_is_reported_once(tmp_path: Path) -> None:
+    controller, _, queue, notices, _ = build(tmp_path)
+    assert (await controller.enter()).ok
+    seeded = controller.denied  # Zoom's open socket, refused at entry: it holds no lease
+    try:
+        for port in (443, 80):
+            queue.put_nowait(
+                BlockedPacket(1.0, Protocol.TCP, "10.0.0.5", 50002, "198.51.100.66", port)
+            )
+        await until(lambda: controller.denied == seeded + 2)
+        denials = [n for n in notices if "no lease" in n.message]
+        assert len(denials) == 1
+        assert "com.example.spy" in denials[0].message and denials[0].severity is Severity.LOW
+    finally:
+        await controller.leave()
+
+
+async def test_a_network_extension_without_a_lease_is_flagged_as_a_possible_proxy(
+    tmp_path: Path,
+) -> None:
+    avast = 899
+    ext = (
+        tmp_path / "SystemExtensions" / "A1" / "com.avast.Antivirus.SystemExtension.systemextension"
+    )
+    (ext / "Contents" / "MacOS").mkdir(parents=True)
+    (ext / "Contents" / "Info.plist").write_bytes(
+        plistlib.dumps({"CFBundleIdentifier": "com.avast.Antivirus.SystemExtension"})
+    )
+    ext_exe = str(ext / "Contents" / "MacOS" / "com.avast.Antivirus.SystemExtension")
+    controller, _, queue, notices, _ = build(tmp_path)
+    exe, sockets = controller._exe, controller._sockets_fn
+    controller._exe = lambda pid: ext_exe if pid == avast else exe(pid)
+    controller._sockets_fn = lambda: [
+        *sockets(),
+        SocketOwner(Protocol.TCP, "10.0.0.5", 50003, avast, None),
+    ]
+    assert (await controller.enter()).ok
+    seeded = controller.denied
+    try:
+        queue.put_nowait(BlockedPacket(1.0, Protocol.TCP, "10.0.0.5", 50003, "142.250.180.3", 443))
+        await until(lambda: controller.denied == seeded + 1)
+        flagged = next(n for n in notices if "com.avast.Antivirus.SystemExtension" in n.message)
+        assert flagged.severity is Severity.HIGH and "proxies" in flagged.message
+    finally:
+        await controller.leave()
 
 
 @pytest.mark.parametrize(

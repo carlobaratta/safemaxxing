@@ -6,23 +6,25 @@
 # There is deliberately no `service` block: the Homebrew prefix is owned by the user, so a root
 # daemon run from it (`sudo brew services`) would let any code running as that user replace the
 # bundle and gain root at the next start (see SECURITY.md). Root use goes through the .pkg,
-# which installs a root-owned copy under /usr/local/libexec. It installs the signed, notarized onedir bundle from the GitHub release (one per arch). The
-# url/sha256 pairs below are placeholders; each tagged release attaches this file as
-# safemaxxing.rb with its version and the tarballs' real SHA-256s, which is what the tap gets. Keep this file in the tap repo
-# (carlobaratta/homebrew-tap) as Formula/safemaxxing.rb; it lives here as the source of truth.
+# which installs a root-owned copy under /usr/local/libexec. It installs the onedir bundle from
+# the GitHub release (one per arch; signed and notarized once a Developer ID is set up, unsigned
+# until then). The url/sha256 pairs below are placeholders; each tagged release attaches this
+# file as safemaxxing.rb with its version and the tarballs' real SHA-256s, which is what the
+# tap gets. Keep this file in the tap repo (carlobaratta/homebrew-tap) as Formula/safemaxxing.rb;
+# it lives here as the source of truth.
 class Safemaxxing < Formula
   desc "Headless privacy supervisor and egress firewall for macOS"
   homepage "https://github.com/carlobaratta/safemaxxing"
-  version "0.2.0"
+  version "0.2.1"
   license "MIT"
 
   on_arm do
-    url "https://github.com/carlobaratta/safemaxxing/releases/download/v0.2.0/safemaxxing-0.2.0-arm64.tar.gz"
+    url "https://github.com/carlobaratta/safemaxxing/releases/download/v0.2.1/safemaxxing-0.2.1-arm64.tar.gz"
     sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   end
 
   on_intel do
-    url "https://github.com/carlobaratta/safemaxxing/releases/download/v0.2.0/safemaxxing-0.2.0-x86_64.tar.gz"
+    url "https://github.com/carlobaratta/safemaxxing/releases/download/v0.2.1/safemaxxing-0.2.1-x86_64.tar.gz"
     sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   end
 

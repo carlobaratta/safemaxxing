@@ -159,7 +159,7 @@ ConfirmScreen, TimelineScreen {
     border-subtitle-color: #5c6370;
 }
 
-/* Paranoia Mode: the whole dashboard turns red, borders blink (app.py toggles -blink). */
+/* Paranoia Mode: the whole dashboard turns red, with steady borders (nothing blinks). */
 #panic {
     width: 100%;
     margin: 0 0 1 0;
@@ -179,11 +179,6 @@ Screen.-lockdown .pane,
 Screen.-lockdown #detail-tabs {
     border: heavy #ff2e4d;
     border-title-color: #ff2e4d;
-}
-
-Screen.-lockdown.-blink .pane,
-Screen.-lockdown.-blink #detail-tabs {
-    border: heavy #5c0010;
 }
 
 Screen.-lockdown #panic {
