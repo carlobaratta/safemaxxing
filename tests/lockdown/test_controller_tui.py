@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from test_supervisor_tui import supervisor
-from test_tui import wait_for
+from test_tui import plain, wait_for
 from textual.color import Color
 
 from safemaxxing.codesign import (
@@ -57,6 +57,7 @@ from safemaxxing.models import (
     Severity,
 )
 from safemaxxing.tui.app import SafemaxxingApp
+from safemaxxing.tui.panels import PostureBar
 
 ZOOM, SPY, IMPOSTOR = 4242, 6666, 7777
 # What the kernel holds for each pid: Zoom's team, and an impostor signed by another one.
@@ -409,7 +410,8 @@ async def test_panic_button_turns_the_tui_red_and_leaving_asks_first(tmp_path: P
         await wait_for(pilot, lambda: controller.state is LockdownState.ON)
         screen = app.screen_stack[0]
         assert screen.has_class("-lockdown")
-        assert "LOCKDOWN ON" in str(app.query_one("#panic").render())
+        assert "Leave Paranoia Mode" in str(app.query_one("#panic").render())
+        assert "■ Paranoia Mode" in plain(app.query_one(PostureBar).content)
         # Steady red: the borders keep one colour over time, nothing blinks.
         pane = app.query(".pane").first()
         border = pane.styles.border_top

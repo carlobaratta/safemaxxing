@@ -17,17 +17,24 @@ from textual.widgets import DataTable, Static
 from safemaxxing.codesign import parse_codesign, signing_identity, signing_target
 from safemaxxing.correlation import CorrelationConfig
 from safemaxxing.firewall import CommandResult, PfFirewall, ProcessController
+from safemaxxing.lockdown.controller import LockdownState
 from safemaxxing.models import PKTAP_STATUS, Alert, Finding, SensorType, Severity
 from safemaxxing.tui.app import SafemaxxingApp
-from safemaxxing.tui.badges import mitigation_badges, sensor_pills, severity_badge
+from safemaxxing.tui.badges import SEVERITY_INK, mitigation_badges, sensor_pills, severity_badge
 from safemaxxing.tui.panels import (
     InspectorPanel,
+    ModeStatus,
     PfStatus,
+    Posture,
+    PostureBar,
     RuntimeStats,
     Selection,
     render_firewall,
     render_inspector,
+    render_mode,
+    render_posture,
     render_status,
+    verdict,
 )
 from safemaxxing.tui.screens import TimelineScreen
 from safemaxxing.tui.timeline import MAX_EVENTS, merge_events, related_events, timeline_steps
@@ -142,13 +149,45 @@ async def test_signing_identity_runs_codesign_and_times_out() -> None:
 def test_firewall_panel_states() -> None:
     stats = RuntimeStats(poll_ms=12, poll_interval_ms=200, sockets=40, dns_entries=7)
     text = plain(render_firewall(PfStatus(True, True, ("203.0.113.9",)), stats))
-    assert "ENABLED" in text and "ACTIVE" in text and "1 IP" in text
-    assert "12 ms / 200 ms · 40 sockets" in text and "off (--udp-flows)" in text
-    assert "7 entries" in text
+    assert "● enabled" in text and "● loaded" in text and "1 address" in text
+    assert "12 ms / 200 ms · 40 open" in text and "off · --udp-flows" in text
+    assert "7 cached" in text
+    text = plain(render_firewall(PfStatus(False, False, ()), stats))
+    assert "○ disabled" in text and "○ not loaded until a block" in text
+    assert "0 addresses" in text
+    # Off is normal with nothing blocked; with blocks it means they are not enforced.
+    assert "not enforced" not in text
+    alarm = plain(render_firewall(PfStatus(False, False, ("203.0.113.9",)), stats))
+    assert "○ disabled · blocks not enforced" in alarm and "until a block" not in alarm
     text = plain(render_firewall(PfStatus(None, None, error="needs root"), RuntimeStats()))
-    assert "needs root" in text and "starting" in text and "off (--no-dns)" in text
+    assert "needs root" in text and "starting" in text and "off · --no-dns" in text
     capturing = dataclasses.replace(stats, pktap=True, pktap_packets_per_s=151, pktap_restarts=2)
-    assert "CAPTURING 151 pkt/s · 2 restarts" in plain(render_firewall(None, capturing))
+    assert "capturing 151 pkt/s · 2 restarts" in plain(render_firewall(None, capturing))
+
+
+def test_posture_says_what_needs_you_most_urgent_first() -> None:
+    assert verdict(Posture())[1:] == ("● Watching", "no exfiltration pattern seen")
+    _, head, detail = verdict(Posture(alerts=3, contained=1, enforce=False))
+    assert head == "● Watching"
+    assert detail == "nothing high-risk open · 3 in the feed · 1 contained · read-only without sudo"
+    style, head, detail = verdict(Posture(alerts=2, review=2, worst=Severity.CRITICAL))
+    assert head == "▲ 2 alerts to review" and "b blocks" in detail
+    assert style == SEVERITY_INK[Severity.CRITICAL]
+    assert "needs sudo" in verdict(Posture(alerts=1, review=1, enforce=False))[2]
+    # Paranoia Mode outranks an alert, and a dead supervisor outranks everything.
+    on = Posture(lockdown=LockdownState.ON, alerts=1, review=1, worst=Severity.HIGH)
+    assert verdict(on)[1] == "■ Paranoia Mode"
+    assert verdict(dataclasses.replace(on, live=False))[1] == "■ Stopped"
+    assert verdict(Posture(lockdown=LockdownState.ARMING))[1] == "◆ Arming Paranoia Mode"
+    assert "10:57:46" in plain(render_posture(Posture(), "10:57:46"))
+
+
+def test_paranoia_card_needs_root_and_lists_what_it_lets_through() -> None:
+    assert "Needs root" in plain(render_mode(ModeStatus(None)))
+    assert "Off" in plain(render_mode(ModeStatus(LockdownState.OFF)))
+    text = plain(render_mode(ModeStatus(LockdownState.ON, ("xos(2) 30s",), 2, 5)))
+    assert "egress denied by default" in text and "xos(2) 30s" in text
+    assert "grants" in text and "denied" in text and "5" in text
 
 
 def test_status_bar_shows_udp_rates_only_with_pktap() -> None:
@@ -246,6 +285,37 @@ async def test_tui_shows_alert_and_enforces() -> None:
         assert app.suspended == set()
         await pilot.press("c")
         assert table.row_count == 0 and app.selection is None
+
+
+async def test_posture_bar_follows_the_alert_until_it_is_contained() -> None:
+    pf = FakePf(enabled=True)
+    app = make_app(pf, root=True)
+    async with app.run_test() as pilot:
+        await wait_for(pilot, lambda: bool(app.alerts) and app.selection is not None)
+        app.tick()
+        bar = app.query_one(PostureBar)
+        assert "1 alert to review" in plain(bar.content)
+        await pilot.press("b")
+        await pilot.pause()
+        assert "● Watching" in plain(bar.content) and "1 contained" in plain(bar.content)
+
+
+async def test_an_empty_feed_says_nothing_was_seen_and_why() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await wait_for(pilot, lambda: bool(app.alerts))
+        pane, empty = app.query_one("#feed-pane"), app.query_one("#feed-empty", Static)
+        assert not pane.has_class("-empty")
+        alert = app.alerts["1"]
+        await pilot.press("c")
+        assert pane.has_class("-empty")
+        text = " ".join(plain(empty.content).split())
+        assert "No exfiltration pattern seen" in text and "within 2000 ms" in text
+        app.add_alert(alert)
+        assert not pane.has_class("-empty")
+        await pilot.press("slash", *"nomatch")
+        await pilot.pause()
+        assert pane.has_class("-empty") and "No alert matches “nomatch”" in plain(empty.content)
 
 
 async def test_tui_updates_merged_alert_in_place() -> None:

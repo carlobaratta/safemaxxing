@@ -2,13 +2,18 @@
 
 Layout (`safemaxxing.tcss`):
 
-    ┌ LIVE FEED (alerts, `/` filter) ─────────┐┌ FIREWALL ───────────────┐
-    │                                         ││ pf, anchor, block table │
-    │                                         ││ poller, pktap, DNS      │
-    ├ Sensor events │ Active egress ──────────┤├ INSPECTOR ──────────────┤
-    │                                         ││ selected process        │
-    └─────────────────────────────────────────┘└─────────────────────────┘
+    safemaxxing   ● Watching  no exfiltration pattern seen                 10:57:46
+    ┌ Alerts (`/` filter) ────────────────────┐┌ Paranoia Mode ──────────┐
+    │ alerts, or a line saying there are none ││ state · [Enter … P]     │
+    │                                         │├ Protection ─────────────┤
+    │                                         ││ pf, anchor, blocks,     │
+    ├ Sensor events │ Connections ────────────┤│ poller, pktap, names    │
+    │                                         │├ Details ────────────────┤
+    └─────────────────────────────────────────┘└ selected process ───────┘
     status bar · key footer
+
+The top line says in words whether anything needs you; severity colours appear only on
+alerts, so a calm screen really is calm. Paranoia Mode turns the frame red and never blinks.
 
 The app only consumes `Supervisor.stream()` and reads counters the core already keeps; the
 sensor log is written in batches, so a busy `--udp-flows` capture never floods the screen.
@@ -31,13 +36,14 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.events import DescendantFocus
+from textual.theme import Theme
 from textual.widgets import (
     Button,
     DataTable,
     Footer,
-    Header,
     Input,
     RichLog,
+    Static,
     TabbedContent,
     TabPane,
 )
@@ -56,24 +62,67 @@ from safemaxxing.models import (
 )
 from safemaxxing.network import bundle_id_for_exe
 from safemaxxing.supervisor import Supervisor
+from safemaxxing.tui import palette
 from safemaxxing.tui.badges import (
-    MUTED,
     SEVERITY_INK,
     clock,
     mitigation_badges,
     sensor_pills,
     severity_badge,
 )
+from safemaxxing.tui.palette import DANGER, MUTED, OK, STRONG
 from safemaxxing.tui.panels import (
     FirewallPanel,
     InspectorPanel,
+    ModePanel,
+    ModeStatus,
     PfStatus,
+    Posture,
+    PostureBar,
     RuntimeStats,
     Selection,
     StatusBar,
 )
 from safemaxxing.tui.screens import ConfirmScreen, TimelineScreen
 from safemaxxing.tui.timeline import merge_events, related_events, timeline_steps
+
+# Textual's own widgets (footer, tabs, toasts, row cursor, inputs) in the dashboard's colours.
+THEME = Theme(
+    name="safemaxxing",
+    primary=palette.ACCENT,
+    secondary=palette.ACCENT,
+    accent=palette.ACCENT,
+    foreground=palette.TEXT,
+    background=palette.BG,
+    surface=palette.SURFACE,
+    panel=palette.RAISED,
+    success=palette.OK,
+    warning=palette.CAUTION,
+    error=palette.DANGER,
+    dark=True,
+    variables={
+        "footer-background": palette.BG,
+        "footer-foreground": palette.MUTED,
+        "footer-item-background": "transparent",
+        "footer-key-foreground": palette.ACCENT,
+        "footer-key-background": "transparent",
+        "block-cursor-background": "#1f2c3d",
+        "block-cursor-foreground": palette.STRONG,
+        "block-cursor-text-style": "none",
+        "block-cursor-blurred-background": "#18212d",
+        "block-cursor-blurred-foreground": palette.TEXT,
+        "button-focus-text-style": "bold",
+        "border": palette.ACCENT,
+        "border-blurred": palette.LINE,
+        "scrollbar": palette.LINE,
+        "scrollbar-hover": "#2e3a4a",
+        "scrollbar-active": palette.ACCENT,
+        "scrollbar-background": palette.SURFACE,
+        "scrollbar-background-hover": palette.SURFACE,
+        "scrollbar-background-active": palette.SURFACE,
+        "scrollbar-corner-color": palette.SURFACE,
+    },
+)
 
 # Oldest alerts are dropped past this, so a long session keeps a bounded feed.
 MAX_FEED = 1000
@@ -91,7 +140,7 @@ FEED_COLUMNS = (
     ("sensors", "sensors"),
     ("actor", "app · pid"),
     ("dest", "destination"),
-    ("delta", "Δ ms"),
+    ("delta", "after"),
     ("state", "state"),
 )
 # Feed cells are cut to these widths so the table fits beside the side panels at ~170 columns;
@@ -166,20 +215,20 @@ class SafemaxxingApp(App[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("b", "block", "Block IP"),
         Binding("u", "unblock", "Unblock"),
-        Binding("s", "suspend", "SIGSTOP"),
-        Binding("r", "resume", "SIGCONT"),
-        Binding("k", "kill", "SIGKILL"),
+        Binding("s", "suspend", "Pause app"),
+        Binding("r", "resume", "Resume app"),
+        Binding("k", "kill", "Kill"),
         Binding("space", "timeline", "Timeline"),
         Binding("slash", "filter", "Filter", key_display="/"),
         Binding("escape", "clear_filter", "Clear filter", show=False),
         Binding("c", "clear_feed", "Clear feed"),
         # Not a priority binding: typed into the filter box, P is just a letter.
-        Binding("P", "panic", "PANIC", key_display="P"),
+        Binding("P", "panic", "Paranoia", key_display="P"),
         Binding("g", "lease", "Grant app"),
         Binding("q", "quit", "Quit"),
     ]
-    PANIC_OFF = "◉ PANIC · LOCKDOWN"
-    PANIC_ON = "■ LOCKDOWN ON · press to leave"
+    PANIC_OFF = "Enter Paranoia Mode · P"
+    PANIC_ON = "Leave Paranoia Mode · P"
 
     def __init__(
         self,
@@ -222,38 +271,45 @@ class SafemaxxingApp(App[None]):
     # Layout
 
     def compose(self) -> ComposeResult:
-        """Feed and detail tabs on the left, firewall and inspector panels on the right."""
-        yield Header(show_clock=True)
+        """The verdict on top; feed and detail tabs on the left; mode, protection and details
+        on the right."""
+        yield PostureBar(id="posture")
         with Horizontal(id="body"):
             with Vertical(id="main"):
                 with Vertical(id="feed-pane", classes="pane"):
                     yield Input(placeholder="filter: process, bundle id, IP or host", id="filter")
                     yield DataTable(id="feed", cursor_type="row")
+                    yield Static(id="feed-empty")
                 with TabbedContent(id="detail-tabs"):
                     with TabPane("Sensor events", id="tab-events"):
                         yield RichLog(
                             id="events", markup=False, highlight=False, wrap=True, max_lines=2000
                         )
-                    with TabPane("Active egress", id="tab-egress"):
+                    with TabPane("Connections", id="tab-egress"):
                         yield DataTable(id="connections", cursor_type="row")
             with Vertical(id="side"):
-                yield Button(self.PANIC_OFF, id="panic", variant="error")
+                with Vertical(id="mode", classes="pane"):
+                    yield ModePanel(id="mode-text")
+                    yield Button(self.PANIC_OFF, id="panic", disabled=self.lockdown is None)
                 yield FirewallPanel(id="firewall", classes="pane")
                 yield InspectorPanel(id="inspector", classes="pane")
         yield StatusBar(id="status")
         yield Footer()
 
     def on_mount(self) -> None:
-        """Set up columns and titles, start the timers and the supervisor consumer."""
+        """Set up theme, columns and titles, start the timers and the supervisor consumer."""
+        self.register_theme(THEME)
+        self.theme = THEME.name
         feed = self.query_one("#feed", DataTable)
         for key, label in FEED_COLUMNS:
             feed.add_column(label, key=key)
         connections = self.query_one("#connections", DataTable)
         for key, label in EGRESS_COLUMNS:
             connections.add_column(label, key=key)
-        self.query_one("#feed-pane").border_title = "LIVE FEED"
-        self.query_one("#firewall").border_title = "FIREWALL · PF"
-        self.query_one("#inspector").border_title = "INSPECTOR"
+        self.query_one("#feed-pane").border_title = "Alerts"
+        self.query_one("#mode").border_title = "Paranoia Mode"
+        self.query_one("#firewall").border_title = "Protection"
+        self.query_one("#inspector").border_title = "Details"
         self._update_feed_subtitle()
         self.set_interval(1.0, self.tick)
         self.set_interval(LOG_FLUSH_S, self.flush_log)
@@ -281,7 +337,7 @@ class SafemaxxingApp(App[None]):
                     if self.lockdown is not None:
                         self.lockdown.audit_flow(update)
         except Exception as exc:
-            self.log_line(Text(f"supervisor stopped: {exc}", style="bold #e06c75"))
+            self.log_line(Text(f"supervisor stopped: {exc}", style=f"bold {DANGER}"))
             self.notify(f"Supervisor stopped: {exc}", severity="error", timeout=10)
         finally:
             self._live = False
@@ -313,7 +369,7 @@ class SafemaxxingApp(App[None]):
             sensor_pills([event.sensor]),
             f" {event.identity}",
             (f" pid={event.pid}" if event.pid is not None else "", MUTED),
-            (f" {event.service}" if event.service else "", "#c678dd"),
+            (f" {event.service}" if event.service else "", MUTED),
         )
         self.log_line(line)
 
@@ -341,7 +397,7 @@ class SafemaxxingApp(App[None]):
 
     def _feed_row(self, alert: Alert) -> tuple[str | Text, ...]:
         ev, conn = alert.finding.event, alert.finding.connection
-        actor = Text.assemble((ev.identity, "bold"), (f" {conn.pid}", MUTED))
+        actor = Text.assemble((ev.identity, f"bold {STRONG}"), (f" {conn.pid}", MUTED))
         actor.truncate(ACTOR_WIDTH, overflow="ellipsis")
         return (
             str(alert.id),
@@ -350,7 +406,7 @@ class SafemaxxingApp(App[None]):
             sensor_pills(alert.sensors or {ev.sensor}),
             actor,
             self._destination(conn),
-            f"{alert.finding.delta_s * 1000:.0f}",
+            Text(f"{alert.finding.delta_s * 1000:.0f} ms", style=MUTED),
             mitigation_badges(*self._mitigated(conn), compact=True),
         )
 
@@ -456,12 +512,34 @@ class SafemaxxingApp(App[None]):
             table.update_cell(key, "state", badges, update_width=True)
 
     def _update_feed_subtitle(self) -> None:
+        """Count the alerts in the pane's border; with none shown, say why in the pane."""
         shown = self.query_one("#feed", DataTable).row_count
         pane = self.query_one("#feed-pane")
         if self.filter_text:
             pane.border_subtitle = f"filter “{self.filter_text}” · {shown}/{len(self.alerts)}"
         else:
-            pane.border_subtitle = f"{len(self.alerts)} alerts"
+            noun = "alert" if len(self.alerts) == 1 else "alerts"
+            pane.border_subtitle = f"{len(self.alerts)} {noun}"
+        pane.set_class(shown == 0, "-empty")
+        if shown == 0:
+            self.query_one("#feed-empty", Static).update(self._empty_feed())
+
+    def _empty_feed(self) -> Text:
+        if self.filter_text:
+            return Text.assemble(
+                (f"No alert matches “{self.filter_text}”.", f"bold {STRONG}"),
+                ("\nesc clears the filter.", MUTED),
+            )
+        window = self.supervisor.engine.config.window_s * 1000
+        return Text.assemble(
+            ("● No exfiltration pattern seen", f"bold {OK}"),
+            (
+                "\n\nAn alert appears here when an app uses the camera, microphone, screen or "
+                f"location and opens a connection out within {window:.0f} ms. Every sensor "
+                "event and open connection is listed below as it happens.",
+                MUTED,
+            ),
+        )
 
     # Egress table
 
@@ -530,15 +608,58 @@ class SafemaxxingApp(App[None]):
         self.refresh_connections()
         self._refresh_feed_rows()
         if self.lockdown is not None:
-            self.sub_title = self.lockdown.summary()
             # The watchdog may have taken pf back on its own: drop the red theme with it.
             lockdown_shown = self.screen_stack[0].has_class("-lockdown")
             if self.lockdown.state is LockdownState.OFF and lockdown_shown:
                 self._set_lockdown_theme(False)
         self.stats = self._sample_stats()
+        self._show_state()
         self.query_one(FirewallPanel).show(self.pf_status, self.stats)
         self.query_one(StatusBar).show(self.stats)
         self._show_inspector()
+
+    def _posture(self) -> Posture:
+        """Count what needs you: HIGH-or-worse alerts neither blocked nor paused."""
+        review, contained = 0, 0
+        worst: Severity | None = None
+        for alert in self.alerts.values():
+            if any(self._mitigated(alert.finding.connection)):
+                contained += 1
+            elif alert.severity >= Severity.HIGH:
+                review += 1
+                worst = alert.severity if worst is None else max(worst, alert.severity)
+        return Posture(
+            live=self._live,
+            lockdown=self.lockdown.state if self.lockdown is not None else None,
+            alerts=len(self.alerts),
+            review=review,
+            worst=worst,
+            contained=contained,
+            enforce=self._root(),
+        )
+
+    def _mode(self) -> ModeStatus:
+        lockdown = self.lockdown
+        if lockdown is None:
+            return ModeStatus(None)
+        now = time.monotonic()
+        leases = tuple(
+            f"{lease.bundle_id.rsplit('.', 1)[-1]}({len(lease.grants)})"
+            + (f" {max(0.0, lease.deadline - now):.0f}s" if lease.deadline else "")
+            for lease in lockdown.leases
+        )
+        grants = len({g for lease in lockdown.leases for g in lease.grants})
+        return ModeStatus(lockdown.state, leases, grants, lockdown.denied)
+
+    def _show_state(self) -> None:
+        """Redraw the posture bar and the Paranoia Mode card."""
+        try:
+            posture = self.query_one(PostureBar)
+            mode = self.query_one(ModePanel)
+        except (NoMatches, ScreenStackError):
+            return
+        posture.show(self._posture(), time.strftime("%H:%M:%S"))
+        mode.show(self._mode())
 
     @work(exclusive=True, group="pf")
     async def poll_firewall(self) -> None:
@@ -630,11 +751,12 @@ class SafemaxxingApp(App[None]):
         """Log an action result and show it as a notification (error severity on failure)."""
         verdict = "ok" if result.ok else "FAILED"
         message = f"{result.kind.value} {result.target}: {verdict} {result.detail}".strip()
-        self.log_line(Text(message, style="#98c379" if result.ok else "bold #e06c75"))
+        self.log_line(Text(message, style=OK if result.ok else f"bold {DANGER}"))
         self.notify(message, severity="information" if result.ok else "error")
         self._refresh_feed_rows()
         self.refresh_connections()
         self._show_inspector()
+        self._show_state()
 
     def _require_selection(self) -> NetworkConnection | None:
         if self.selection is None:
@@ -688,7 +810,15 @@ class SafemaxxingApp(App[None]):
                 self.suspended.discard(conn.pid)
             self.report(result)
 
-        self.push_screen(ConfirmScreen(f"Kill {conn.process_name} (pid {conn.pid})?"), on_answer)
+        self.push_screen(
+            ConfirmScreen(
+                f"Kill {conn.process_name} (pid {conn.pid})?",
+                "SIGKILL cannot be undone: the app stops at once and loses unsaved work. "
+                "s pauses it instead.",
+                confirm="Kill process",
+            ),
+            on_answer,
+        )
 
     def action_timeline(self) -> None:
         """Open the millisecond timeline of the selection: sensor events, then the egress."""
@@ -699,9 +829,9 @@ class SafemaxxingApp(App[None]):
         conn = self._named(selection.connection)
         steps = timeline_steps(conn, selection.events)
         if selection.alert is not None:
-            title = f"ALERT #{selection.alert.id} · TIMELINE"
+            title = f"Alert #{selection.alert.id} · timeline"
         else:
-            title = f"{conn.process_name} · TIMELINE"
+            title = f"{conn.process_name} · timeline"
         self.push_screen(TimelineScreen(title, steps, selection.alert))
 
     def action_filter(self) -> None:
@@ -743,6 +873,7 @@ class SafemaxxingApp(App[None]):
         """Turn the whole dashboard red with steady borders (nothing blinks), or back to normal."""
         self.screen_stack[0].set_class(on, "-lockdown")
         self.query_one("#panic", Button).label = self.PANIC_ON if on else self.PANIC_OFF
+        self._show_state()
 
     @on(Button.Pressed, "#panic")
     async def _panic_pressed(self) -> None:
@@ -770,7 +901,14 @@ class SafemaxxingApp(App[None]):
             if confirmed:
                 self.leave_lockdown()
 
-        self.push_screen(ConfirmScreen("Leave Paranoia Mode and reopen egress?"), on_answer)
+        self.push_screen(
+            ConfirmScreen(
+                "Leave Paranoia Mode?",
+                "Every app can reach the network again, under the normal block list.",
+                confirm="Reopen egress",
+            ),
+            on_answer,
+        )
 
     @work(exclusive=True, group="lockdown")
     async def leave_lockdown(self) -> None:
@@ -804,7 +942,9 @@ class SafemaxxingApp(App[None]):
         self._alert_events.clear()
         self._row_state.clear()
         self.query_one("#feed", DataTable).clear()
+        self._update_feed_subtitle()
         if self.selection is not None and self.selection.alert is not None:
             self.selection = None
             self._show_inspector()
+        self._show_state()
         self._update_feed_subtitle()

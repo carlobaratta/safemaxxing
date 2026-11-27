@@ -19,6 +19,10 @@ htmlcov/
 .claude/
 graphify-out/
 
+# The website's working files: the design checks' Chrome profiles, crops and reports, and its screenshots
+site/.taste-skill/
+site/shots/
+
 # Raw captures from a real Mac: `log stream` entries, pktap/tcpdump output and their stderr
 # (app activity, paths, pids, LAN addresses). Only the `testlogs/*.log` summaries are committed.
 testlogs/*

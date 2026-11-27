@@ -1,23 +1,38 @@
-/* safemaxxing dashboard: deep dark background, thin rounded borders, cyan focus accent.
-   Badge colours live in badges.py; keep the two palettes in step. */
+/* safemaxxing dashboard.
+
+   One accent, the project's teal, marks what works and what you can act on. Severity colours
+   live only in the badges (badges.py), so a calm screen means nothing needs you. Paranoia Mode
+   turns the frame red, steadily: nothing on this screen blinks.
+
+   palette.py holds the same values for the Rich renderables; keep the two in step. The
+   built-in widgets (footer, tabs, toasts, cursor) take theirs from the theme in app.py. */
+
+$sm-bg: #0a0e14;
+$sm-surface: #0e131b;
+$sm-raised: #161d28;
+$sm-line: #222b38;
+$sm-text: #cfd7e2;
+$sm-strong: #eef2f6;
+$sm-muted: #7a8595;
+$sm-accent: #56b6c2;
+$sm-danger: #ff2e4d;
 
 Screen {
-    background: #0a0e14;
-    color: #c5cdd9;
+    background: $sm-bg;
+    color: $sm-text;
 }
 
-Header {
-    background: #0f111a;
-    color: #56b6c2;
-    text-style: bold;
-}
+/* Top: the verdict in words. */
 
-Footer {
-    background: #0a0e14;
+#posture {
+    height: 1;
+    padding: 0 1;
+    background: $sm-surface;
 }
 
 #body {
     height: 1fr;
+    padding: 0 0 0 0;
 }
 
 #main {
@@ -29,17 +44,24 @@ Footer {
     width: 50;
 }
 
-.pane {
-    background: #0f111a;
-    border: round #3e4451;
-    border-title-color: #56b6c2;
+/* Panes: thin lines, quiet titles; the one you are in takes the accent. */
+
+.pane, #detail-tabs {
+    background: $sm-surface;
+    border: round $sm-line;
+    border-title-color: $sm-muted;
     border-title-style: bold;
-    border-subtitle-color: #5c6370;
+    border-subtitle-color: $sm-muted;
     padding: 0 1;
 }
 
-.pane:focus-within {
-    border: round #56b6c2;
+.pane:focus-within, #detail-tabs:focus-within {
+    border: round $sm-accent;
+    border-title-color: $sm-accent;
+}
+
+#detail-tabs {
+    padding: 0;
 }
 
 #feed-pane {
@@ -48,12 +70,10 @@ Footer {
 
 #detail-tabs {
     height: 1fr;
-    background: #0f111a;
-    border: round #3e4451;
 }
 
-#detail-tabs:focus-within {
-    border: round #56b6c2;
+#mode {
+    height: auto;
 }
 
 #firewall {
@@ -64,11 +84,27 @@ Footer {
     height: 1fr;
 }
 
+/* The feed with nothing in it says so, instead of an empty grid. */
+
+#feed-empty {
+    display: none;
+    padding: 1 1;
+}
+
+#feed-pane.-empty #feed {
+    height: auto;
+}
+
+#feed-pane.-empty #feed-empty {
+    display: block;
+    height: 1fr;
+}
+
 #filter {
     display: none;
     height: 3;
-    background: #0a0e14;
-    border: tall #56b6c2;
+    background: $sm-bg;
+    border: tall $sm-accent;
     margin-bottom: 1;
 }
 
@@ -78,31 +114,28 @@ Footer {
 
 DataTable {
     height: 1fr;
-    background: #0f111a;
+    background: $sm-surface;
     scrollbar-size-vertical: 1;
 }
 
+/* No lighter box inside the pane when the table has focus: the border already says so. */
+DataTable:focus,
+DataTable:focus > .datatable--header {
+    background-tint: $sm-surface 0%;
+}
+
 DataTable > .datatable--header {
-    background: #0f111a;
-    color: #5c6370;
+    background: $sm-surface;
+    color: $sm-muted;
     text-style: bold;
 }
 
-DataTable > .datatable--cursor {
-    background: #1c2333;
-}
-
-DataTable:focus > .datatable--cursor {
-    background: #263040;
-    text-style: none;
-}
-
 DataTable > .datatable--hover {
-    background: #151a24;
+    background: #131a24;
 }
 
 RichLog {
-    background: #0f111a;
+    background: $sm-surface;
     scrollbar-size-vertical: 1;
 }
 
@@ -110,36 +143,82 @@ TabPane {
     padding: 0 1;
 }
 
+Tabs {
+    background: $sm-surface;
+}
+
 #status {
     height: 1;
-    background: #0f111a;
-    color: #c5cdd9;
+    background: $sm-bg;
+    color: $sm-text;
     padding: 0 1;
+}
+
+/* Paranoia Mode card and its button: a deliberate control, red only in its words until on. */
+
+#mode-text {
+    height: auto;
+}
+
+#panic {
+    width: 100%;
+    height: 3;
+    margin: 1 0 0 0;
+    border: none;
+    content-align: center middle;
+    background: $sm-raised;
+    color: $sm-danger;
+    text-style: bold;
+}
+
+#panic:hover, #panic:focus {
+    background: #2a0d14;
+    text-style: bold;
+}
+
+#panic:disabled {
+    color: $sm-muted;
+    background: $sm-raised;
 }
 
 /* Modal screens */
 
 ConfirmScreen, TimelineScreen {
     align: center middle;
-    background: #0a0e14 70%;
+    background: $sm-bg 75%;
 }
 
 #dialog {
     width: 64;
     height: auto;
     padding: 1 2;
-    background: #0f111a;
-    border: round #e06c75;
+    background: $sm-surface;
+    border: round $sm-danger;
 }
 
-#dialog .hint {
-    color: #5c6370;
+#dialog Label {
+    width: 100%;
+}
+
+#dialog .question {
+    color: $sm-strong;
+    text-style: bold;
+}
+
+#dialog .detail {
+    color: $sm-muted;
+    margin-top: 1;
 }
 
 #buttons {
     height: auto;
-    align-horizontal: right;
     margin-top: 1;
+}
+
+#buttons .hint {
+    width: 1fr;
+    color: $sm-muted;
+    padding-top: 1;
 }
 
 #buttons Button {
@@ -152,37 +231,34 @@ ConfirmScreen, TimelineScreen {
     height: auto;
     max-height: 80%;
     padding: 1 2;
-    background: #0f111a;
-    border: round #ff2e88;
-    border-title-color: #ff2e88;
+    background: $sm-surface;
+    border: round $sm-accent;
+    border-title-color: $sm-accent;
     border-title-style: bold;
-    border-subtitle-color: #5c6370;
+    border-subtitle-color: $sm-muted;
 }
 
-/* Paranoia Mode: the whole dashboard turns red, with steady borders (nothing blinks). */
-#panic {
-    width: 100%;
-    margin: 0 0 1 0;
-    text-style: bold;
-}
+/* Paranoia Mode on: the frame turns red and stays red. No timer, no blinking. */
 
 Screen.-lockdown {
-    background: #1a0006;
+    background: #10070a;
 }
 
-Screen.-lockdown Header {
-    background: #8b0016;
-    color: #ffffff;
+Screen.-lockdown #posture {
+    background: #5c0012;
 }
 
 Screen.-lockdown .pane,
 Screen.-lockdown #detail-tabs {
-    border: heavy #ff2e4d;
-    border-title-color: #ff2e4d;
+    border: round $sm-danger;
+    border-title-color: $sm-danger;
 }
 
 Screen.-lockdown #panic {
-    background: #ff2e4d;
+    background: $sm-danger;
     color: #ffffff;
-    text-style: bold reverse;
+}
+
+Screen.-lockdown #panic:hover, Screen.-lockdown #panic:focus {
+    background: #d81e3c;
 }
