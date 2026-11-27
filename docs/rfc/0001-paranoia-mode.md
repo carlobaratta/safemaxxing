@@ -2,8 +2,8 @@
 
 | Campo | Valore |
 |---|---|
-| Stato | Proposta, con implementazione di riferimento validata senza root |
-| Versione target | v0.3.0 |
+| Stato | Implementata e rilasciata in v0.2.1 (2026-11-03); validazione come root (spike del §10.2) ancora da registrare in TESTLOG. Dove diverge dal testo, vale il codice: vedi la nota qui sotto |
+| Versione target | v0.3.0 (anticipata: uscita in v0.2.1) |
 | Data | 2026-10-30 |
 | Piattaforma di riferimento | macOS 27.0.1 (26A434), Apple Silicon (arm64), Python 3.13 nel venv (requisito minimo del progetto: 3.12) |
 | Privilegi | root per entrare in Paranoia Mode; il watchdog è una LaunchDaemon di sistema |
@@ -12,6 +12,17 @@
 | Test | 57 test nuovi in `tests/lockdown/`; suite completa verde (vedi §10.1) |
 
 Le parole chiave DEVE, NON DEVE, DOVREBBE e PUÒ hanno il significato di RFC 2119.
+
+> **Nota (2026-11-09).** Dopo la stesura sono cambiate cose che il testo non riflette. In
+> v0.2.1 le regole DHCP, DHCPv6 e upstream del sinkhole richiedono `user root`, il piggyback
+> audit verifica il Team ID di chi dichiara il bundle id di un lease e il sinkhole limita
+> query e connessioni in volo. Dopo v0.2.1 (non ancora rilasciato): l'ingresso prende un
+> riferimento a pf (`firewall.PfReference`) prima di caricare il default-deny;
+> `--paranoia-profile max` attiva `Strictness.STRICT`, toglie i lease di primo piano, revoca
+> la concessione su SNI bloccato e ammette TCP 443 solo verso IP nominati dal DNS; la TUI
+> segnala le app negate per mancanza di lease e le estensioni di rete attive; il tema rosso
+> non lampeggia più (niente timer né classe `-blink`, bordi `#ff2e4d` fissi). Le voci
+> proposte nel §11.3 sono nel [CHANGELOG](../../CHANGELOG.md) sotto 0.2.1. Dettagli lì.
 
 Ogni blocco di codice di questo documento è il file testato, incluso alla lettera da uno script di assemblaggio. Lo stesso vale per i blocchi di regole pf, generati dal codice e non scritti a mano. I verdetti `pfctl -n` del §10.1 sono stati rimisurati su questo Mac durante l'assemblaggio. Non ci sono placeholder: dove un valore dipende dalla rete dell'utente (i resolver DNS, gli IP di `time.apple.com`), il documento dice da dove il codice lo legge.
 
@@ -2965,7 +2976,7 @@ Lo spike S3 (§10.2) verifica il comportamento con pf caricato; la sintassi è v
 `Sinkhole` è un forwarder DNS asincrono su UDP e TCP, in ascolto su `127.0.0.1:53` e `::1:53`. Per ogni query:
 
 1. Il messaggio viene interpretato nel wire format: nomi compressi con una guardia di 64 salti contro i cicli. Un messaggio malformato viene ignorato; uno senza domanda riceve SERVFAIL.
-2. Se il nome, o un suo suffisso, è in blocklist e non in allowlist, la risposta è **NXDOMAIN** e la TUI riceve una notifica LOW.
+2. Se il nome, o un suo suffisso, è in blocklist e non in allowlist, la risposta è **NXDOMAIN** e la TUI riceve una notifica LOW. Lo stesso vale, qualunque cosa dica l'allowlist, per gli endpoint DoH pubblici raggiunti per nome (`DOH_NAMES`: `cloudflare-dns.com` e sottodomini come `mozilla.` e `chrome.cloudflare-dns.com`, `dns.google`, `dns.quad9.net` e gli altri preset DoH dei browser, come NextDNS, OpenDNS, AdGuard e Mullvad) e per il canary di Firefox `use-application-dns.net`, che spegne il DoH attivato di default (R5.4). Un server DoH configurato a mano fuori da questa lista resta fuori portata.
 3. Altrimenti la query va ai resolver di sistema via UDP; se la risposta è troncata (TC), si ripete via TCP. Un resolver che non risponde entro 2 s passa al successivo; se nessuno risponde, SERVFAIL.
 4. **CNAME cloaking.** Se la risposta contiene un CNAME verso un nome in blocklist, anche la risposta è NXDOMAIN. È il tracker travestito da sottodominio del sito: `metrics.example.com CNAME collector.tracker.net`.
 5. Le risposte A e AAAA, catene CNAME comprese, vengono registrate nella `DnsMap`: IP → nomi, con TTL limitato fra 60 e 3600 s, al massimo 65536 indirizzi.
@@ -2973,7 +2984,7 @@ Lo spike S3 (§10.2) verifica il comportamento con pf caricato; la sintassi è v
 ### 8.4 Il controllo incrociato DNS ↔ concessione
 
 Prima di ogni concessione, `_refusal(grant)` rifiuta se:
-- **l'IP è un resolver DoH o DoT pubblico noto** (`DOH_RESOLVERS`: Cloudflare, Google, Quad9, IPv4 e IPv6) e la porta è 443 o 853 (R5.4). I browser, se il DoH fallisce, ripiegano sul resolver di sistema, quindi sul sinkhole;
+- **l'IP è un resolver DoH o DoT pubblico noto** (`DOH_RESOLVERS`: Cloudflare compreso 1.1.1.2/1.1.1.3 for Families, Google, Quad9, IPv4 e IPv6) e la porta è 443 o 853 (R5.4). I browser, se il DoH fallisce, ripiegano sul resolver di sistema, quindi sul sinkhole. Gli endpoint che i browser raggiungono per nome, su IP che nessuna lista fissa insegue, li rifiuta il sinkhole (§8.3); se un client usa un IP scritto nel codice, l'audit SNI segnala il nome DoH nel ClientHello (HIGH);
 - **l'IP è stato risolto da un nome in blocklist** (R5.3). È il caso del brief: Zoom tiene un lease, la sua telemetria risolve `telemetry.zoom.us`, l'IP risultante non viene concesso. Il sinkhole avrebbe già risposto NXDOMAIN; questo controllo copre l'IP raggiunto per altre vie (IP scritto nel codice, cache), se una risposta precedente lo aveva legato a quel nome;
 - **opzionale** (`require_dns_for_https`): HTTPS su TCP 443 verso un IP che nessuna risposta DNS ha nominato. È disattivato di default perché il media WebRTC (UDP, candidati ICE) usa IP senza DNS per natura; su TCP 443 è insolito ed è un buon segnale di C2 con IP scritto nel codice.
 
@@ -3005,9 +3016,10 @@ Il comando di cattura (pktap, con il PID del processo per ogni pacchetto):
 `parse_client_hello()` estrae lo SNI e registra se il ClientHello offre ECH. Il risultato distingue quattro casi: `FOUND`, `NO_SNI`, `TRUNCATED` (il ClientHello moderno con key share post-quantum supera i 1500 byte, misurato a 1524 con l'OpenSSL di Python su questo Mac, quindi può arrivare spezzato) e `NOT_CLIENT_HELLO`.
 
 Per ogni SNI trovato, il controller:
-1. lo registra nella `DnsMap`;
-2. se è in blocklist, notifica HIGH con processo, PID e nome;
-3. con `sni_action="revoke"`, toglie anche la concessione verso quell'IP a tutti i lease.
+1. se è in blocklist, o è un endpoint DoH pubblico (`DOH_NAMES`), notifica HIGH con processo, PID e nome;
+2. con `sni_action="revoke"`, toglie anche la concessione verso quell'IP a tutti i lease.
+
+Lo SNI non entra nella `DnsMap`: un IP scritto nel codice che manda uno SNI qualunque risulterebbe poi "nominato dal DNS" e passerebbe il controllo `require_dns_for_https`.
 
 Limiti dichiarati:
 - **Non è un filtro.** Il ClientHello passa, perché la destinazione era già concessa (P10).

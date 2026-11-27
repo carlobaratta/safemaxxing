@@ -27,7 +27,7 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
      └── k  → SIGKILL 4242
 ```
 
-> **Stato:** alpha (0.2.0). Validato su macOS 27.0.1, Apple Silicon (vedi
+> **Stato:** alpha (0.2.1). Validato su macOS 27.0.1, Apple Silicon (vedi
 > [TESTLOG.md](TESTLOG.md)); test unitari in CI su macOS arm64 e Intel. Gira come root e
 > modifica pf: leggi [SECURITY.md](SECURITY.md) prima di usare le azioni automatiche.
 
@@ -40,6 +40,7 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
   - [Permessi TCC](#permessi-tcc)
   - [Diagnostica](#diagnostica)
   - [Demone `watch`](#demone-watch)
+  - [Paranoia Mode](#paranoia-mode)
 - [Architettura](#architettura)
 - [Limiti noti](#limiti-noti)
 - [Sviluppo](#sviluppo)
@@ -84,6 +85,9 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
   - Ricava il bundle id dall'`Info.plist` dell'app, o della system extension per i binari
     in `/Library/SystemExtensions` (es. quella di rete di Avast).
   - Fa il reverse DNS in background, con cache.
+  - Risale la catena dei processi (antenati e *responsible pid*): un socket aperto da un
+    helper (`curl`, un updater) o da un servizio XPC viene attribuito all'app che ne è
+    responsabile.
 - **Flussi UDP via pktap** (opzionale, `--udp-flows`, serve root): un `tcpdump -k` sempre
   attivo sull'interfaccia pktap, solo UDP in uscita e senza porte DNS.
   - Il kernel etichetta ogni pacchetto con il pid del processo e la direzione. Il primo
@@ -95,9 +99,14 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
     `--include-system`). I flussi già aperti all'avvio non contano come nuovi.
   - Se tcpdump si ferma viene riavviato, fino a 5 volte di fila.
   - Durante una call Meet costa circa lo 0,5% di un core.
+  - `--tcp-flows` cattura anche i SYN TCP in uscita (un socket aperto e chiuso tra due
+    polling); `--throughput` segnala un flusso già aperto quando il suo traffico in uscita
+    sale di colpo rispetto alla sua media.
 - **Correlazione**: buffer circolari in memoria per eventi e connessioni.
   - Fa il match per PID o per bundle id, inclusi gli helper (es. `com.google.Chrome.helper`).
   - La finestra è configurabile e tollera clock skew e righe di log arrivate in ritardo.
+    Con `--decay-window-ms` una connessione oltre la finestra, ma entro quella di decadimento,
+    viene ancora correlata, un livello di severità più in basso.
   - Produce un solo alert per connessione: se altri sensori la precedono, l'alert viene
     aggiornato con lo stesso id. Cooldown di 30 s per (pid, sensore, IP).
   - Le raffiche di righe di log di un accesso diventano un solo evento.
@@ -128,6 +137,9 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
   fotocamera, microfono, registrazione schermo, monitoraggio input, accessibilità e accesso
   completo al disco, con i titolari ad alto rischio evidenziati. Vedi
   [Permessi TCC](#permessi-tcc).
+- **Paranoia Mode** (tasto `P` nella TUI, serve root): default-deny in uscita, con eccezioni
+  solo per le app in uso in quel momento, verificate dalla firma del codice. Vedi
+  [Paranoia Mode](#paranoia-mode).
 
 ## Installazione
 
@@ -162,6 +174,7 @@ x86_64, un `.pkg` firmato e notarizzato e un tarball.
 ```bash
 sudo uv run safemaxxing tui                       # dashboard interattiva
 sudo uv run safemaxxing tui --window-ms 800 --ignore com.apple.FaceTime
+sudo uv run safemaxxing tui --paranoia-profile max  # Paranoia Mode (P) col profilo più restrittivo
 
 sudo uv run safemaxxing watch --json              # headless, JSON lines su stdout
 sudo uv run safemaxxing watch --auto-block --min-severity high
@@ -178,6 +191,10 @@ sudo uv run safemaxxing boot uninstall
 sudo safemaxxing daemon install --auto-block      # watch in background (solo dal .pkg)
 safemaxxing daemon status
 sudo safemaxxing daemon uninstall
+
+sudo uv run safemaxxing paranoia install          # watchdog della Paranoia Mode (tasto P)
+sudo uv run safemaxxing paranoia blocklist        # scarica la blocklist DNS del sinkhole
+sudo uv run safemaxxing paranoia uninstall
 
 sudo uv run safemaxxing freeze 4242               # SIGSTOP
 sudo uv run safemaxxing thaw 4242                 # SIGCONT
@@ -198,6 +215,7 @@ inviare segnali a processi altrui. Senza root safemaxxing funziona in modalità 
 | Opzione | Default | Effetto |
 |---------|---------|---------|
 | `--window-ms N` | `2000` | Finestra di correlazione sensore → egress |
+| `--decay-window-ms N` | `0` | Finestra di decadimento: correla ancora una connessione fino a N ms dopo l'accesso, con confidenza decrescente e un livello di severità in meno. `0` la disattiva |
 | `--poll-ms N` | `200` | Intervallo di polling della tabella socket (min 20) |
 | `--ignore ID` | — | Bundle id o nome processo da ignorare (match esatto, ripetibile). Vale solo se la firma del processo lo conferma: identificatore di firma uguale al bundle id (o un suo helper), firmato da Apple o da un Team ID; un nome processo vale solo per i binari Apple. Per le app di terze parti usa il bundle id |
 | `--include-system` | off | Mostra gli eventi dei binari di sistema e correla anche i loro socket |
@@ -205,6 +223,14 @@ inviare segnali a processi altrui. Senza root safemaxxing funziona in modalità 
 | `--include-loopback` | off | Traccia anche `127.0.0.1` / `::1` |
 | `--no-dns` | off | Disattiva il reverse DNS |
 | `--udp-flows` | off | Cattura anche l'UDP in uscita con pktap (`tcpdump`, serve root): trova la destinazione dei socket UDP non connessi |
+| `--tcp-flows` | off | Cattura anche i SYN TCP in uscita con pktap (serve root): trova i socket aperti e chiusi tra due polling |
+| `--throughput` | off | Segnala una connessione già aperta quando il suo traffico in uscita ha un picco (pktap, serve root). Copre il TCP solo con `--tcp-flows`, altrimenti i flussi UDP |
+
+Solo per `tui`:
+
+| Opzione | Default | Effetto |
+|---------|---------|---------|
+| `--paranoia-profile P` | `standard` | Cosa rifiuta la Paranoia Mode (tasto `P`). `max` attiva ogni rifiuto: verifica del codice `STRICT` (rifiuta `disable-library-validation`, quindi le chiamate da Brave non partono), nessuna rete all'app in primo piano senza un lease manuale, revoca della concessione quando lo SNI è in blocklist, TCP 443 solo verso IP nominati da una risposta DNS. Resta fail-open (il watchdog ripristina v0.2) e non protegge da codice con root o da un kernel compromesso |
 
 Solo per `watch`:
 
@@ -227,6 +253,8 @@ Solo per `watch`:
 | `Invio` / `spazio` | Timeline al millisecondo della selezione |
 | `/` | Filtra feed e connessioni per nome processo, bundle id, pid, IP o hostname; `Invio` tiene il filtro, `esc` lo toglie |
 | `c` | Svuota il feed (il log eventi e pf non cambiano) |
+| `P` | Entra in [Paranoia Mode](#paranoia-mode); premuto di nuovo, chiede conferma ed esce |
+| `g` | Dà (o toglie) un lease manuale all'app della connessione selezionata (Paranoia Mode) |
 | `tab` / `shift+tab` | Cambia pannello |
 | `q` | Esci |
 
@@ -238,8 +266,10 @@ Active egress le 300 connessioni più recenti. Il layout è pensato per un termi
 ### Menu bar
 
 `sudo uv run safemaxxing menubar` (dopo `uv sync --extra menubar`) mette safemaxxing nella barra
-dei menu. Usa lo stesso supervisor di `tui` e `watch` e accetta le stesse opzioni (tranne
-quelle solo di `watch`).
+dei menu. Usa lo stesso supervisor di `tui` e `watch` e ne accetta le opzioni di base:
+`--window-ms`, `--poll-ms`, `--ignore`, `--include-system`, `--include-dns`,
+`--include-loopback`, `--no-dns` e `--udp-flows` (non `--decay-window-ms`, `--tcp-flows`,
+`--throughput` né quelle solo di `watch`).
 
 | Icona | Stato |
 |-------|-------|
@@ -331,20 +361,26 @@ sopravvivono al riavvio**: dopo un restart pf torna allo stato di boot e la tabe
 esiste più. Per riaverli serve `sudo safemaxxing boot install` (vedi
 [Blocchi dopo il riavvio](#blocchi-dopo-il-riavvio)).
 
-Prima del primo blocco di ogni processo (cioè a ogni comando `block`, ma una sola volta per
-sessione in `tui` / `watch`) safemaxxing:
+Prima di ogni blocco safemaxxing:
 
 1. rifiuta di procedere se il ruleset principale non valuta `anchor "com.apple/*"`, perché le
    regole dell'anchor sarebbero ignorate, e suggerisce `sudo pfctl -f /etc/pf.conf`;
-2. se l'anchor non è ancora caricato, valida le regole con un dry-run
+2. se l'anchor non è ancora caricato (controllato una volta per sessione), valida le regole con un dry-run
    (`pfctl -a com.apple/safemaxxing -n -f -`) prima di caricarle, ignorando i warning innocui
    di Darwin (ALTQ, avviso su `-f`);
-3. abilita pf se è disattivato (`pfctl -E`, con fallback `pfctl -e`) e verifica con `-s info`;
+3. si assicura di avere un proprio riferimento a pf (`pfctl -E`, anche se pf è già attivo,
+   con fallback `pfctl -e`) e verifica con `-s info`. Il token viene salvato in
+   `/Library/Application Support/safemaxxing/pf-reference` (root, 0600);
 4. dopo `-T add` elimina gli stati esistenti verso l'IP (`pfctl -k 0.0.0.0/0 -k <IP>`,
    `::/0` per IPv6), così smettono di funzionare anche i socket già aperti.
 
-`flush` svuota la tabella, ma la regola dell'anchor resta caricata e pf resta attivo. Per
-ispezionare lo stato:
+`flush` svuota la tabella e lascia caricata la regola dell'anchor (su una tabella vuota non
+blocca nulla). Poi, se la Paranoia Mode non è attiva, rilascia il riferimento di safemaxxing
+con `pfctl -X <token>`: pf si spegne solo se nessun altro programma (VPN, Condivisione
+Internet) ne tiene uno. safemaxxing non esegue mai `pfctl -d`, che spegnerebbe pf per tutti.
+Un token di prima di un riavvio o di un `pfctl -d` viene scartato senza rilasciarlo. Dettagli
+in [SECURITY.md](SECURITY.md#pf-enabling-the-reference-token-and-flush). Per ispezionare lo
+stato:
 
 ```bash
 sudo pfctl -a com.apple/safemaxxing -s rules
@@ -361,16 +397,19 @@ il blocco resta attivo nel kernel e il dettaglio dice `not saved for reboot: …
 `sudo safemaxxing boot install` aggiunge al file gli IP già presenti nella tabella. Poi scrive
 `/Library/LaunchDaemons/io.github.carlobaratta.safemaxxing.restore.plist` e lo carica con
 `launchctl bootstrap system`. A ogni avvio il job esegue uno script `/bin/sh` che usa solo
-`/sbin/pfctl`, mai il codice Python di safemaxxing:
+`/sbin/pfctl` e strumenti di base del sistema, mai il codice Python di safemaxxing:
 
 1. esce senza toccare pf se la lista è vuota o manca;
 2. aspetta fino a 60 s che `com.apple.pfctl` carichi `/etc/pf.conf`, cioè che il ruleset
    principale contenga `anchor "com.apple/*"`;
-3. carica la regola dell'anchor, aggiunge gli IP con `pfctl -T add -f <lista>` e abilita pf
-   con `pfctl -E`.
+3. carica la regola dell'anchor, aggiunge gli IP con `pfctl -T add -f <lista>`, abilita pf
+   con `pfctl -E` e salva il token, così un `flush` successivo può rilasciarlo. Se trova un
+   token salvato dopo l'ultimo avvio e pf è attivo, lo tiene e non ne prende un altro.
 
 Il job scrive in `/var/log/safemaxxing-boot.log`. Anche il caricamento con `install` esegue
 lo script una volta: aggiunge gli IP salvati alla tabella attiva e non ne toglie nessuno.
+Prima di caricarlo, `install` prende il riferimento di safemaxxing a pf (se la lista non è
+vuota), così lo script trova il token e non ne lascia uno orfano.
 `boot status` mostra se il job è installato e caricato e confronta la lista salvata con la
 tabella attiva. Con `boot uninstall` il job viene rimosso, mentre i blocchi attivi e la lista
 restano.
@@ -401,6 +440,55 @@ non scrivibili da gruppo o altri. Da un checkout dei sorgenti, da un virtualenv 
 risponde `refusing to install the daemon` (vedi [SECURITY.md](SECURITY.md)). Per provarlo prima
 di una release firmata, vedi [packaging/README.md](packaging/README.md).
 
+### Paranoia Mode
+
+La Paranoia Mode trasforma l'anchor `com.apple/safemaxxing` da lista di blocco in
+**default-deny** del traffico in uscita. Passano solo:
+
+- l'infrastruttura minima: DHCP, ICMPv6 di neighbour discovery, mDNS, NTP verso
+  `time.apple.com`, APNs (porte 5223 e 2197 verso le reti Apple);
+- il DNS, rediretto a un sinkhole locale che risponde NXDOMAIN ai domini della blocklist
+  (anche via CNAME) e inoltra il resto ai resolver di sistema;
+- le destinazioni che un'app **in uso** sta cercando di raggiungere.
+
+Un'app è in uso quando tiene un *lease*: usa fotocamera, microfono o cattura dello schermo
+secondo Control Center (30 s di grazia dopo la fine), è in primo piano (15 s) o l'hai
+autorizzata a mano con `g` (revoca immediata). safemaxxing impara le sue destinazioni dai
+pacchetti che il default-deny scarta su `pflog0` e, prima di concedere una tupla (protocollo,
+IP, porta), verifica il processo: stato della firma dal kernel (`csops`), entitlement,
+`codesign` sul codice in esecuzione e Team ID fissato al primo uso
+(`/Library/Application Support/safemaxxing/pins.json`). Un processo che non è il titolare e
+usa una destinazione concessa viene fermato con `SIGSTOP` (i daemon di sistema solo
+segnalati). I resolver DoH/DoT pubblici non vengono mai concessi: né per IP, né per nome (il
+sinkhole risponde NXDOMAIN a `*.cloudflare-dns.com`, `dns.google`, `dns.quad9.net`, agli
+altri resolver che i browser offrono fra i preset DoH (NextDNS, OpenDNS, CleanBrowsing,
+AdGuard, Mullvad, …) e al canary di Firefox `use-application-dns.net`).
+
+```bash
+sudo uv run safemaxxing paranoia install      # una volta: il watchdog (senza, P rifiuta)
+sudo uv run safemaxxing paranoia blocklist    # facoltativo: blocklist DNS (StevenBlack hosts)
+sudo uv run safemaxxing tui                   # poi P per entrare, P e conferma per uscire
+```
+
+- **Fail-open.** Un watchdog launchd di root, che esegue solo `/bin/sh` e `/sbin/pfctl`,
+  ripristina le regole normali (tabella di blocco inclusa) se safemaxxing smette di battere
+  il cuore per 5 s. Un crash non ti lascia offline, ma neanche protetto. Un riavvio esce
+  sempre dalla Paranoia Mode.
+- **Profili.** `--paranoia-profile standard` (default) o `max`: vedi
+  [Opzioni](#opzioni-di-tui-e-watch).
+- **Proxy trasparenti.** Un antivirus con protezione web (Avast Web Shield) o lo split
+  tunneling di una VPN aprono loro le connessioni al posto delle app: pf vede l'estensione e
+  non l'app in lease, e il traffico di quelle app viene negato. All'ingresso la TUI elenca le
+  estensioni di rete attive e segnala la prima connessione negata di ogni app; disattiva il
+  proxy mentre usi la Paranoia Mode.
+- **Limiti.** pf non filtra per processo: una concessione vale per la destinazione, e un
+  estraneo viene fermato dopo i primi pacchetti, non prima. Lo SNI del ClientHello è un audit
+  a posteriori (`max` revoca la concessione). Non protegge da codice già root.
+
+Design, misure e piano di validazione: [RFC 0001](docs/rfc/0001-paranoia-mode.md). La
+Paranoia Mode non ha ancora una sessione di validazione come root in [TESTLOG.md](TESTLOG.md)
+(spike S1-S6 del §10.2 dell'RFC): provala prima su una macchina di test.
+
 ## Architettura
 
 ```
@@ -411,13 +499,25 @@ src/safemaxxing/
 ├── pktap.py         tcpdump -k → parse_pktap_line → PktapFlowTracker → PktapCapture (--udp-flows)
 ├── correlation.py   CorrelationEngine: buffer circolari, finestra temporale, severità
 ├── supervisor.py    unisce gli stream asincroni e alimenta l'engine
-├── firewall.py      PfFirewall (pfctl), BlockList (lista salvata) e ProcessController (segnali)
-├── boot.py          job launchd che riapplica la lista al boot (solo /bin/sh e /sbin/pfctl)
+├── process_tree.py  catena dei processi responsabili di un socket (antenati, responsible pid)
+├── throughput.py    picchi di traffico sui flussi già aperti (--throughput)
+├── firewall.py      PfFirewall (pfctl), PfReference (token di pfctl -E), BlockList (lista
+│                    salvata) e ProcessController (segnali)
+├── boot.py          job launchd che riapplica la lista al boot (solo /bin/sh, pfctl e tool di base)
 ├── daemon.py        LaunchDaemon che tiene attivo `watch --json` (solo da un bundle di root)
 ├── diagnostics.py   doctor (Check) e sample (summarize_sample)
-├── codesign.py      firma del codice per l'inspector (codesign -dv)
+├── codesign.py      firma per l'inspector (codesign -dv) e stato del codice dal kernel (csops)
 ├── tcc_inspector.py audit in sola lettura dei TCC.db (permissions, check di doctor)
 ├── menubar.py       MenuModel (puro) e il runner rumps della barra dei menu
+├── lockdown/        Paranoia Mode
+│   ├── controller.py    LockdownController: ingresso, uscita, loop di apprendimento e verifica
+│   ├── rules.py         testo delle regole pf del default-deny (puro)
+│   ├── pf.py            carica ruleset e tabelle con pfctl
+│   ├── leases.py        lease per app (sensore, primo piano, manuale) e periodi di grazia
+│   ├── pflog.py         pacchetti scartati letti da pflog0
+│   ├── dns.py           sinkhole DNS e blocklist
+│   ├── sni.py           SNI dei ClientHello via pktap (audit)
+│   └── watchdog.py      dead-man switch launchd (/bin/sh e pfctl)
 ├── tui/
 │   ├── app.py           SafemaxxingApp: feed, tab eventi/egress, timer, azioni
 │   ├── panels.py        pannelli Firewall e Inspector, barra di stato (snapshot → Rich)
@@ -436,8 +536,12 @@ testabile anche su Linux (la CI gira su macOS).
 
 ## Limiti noti
 
+- Paranoia Mode blocca il DNS cifrato verso i resolver pubblici noti, per IP e per nome
+  (`DOH_NAMES`), non verso un server DoH qualsiasi. Un browser con un lease, configurato a
+  mano con un server DoH fuori da quella lista, risolve fuori dal sinkhole.
 - safemaxxing vede solo i socket *nuovi*. Un'app che riusa una connessione già aperta (i
-  browser lo fanno di continuo) non produce un nuovo egress da correlare.
+  browser lo fanno di continuo) non produce un nuovo egress da correlare, salvo un picco di
+  traffico con `--throughput`.
 - Le risoluzioni DNS (porte 53, 853, 5353) sono escluse per default, perché precedono la
   connessione vera. `--include-dns` le include.
 - Per default gli eventi dei binari Apple protetti da SIP (`/System`, `/usr` tranne
@@ -460,8 +564,10 @@ testabile anche su Linux (la CI gira su macOS).
     ma non c'è alert.
 - Molte app Apple (FaceTime, Messaggi) delegano la rete a daemon di sistema (`avconferenced`,
   `identityservicesd`). L'accesso al sensore e la connessione avvengono quindi in processi
-  diversi e non producono alert. La correlazione è pensata per le app di terze parti che fanno
-  rete da sé.
+  diversi. safemaxxing collega un socket all'app che ha avviato il suo processo o che macOS
+  indica come responsabile, ma un daemon che non dichiara l'app per cui lavora resta
+  scollegato e non produce alert. La correlazione è pensata per le app di terze parti che
+  fanno rete da sé.
 - Le euristiche per `cmio` / `coreaudio` / `locationd` dipendono dal formato dei messaggi di
   log, che Apple cambia tra una versione di macOS e l'altra.
   - Le attribuzioni dell'indicatore di Control Center sono la fonte più affidabile.
@@ -476,8 +582,9 @@ testabile anche su Linux (la CI gira su macOS).
 - Il reverse DNS gira in background su un pool dedicato (4 thread) e il polling non lo
   aspetta mai. Il nome host compare nel pannello connessioni appena risolto. Un alert invece
   mostra il nome solo se l'IP era già in cache; altrimenti mostra solo l'IP.
-- Il polling dei socket (default 200 ms) può perdere le connessioni brevissime. Un backend
-  basato su Network Extension / Endpoint Security risolverebbe il problema.
+- Il polling dei socket (default 200 ms) può perdere le connessioni brevissime: `--tcp-flows`
+  le vede dal SYN. Un backend basato su Network Extension / Endpoint Security risolverebbe il
+  problema anche senza pktap.
 - **UDP non connesso**: i socket UDP mai `connect()`-ati non hanno un indirizzo remoto nella
   tabella dei socket, quindi vengono scartati. Sono quelli di WebRTC e QUIC, usati per
   esempio da una call Meet nel browser.
@@ -492,8 +599,10 @@ testabile anche su Linux (la CI gira su macOS).
     verso un IP nuovo mostra l'IP, come per la tabella dei socket.
   - Gli eventi sensore di Brave restano visibili e attribuiti correttamente (verificato il
     2026-10-26, vedi [TESTLOG.md](TESTLOG.md)).
-- **SNI**: oggi il nome host arriva dal reverse DNS. Estrarre lo SNI dal ClientHello richiede
-  la cattura dei pacchetti (pcap/NE) ed è nella roadmap ([TODO.md](TODO.md)).
+- **SNI**: fuori dalla Paranoia Mode il nome host arriva dal reverse DNS. Lo SNI del
+  ClientHello viene letto solo in Paranoia Mode, come audit dei flussi concessi
+  (`lockdown/sni.py`); usarlo anche per dare un nome alle destinazioni nella TUI è nella
+  roadmap ([TODO.md](TODO.md)).
 - I blocchi sopravvivono al riavvio solo con `boot install` (vedi
   [Blocchi dopo il riavvio](#blocchi-dopo-il-riavvio)); verificato con un riavvio reale su
   macOS 27.0.1. Le modifiche fatte a mano con `pfctl` non finiscono nella lista salvata.
@@ -521,7 +630,8 @@ Workflow, convenzioni e regole per i log di test: [CONTRIBUTING.md](CONTRIBUTING
 `tests/live/` contiene test contro il kernel Darwin e il log unificato reali, saltati di
 default. Aggiungono e rimuovono sempre un solo IP nella tabella `safemaxxing_block`: per
 default `1.1.1.1`, configurabile con `SAFEMAXXING_LIVE_IP`. Caricano anche la regola
-dell'anchor e abilitano pf, e le lasciano attive alla fine.
+dell'anchor e abilitano pf, e le lasciano attive alla fine. I test sul riferimento di pf
+prendono e rilasciano i propri token e lasciano pf com'era.
 
 ```bash
 sudo SAFEMAXXING_LIVE=1 "$(which uv)" run pytest -m live -v -s
@@ -533,6 +643,8 @@ I test live verificano:
 - il parsing pulito di anchor e tabella;
 - il drop effettivo delle nuove connessioni e di quelle già aperte;
 - il ripristino dopo l'unblock;
+- che il kernel conti i token di `pfctl -E`, che `pfctl -X` lasci pf attivo finché un altro
+  li tiene e rifiuti un token già usato, e che `PfReference` rilasci quello che prende;
 - un campionamento di 5 s di `log stream`, con report su redazione e parsing.
 
 La durata del campionamento si cambia con `SAFEMAXXING_LIVE_SAMPLE_S`; le altre variabili
@@ -553,6 +665,7 @@ Per una validazione completa con raccolta delle evidenze in `testlogs/` c'è
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Ciclo di sviluppo, test live, convenzioni |
 | [packaging/README.md](packaging/README.md) | Build standalone, firma, notarizzazione, release e Homebrew |
 | [SECURITY.md](SECURITY.md) | Threat model, segnalazione vulnerabilità, pf/token, cosa modifica sul sistema |
+| [docs/rfc/0001-paranoia-mode.md](docs/rfc/0001-paranoia-mode.md) | Design della Paranoia Mode, misure e piano di validazione |
 
 ## Licenza
 

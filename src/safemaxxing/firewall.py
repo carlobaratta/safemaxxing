@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import fcntl
 import ipaddress
 import os
 import re
 import signal
+import stat
 import tempfile
-from collections.abc import Callable, Sequence
+import time
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -24,6 +27,8 @@ ANCHOR = "com.apple/safemaxxing"
 # Root-owned, so only root can change what the boot job feeds to pfctl.
 STATE_DIR = Path("/Library/Application Support/safemaxxing")
 BLOCKLIST = STATE_DIR / "blocklist"
+# The `pfctl -E` token safemaxxing holds, written by this module and by the boot job.
+PF_REFERENCE = STATE_DIR / "pf-reference"
 
 
 def anchor_rules(table: str = TABLE) -> str:
@@ -124,6 +129,192 @@ def parse_pf_status(info: str) -> bool | None:
     return None if match is None else match.group(1) == "Enabled"
 
 
+_RUNTIME_RE = re.compile(r"^Status: Enabled for (\d+) days (\d+):(\d\d):(\d\d)", re.MULTILINE)
+_TOKEN_RE = re.compile(r"^Token : (\d{1,20})\s*$", re.MULTILINE)
+
+
+def parse_pf_runtime(info: str) -> int | None:
+    """Seconds pf has been running, from `pfctl -s info`'s "Enabled for D days HH:MM:SS"."""
+    match = _RUNTIME_RE.search(info)
+    if match is None:
+        return None
+    days, hours, minutes, seconds = (int(g) for g in match.groups())
+    return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
+
+
+def parse_pf_token(output: str) -> str | None:
+    """The reference token `pfctl -E` prints ("Token : N"), or None. 0 means none was issued."""
+    match = _TOKEN_RE.search(output)
+    if match is None:
+        return None
+    value = int(match.group(1))
+    return str(value) if 0 < value < 2**64 else None
+
+
+@dataclass(frozen=True, slots=True)
+class PfRecord:
+    """A saved `pfctl -E` token and the wall-clock instant pf's current run began."""
+
+    token: str
+    started: float
+
+
+class PfReference:
+    """The one pf enable reference safemaxxing holds, saved so a later process can release it.
+
+    pf on macOS counts references: `pfctl -E` enables it and returns a token, and
+    `pfctl -X <token>` drops that reference, so pf stops only when no holder is left. A token
+    lives only for one run of pf: a reboot or a `pfctl -d` by anyone invalidates every token,
+    and the kernel may hand the same value to another holder later. So the record also keeps
+    when pf's run began (from "Enabled for ..."), and a token is used only while pf is still in
+    that same run; otherwise it is forgotten, never released. A restart within TOLERANCE_S of
+    the moment the record was taken cannot be told apart from no restart.
+
+    The record is `token=N` and `status=<pfctl -s info status line>`, root-owned and 0600; the
+    status line is read against the file's mtime. The boot job writes the same format.
+    """
+
+    # pfctl prints the runtime to the second; allow for that and the time to write the file.
+    TOLERANCE_S = 5.0
+    LOCK_TIMEOUT_S = 10.0
+
+    def __init__(
+        self,
+        path: Path = PF_REFERENCE,
+        owner_uid: int = 0,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.path = path
+        self.lock_path = path.with_name(path.name + ".lock")
+        self.owner_uid = owner_uid
+        self._clock = clock
+
+    @contextlib.asynccontextmanager
+    async def locked(self) -> AsyncIterator[None]:
+        """Hold an exclusive lock so a block and a flush in two processes cannot interleave.
+
+        Not reentrant. Raises FirewallError after LOCK_TIMEOUT_S.
+        """
+        self.lock_path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
+        fd = os.open(self.lock_path, flags, 0o600)
+        try:
+            deadline = time.monotonic() + self.LOCK_TIMEOUT_S
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() > deadline:
+                        raise FirewallError(
+                            f"another safemaxxing process holds {self.lock_path}"
+                        ) from None
+                    await asyncio.sleep(0.02)
+            yield
+        finally:
+            os.close(fd)  # also releases the flock
+
+    def load(self) -> PfRecord | None:
+        """The saved record, or None if missing, malformed or not root-owned and private."""
+        try:
+            fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        except OSError:
+            return None
+        with os.fdopen(fd) as fh:
+            st = os.fstat(fh.fileno())
+            if not stat.S_ISREG(st.st_mode) or st.st_uid != self.owner_uid or st.st_mode & 0o077:
+                return None
+            fields = dict(line.split("=", 1) for line in fh.read(4096).splitlines() if "=" in line)
+        token = parse_pf_token(f"Token : {fields.get('token', '')}")
+        runtime = parse_pf_runtime(fields.get("status", ""))
+        if token is None or runtime is None:
+            return None
+        return PfRecord(token, st.st_mtime - runtime)
+
+    def _save(self, token: str, info: str) -> None:
+        status = next(line for line in info.splitlines() if line.startswith("Status: Enabled"))
+        self.path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".pf-reference-")
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(f"token={token}\nstatus={status.strip()}\n")
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, self.path)
+        except BaseException:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp)
+            raise
+
+    def forget(self) -> None:
+        """Delete the record; a missing one is not an error."""
+        with contextlib.suppress(FileNotFoundError):
+            self.path.unlink()
+
+    def _live(self, info: str) -> PfRecord | None:
+        """The record, if pf is still in the run it was taken in (so the token is ours)."""
+        record = self.load()
+        runtime = parse_pf_runtime(info)
+        if record is None or runtime is None:
+            return None
+        started = self._clock() - runtime
+        return record if abs(started - record.started) <= self.TOLERANCE_S else None
+
+    async def acquire(self, run: Runner) -> str:
+        """Make sure pf is enabled and safemaxxing holds a reference to it.
+
+        With a live record, nothing runs but `pfctl -s info`. Otherwise `pfctl -E` takes a new
+        reference, even when pf is already on, so another holder's `pfctl -X` cannot turn it
+        off under our rules; its token is saved. Falls back to `pfctl -e` (no token, so nothing
+        to release later). Returns a note for the user ("" when all went to plan); raises
+        FirewallError if pf stays disabled.
+        """
+        info = (await run([PFCTL, "-s", "info"])).stdout
+        if parse_pf_status(info) and self._live(info) is not None:
+            return ""
+        res = await run([PFCTL, "-E"])
+        token = parse_pf_token(f"{res.stdout}\n{res.stderr}")
+        info = (await run([PFCTL, "-s", "info"])).stdout
+        if parse_pf_status(info):
+            if token is None or parse_pf_runtime(info) is None:
+                return "pf enabled, but no pfctl -E token was recorded: flush cannot release it"
+            try:
+                self._save(token, info)
+            except OSError as exc:
+                return f"pf enabled, but its reference was not saved: {exc}"
+            return ""
+        await run([PFCTL, "-e"])
+        if parse_pf_status((await run([PFCTL, "-s", "info"])).stdout):
+            return "pf enabled with pfctl -e (no reference): flush cannot release it"
+        raise FirewallError("pf is still disabled after `pfctl -E` / `pfctl -e`")
+
+    async def release(self, run: Runner) -> str:
+        """Drop safemaxxing's reference with `pfctl -X`; never `pfctl -d`.
+
+        pf stops only if no other program holds a reference. A token from an earlier run of pf
+        is forgotten without being released. Returns what happened, for the user.
+        """
+        info = (await run([PFCTL, "-s", "info"])).stdout
+        if self.load() is None:
+            return "pf left as is: safemaxxing holds no recorded reference"
+        if parse_pf_status(info) is False:
+            self.forget()
+            return "pf already disabled"
+        record = self._live(info)
+        if record is None:
+            if parse_pf_runtime(info) is None:
+                return "pf left as is: its status could not be read"
+            self.forget()
+            return "pf left as is: it was restarted since safemaxxing enabled it"
+        res = await run([PFCTL, "-X", record.token])
+        if res.returncode != 0:
+            detail = "; ".join(meaningful_stderr(res.stderr)) or f"exit {res.returncode}"
+            return f"pf left as is: pfctl -X failed: {detail}"
+        self.forget()
+        if parse_pf_status((await run([PFCTL, "-s", "info"])).stdout) is False:
+            return "released safemaxxing's pf reference; pf disabled (no other holder)"
+        return "released safemaxxing's pf reference; pf stays enabled for its other holders"
+
+
 def meaningful_stderr(stderr: str) -> list[str]:
     """Return stripped stderr lines that are real errors, dropping benign Darwin pfctl chatter."""
     return [
@@ -188,8 +379,10 @@ class PfFirewall:
     """Blocks IPs through a pf table inside a dedicated anchor, driven by `pfctl` (needs root).
 
     The table and its anchor rule live in the kernel, so blocks outlive this process and
-    `flush` empties the table without unloading the rule or disabling pf. With a `store`,
-    every successful change is also saved there so the boot job can reapply it.
+    `flush` empties the table without unloading the rule. With a `store`, every successful
+    change is also saved there so the boot job can reapply it. With a `reference`, pf is
+    enabled through a saved `pfctl -E` token that `flush` gives back once nothing of
+    safemaxxing needs pf; without one, pf is enabled and never released.
     """
 
     def __init__(
@@ -198,12 +391,14 @@ class PfFirewall:
         anchor: str = ANCHOR,
         table: str = TABLE,
         store: BlockList | None = None,
+        reference: PfReference | None = None,
     ) -> None:
         self._run = runner
         self.anchor = anchor
         self.table = table
         self.store = store
-        self._ready = False
+        self.reference = reference
+        self._anchor_ready = False
 
     def _persist(self, result: ActionResult, save: Callable[[BlockList], None]) -> ActionResult:
         # The kernel change already happened; a failed save is reported, not turned into a failure.
@@ -247,48 +442,52 @@ class PfFirewall:
         if not await self.anchor_loaded():
             raise FirewallError(f"anchor {self.anchor} did not retain its rules after loading")
 
-    async def _enable(self) -> None:
+    async def _enable(self) -> str:
+        if self.reference is not None:
+            return await self.reference.acquire(self._run)
         if await self.is_enabled():
-            return
+            return ""
         # -E takes a reference (safe alongside other pf users); -e is the plain fallback.
         for flag in ("-E", "-e"):
             await self._run([PFCTL, flag])
             if await self.is_enabled():
-                return
+                return ""
         raise FirewallError("pf is still disabled after `pfctl -E` / `pfctl -e`")
 
-    async def setup(self) -> None:
+    async def setup(self) -> str:
         """Load the anchor rules and enable pf. Blocks deliberately outlive this process.
 
-        Runs once per instance (guarded by `_ready`). Loads the rules only if the anchor lacks
-        them, then enables pf with `pfctl -E`, falling back to `-e`; pf stays enabled afterwards.
-        Raises FirewallError if the main ruleset skips `com.apple/*`, pfctl rejects the rules,
-        or pf stays disabled.
+        Loads the rules only if the anchor lacks them (checked once per instance). pf is
+        checked on every call, because another process may have turned it off since: a
+        long-running TUI or daemon must not add blocks to a pf that is off. Returns a note for
+        the user, "" when there is none. Raises FirewallError if the main ruleset skips
+        `com.apple/*`, pfctl rejects the rules, or pf stays disabled.
         """
-        if self._ready:
-            return
-        if not await self.anchor_reachable():
-            raise FirewallError(
-                f"the main pf ruleset does not evaluate {PARENT_ANCHOR_RULE}, so rules in "
-                f"{self.anchor} would be ignored; restore the default with: "
-                "sudo pfctl -f /etc/pf.conf"
-            )
-        if not await self.anchor_loaded():
-            await self._load_anchor()
-        await self._enable()
-        self._ready = True
+        if not self._anchor_ready:
+            if not await self.anchor_reachable():
+                raise FirewallError(
+                    f"the main pf ruleset does not evaluate {PARENT_ANCHOR_RULE}, so rules in "
+                    f"{self.anchor} would be ignored; restore the default with: "
+                    "sudo pfctl -f /etc/pf.conf"
+                )
+            if not await self.anchor_loaded():
+                await self._load_anchor()
+            self._anchor_ready = True
+        return await self._enable()
 
     async def _table_op(
         self, kind: ActionKind, op: str, raw_ip: str, needs_setup: bool = True
     ) -> ActionResult:
+        note = ""
         try:
             ip = validate_ip(raw_ip)
             if needs_setup:
-                await self.setup()
+                note = await self.setup()
         except (ValueError, FirewallError) as exc:
             return ActionResult(kind, raw_ip, False, str(exc))
         res = await self._run(self._table_cmd(op, ip))
-        return ActionResult(kind, ip, res.returncode == 0, "; ".join(meaningful_stderr(res.stderr)))
+        detail = "; ".join([*meaningful_stderr(res.stderr), *filter(None, [note])])
+        return ActionResult(kind, ip, res.returncode == 0, detail)
 
     async def block(self, ip: str) -> ActionResult:
         """Add `ip` to the block table (`pfctl -T add`), running `setup` first.
@@ -296,7 +495,18 @@ class PfFirewall:
         Loopback, unspecified and multicast addresses are refused. Invalid input and setup
         failures come back as a failed ActionResult rather than raising. On success `pfctl -k`
         also kills existing states between the address and anywhere, so open sockets die too.
+        With a `reference`, runs under its lock, so a `flush` elsewhere cannot release pf
+        between enabling it and adding the address.
         """
+        if self.reference is None:
+            return await self._block(ip)
+        try:
+            async with self.reference.locked():
+                return await self._block(ip)
+        except (OSError, FirewallError) as exc:
+            return ActionResult(ActionKind.BLOCK_IP, ip, False, str(exc))
+
+    async def _block(self, ip: str) -> ActionResult:
         result = await self._table_op(ActionKind.BLOCK_IP, "add", ip)
         if result.ok:
             # Table rules only see new flows; drop existing state so open sockets die too.
@@ -324,9 +534,37 @@ class PfFirewall:
     async def flush(self) -> ActionResult:
         """Remove every address from the block table (`pfctl -T flush`).
 
-        The anchor rule stays loaded and pf stays enabled. A table that was never created
-        counts as success. Existing states are not touched.
+        The anchor rule stays loaded. A table that was never created counts as success.
+        Existing states are not touched. With a `reference`, safemaxxing's pf reference is then
+        released (`pfctl -X`, never `pfctl -d`) if the table is empty and the anchor holds only
+        the block rule, not Paranoia Mode's ruleset; pf stops only if nobody else holds it.
+        The release never turns a flush into a failure: what happened is in `detail`.
         """
+        if self.reference is None:
+            return await self._flush()
+        try:
+            async with self.reference.locked():
+                result = await self._flush()
+                if not result.ok:
+                    return result
+                note = await self._release_if_unused(self.reference)
+        except (OSError, FirewallError) as exc:
+            return ActionResult(ActionKind.UNBLOCK_IP, self.table, False, str(exc))
+        detail = "; ".join(filter(None, (result.detail, note)))
+        return dataclasses.replace(result, detail=detail)
+
+    async def _release_if_unused(self, reference: PfReference) -> str:
+        if await self.blocked():
+            return "pf reference kept: the block table is not empty"
+        res = await self._run([PFCTL, "-a", self.anchor, "-s", "rules"])
+        rules = [line for line in res.stdout.splitlines() if line.strip()]
+        if res.returncode != 0 and not anchor_missing(res.stderr):
+            return "pf reference kept: the anchor's rules could not be read"
+        if len(rules) > 1:
+            return "pf reference kept: Paranoia Mode's rules are loaded"
+        return await reference.release(self._run)
+
+    async def _flush(self) -> ActionResult:
         res = await self._run(self._table_cmd("flush"))
         if table_missing(res.stderr):
             result = ActionResult(ActionKind.UNBLOCK_IP, self.table, True, "table already empty")

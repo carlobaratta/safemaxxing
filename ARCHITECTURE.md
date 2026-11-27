@@ -18,18 +18,21 @@ runners (arm64 and Intel).
 | --- | --- |
 | `sensors.py` | `SensorListener`: runs `log stream --style json`, parses TCC / Control Center / CoreAudio / CoreMediaIO / locationd entries into `Event`s. |
 | `network.py` | `NetworkMonitor`: polls the socket table (psutil, falling back to `lsof`) and yields each new outbound `NetworkConnection`. |
-| `pktap.py` | `PktapCapture`: runs `tcpdump -k` on a pktap interface and turns the first outbound packet of a UDP flow into a `NetworkConnection`. |
-| `correlation.py` | `CorrelationEngine`: buffers events and connections and matches them by actor and time window. |
+| `pktap.py` | `PktapCapture`: runs `tcpdump -k` on a pktap interface and turns the first outbound packet of a UDP flow (`--udp-flows`) or a TCP SYN (`--tcp-flows`) into a `NetworkConnection`. |
+| `throughput.py` | `ThroughputDeltaMonitor`: learns each pktap flow's outbound byte rate and re-surfaces a pre-established flow whose rate spikes (`--throughput`). |
+| `process_tree.py` | `ProcessChainResolver`: the pids accountable for a socket's owner (itself, its responsible pid, its ancestors), so a helper's or XPC service's socket links to the app. |
+| `correlation.py` | `CorrelationEngine`: buffers events and connections and matches them by actor (or actor chain) and time window, with an optional decay window. |
 | `supervisor.py` | `Supervisor`: merges the sources into one `stream()` of events, connections and alerts. |
-| `firewall.py` | `PfFirewall` (pf block table) and `ProcessController` (SIGSTOP / SIGCONT / SIGKILL). |
+| `firewall.py` | `PfFirewall` (pf block table), `BlockList` (the list saved for the boot job), `PfReference` (the saved `pfctl -E` token that `flush` releases) and `ProcessController` (SIGSTOP / SIGCONT / SIGKILL). |
 | `models.py` | The immutable `Event`, `NetworkConnection`, `Finding`, `Alert` and the `Severity` scale. |
 | `tui/` | The Textual dashboard. |
 | `menubar.py` | `MenuModel` (pure, clock-injected) and `run_menubar`, the rumps status-bar view over the same `stream()`. |
 | `tcc_inspector.py` | Read-only audit of the TCC databases: who already holds a sensitive grant, and which holders look risky. |
 | `diagnostics.py` | `doctor`'s checks and `sample`'s summary of a raw log capture. |
-| `boot.py` | The launchd job that reapplies the saved blocklist at boot (`/bin/sh` and `/sbin/pfctl` only), and `LaunchdJob`, the load/unload/inspect shared with the daemon. |
+| `boot.py` | The launchd job that reapplies the saved blocklist at boot (`/bin/sh`, `/sbin/pfctl` and base system tools only, never this package), and `LaunchdJob`, the load/unload/inspect shared with the daemon and the watchdog. |
 | `daemon.py` | `WatchDaemon`: a root LaunchDaemon running `watch --json`, installed only from a root-owned frozen bundle (`unsafe_reason`). |
-| `codesign.py` | Signing identity of a binary's app, for the inspector and the TCC audit. |
+| `codesign.py` | Signing identity of a binary's app (`codesign -dv`), for the inspector and the TCC audit; for Paranoia Mode and `--ignore`, a running process's code status read from the kernel (`csops`) and `CodeVerifier`'s grant policy (`Strictness`). |
+| `lockdown/` | Paranoia Mode: `controller.py` (`LockdownController`), `rules.py` (pure pf rule text), `pf.py` (loads it), `leases.py`, `pflog.py` (what the default-deny dropped), `dns.py` (sinkhole and blocklist), `sni.py` (ClientHello audit), `watchdog.py` (dead-man switch). See below. |
 | `cli.py` | The Typer entry point. |
 
 ## A Meet call in Brave, intercepted via pktap
@@ -175,6 +178,30 @@ Both threads touch the model, so every `MenuModel` method takes one re-entrant l
 stream fails or ends, `pump_updates` marks the model stopped: the icon turns to ⊘ rather than
 staying on idle with nothing behind it, and the loop keeps running so Unblock and Flush All
 still work.
+
+## Paranoia Mode
+
+`P` in the TUI turns the anchor from a block list into default-deny egress
+([RFC 0001](docs/rfc/0001-paranoia-mode.md)). `LockdownController` enters in an order that
+cannot strand the user offline: preflight (root, watchdog loaded, single-owner lock, a pf
+reference so pf is on, `pfctl -n` on the ruleset), then the DNS sinkhole and the exception
+tables, grants seeded for leases already held, the watchdog armed, and only then the ruleset,
+loaded atomically.
+
+```mermaid
+flowchart LR
+    ind["Control Center indicator / frontmost app / g"] --> lease["LeaseBook"]
+    drop["pf drop + log (pflog0)"] --> learn["learn loop: socket owner"]
+    learn --> verify["CodeVerifier (csops, codesign, pinned Team ID)"]
+    lease --> verify
+    verify -->|grant| grants["anchor com.apple/safemaxxing/grants"]
+    lease -->|grace over| revoke["grants removed"]
+    beat["heartbeat, 1 s"] -.->|5 missed| wd["watchdog (/bin/sh + pfctl): v0.2 rules back"]
+```
+
+Grants are per (protocol, IP, port), because pf cannot filter by process; a pktap audit stops a
+process that is not the lease owner but reaches a granted destination. The watchdog makes the
+mode fail-open by design.
 
 ## Packaging
 

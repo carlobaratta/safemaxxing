@@ -41,6 +41,7 @@ from safemaxxing.boot import LaunchdJob
 from safemaxxing.codesign import (
     CodeStatus,
     CodeVerifier,
+    Strictness,
     Verdict,
     assess,
     kernel_code_status,
@@ -49,12 +50,19 @@ from safemaxxing.codesign import (
 from safemaxxing.firewall import (
     STATE_DIR,
     FirewallError,
+    PfReference,
     ProcessController,
     Runner,
     is_root,
     run_command,
 )
-from safemaxxing.lockdown.dns import DnsMap, DomainBlocklist, Sinkhole, system_resolvers
+from safemaxxing.lockdown.dns import (
+    DOH_NAMES,
+    DnsMap,
+    DomainBlocklist,
+    Sinkhole,
+    system_resolvers,
+)
 from safemaxxing.lockdown.leases import GRACE_S, MAX_GRANTS, Lease, LeaseBook, LeaseSource
 from safemaxxing.lockdown.pf import LockdownFirewall
 from safemaxxing.lockdown.pflog import BlockedPacket, blocked_packets, ensure_interface
@@ -86,24 +94,44 @@ PINS = STATE_DIR / "pins.json"
 LOCK = RUN_DIR / "owner.lock"
 SCUTIL = "/usr/sbin/scutil"
 LSAPPINFO = "/usr/bin/lsappinfo"
+SYSTEMEXTENSIONSCTL = "/usr/bin/systemextensionsctl"
 # Sensors whose use means "the user is communicating": location is not one of them.
 COMMS_SENSORS = frozenset({SensorType.CAMERA, SensorType.MICROPHONE, SensorType.SCREEN_CAPTURE})
 # Public DNS-over-HTTPS/TLS resolvers: an app reaching one on 443/853 would resolve around
 # the sinkhole, so they are never granted; browsers then fall back to the system resolver.
+# The endpoints browsers reach by name are refused by name, in the sinkhole (DOH_NAMES).
 DOH_RESOLVERS = frozenset(
     {
         "1.1.1.1",
         "1.0.0.1",
+        "1.1.1.2",  # Cloudflare for Families: malware
+        "1.0.0.2",
+        "1.1.1.3",  # Cloudflare for Families: malware and adult content
+        "1.0.0.3",
         "8.8.8.8",
         "8.8.4.4",
         "9.9.9.9",
         "149.112.112.112",
+        "149.112.112.9",  # dns9.quad9.net
+        "9.9.9.10",  # dns10.quad9.net: no blocking
+        "149.112.112.10",
+        "9.9.9.11",  # dns11.quad9.net: with ECS
+        "149.112.112.11",
         "2606:4700:4700::1111",
         "2606:4700:4700::1001",
+        "2606:4700:4700::1112",
+        "2606:4700:4700::1002",
+        "2606:4700:4700::1113",
+        "2606:4700:4700::1003",
         "2001:4860:4860::8888",
         "2001:4860:4860::8844",
         "2620:fe::fe",
         "2620:fe::9",
+        "2620:fe::fe:9",
+        "2620:fe::10",
+        "2620:fe::fe:10",
+        "2620:fe::11",
+        "2620:fe::fe:11",
     }
 )
 # macOS starts a process with a soft limit of 256 descriptors, shared here by the sinkhole,
@@ -145,11 +173,36 @@ class ParanoiaConfig:
     # TCP 443 to an address no DNS answer named: unusual for an app, normal for WebRTC media
     # (UDP, ICE candidates). Refused when True.
     require_dns_for_https: bool = False
+    # How much injection surface a leased process may carry (see codesign.INJECTION_ENTITLEMENTS).
+    strictness: Strictness = Strictness.STANDARD
     ntp_hosts: tuple[str, ...] = ("time.apple.com",)
     user_allow: tuple[str, ...] = ()
 
 
 DEFAULT_PARANOIA = ParanoiaConfig()
+# Every refusal on, at a price: STRICT verification stops Brave's calls (its network helper
+# carries disable-library-validation), the frontmost app gets nothing without a manual lease,
+# a blocked SNI revokes its grant, and TCP 443 goes only to addresses a DNS answer named. It
+# is still fail-open (the watchdog restores v0.2) and still out of its depth against root.
+MAX_PARANOIA = ParanoiaConfig(
+    foreground_leases=False,
+    sni_action="revoke",
+    require_dns_for_https=True,
+    strictness=Strictness.STRICT,
+)
+
+
+class ParanoiaProfile(StrEnum):
+    """A named ParanoiaConfig the CLI can pick."""
+
+    STANDARD = "standard"
+    MAX = "max"
+
+
+PROFILES: dict[ParanoiaProfile, ParanoiaConfig] = {
+    ParanoiaProfile.STANDARD: DEFAULT_PARANOIA,
+    ParanoiaProfile.MAX: MAX_PARANOIA,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +293,22 @@ async def frontmost_bundle(runner: Runner = run_command) -> str | None:
     return match.group(1) if match else None
 
 
+def network_extensions(listing: str) -> list[str]:
+    """Names of the enabled, active network extensions in `systemextensionsctl list`."""
+    names: list[str] = []
+    in_network = False
+    for line in listing.splitlines():
+        if line.startswith("---"):
+            in_network = "system_extension.network_extension" in line
+            continue
+        fields = line.split("\t")
+        # enabled, active, team, bundle (version), name, [state]
+        enabled = len(fields) >= 6 and fields[0] == fields[1] == "*"
+        if in_network and enabled and "activated enabled" in fields[-1]:
+            names.append(fields[4])
+    return names
+
+
 def raise_fd_limit(target: int = FD_LIMIT) -> None:
     """Raise the soft descriptor limit to `target` (or the hard limit, if lower). Best effort:
     the sinkhole's own bounds already keep a flood from exhausting the default."""
@@ -286,10 +355,12 @@ class LockdownController:
         grace_s: Mapping[LeaseSource, float] = GRACE_S,
         started: Callable[[int], float | None] = start_time,
         code_status: Callable[[int], CodeStatus | None] = kernel_code_status,
+        reference: PfReference | None = None,
     ) -> None:
         self.config = config
         self.firewall = firewall or LockdownFirewall(runner)
-        self.verifier = verifier or CodeVerifier()
+        self.reference = reference or PfReference()
+        self.verifier = verifier or CodeVerifier(config.strictness)
         self.pins = pins or PinStore()
         self.watchdog = watchdog or WatchdogJob(runner)
         self.processes = processes or ProcessController()
@@ -319,6 +390,8 @@ class LockdownController:
         self._sni_task: asyncio.Task[None] | None = None
         self._dirty = asyncio.Event()
         self._retries: dict[tuple[Protocol, str, int, str, int], float] = {}
+        # Who was told, this time on, that it was denied for want of a lease.
+        self._unleased_reported: set[str] = set()
         self._socket_cache: tuple[float, list[SocketOwner]] = (0.0, [])
         # (pid, start time) -> (bundle id, when verified); the re-verify loop walks it.
         self._verified: dict[tuple[int, float], tuple[str, float]] = {}
@@ -358,6 +431,8 @@ class LockdownController:
             self.state = LockdownState.OFF
             return ActionResult(ActionKind.LOCKDOWN_ON, "pf", False, str(exc))
         self.state = LockdownState.ON
+        self._unleased_reported.clear()
+        await self._warn_about_network_extensions()
         for job in (self._learn_loop, self._flush_loop, self._reverify_loop, self._beat):
             self._tasks.append(asyncio.create_task(job()))
         if self.config.foreground_leases:
@@ -377,6 +452,10 @@ class LockdownController:
             )
         self._take_lock()
         raise_fd_limit()
+        # Default-deny loaded into a pf that is off enforces nothing: hold our own reference,
+        # so pf is on and stays on even if another holder releases its own.
+        async with self.reference.locked():
+            await self.reference.acquire(self._run)
         await ensure_interface(self._run)
         rules = lockdown_rules(self.config.rules)
         await self.firewall.check(rules)
@@ -398,6 +477,20 @@ class LockdownController:
         await self.firewall.set_grants(self._all_grants())
         self.heartbeat.arm()
         await self.firewall.load(rules)
+
+    async def _warn_about_network_extensions(self) -> None:
+        # A transparent proxy (an antivirus web shield, VPN split tunneling) opens every
+        # connection itself, so pf sees the extension, never the leased app behind it.
+        with contextlib.suppress(OSError):
+            listing = await self._run([SYSTEMEXTENSIONSCTL, "list"])
+            names = network_extensions(listing.stdout)
+            if names:
+                message = (
+                    f"network extensions active: {', '.join(names)}. One that proxies "
+                    "traffic makes the apps behind it look like the extension, so their "
+                    "connections are denied"
+                )
+                self.notify(LockdownNotice(Severity.MEDIUM, message))
 
     async def leave(self) -> ActionResult:
         """Turn Paranoia Mode off: v0.2 rules back, grants flushed, watchdog disarmed."""
@@ -556,13 +649,15 @@ class LockdownController:
             return "HTTPS to an address no DNS answer named"
         return None
 
-    async def consider(self, pid: int, grant: Grant) -> bool:
+    async def consider(self, pid: int, grant: Grant, report_unleased: bool = False) -> bool:
         """Grant `grant` to `pid`'s lease if every check passes; True if granted."""
         exe = self._exe(pid)
         bundle_id = bundle_id_for_exe(exe) if exe else None
         lease = self.leases.active(bundle_id) if bundle_id else None
         if lease is None or exe is None or bundle_id is None:
             self.denied += 1
+            if report_unleased:
+                self._report_unleased(bundle_id or exe or f"pid {pid}", exe, grant)
             return False
         if grant in lease.grants:
             return True
@@ -580,6 +675,24 @@ class LockdownController:
         lease.grants.add(grant)
         self._dirty.set()
         return True
+
+    def _report_unleased(self, who: str, exe: str | None, grant: Grant) -> None:
+        """Say once per app that it was denied for want of a lease, so a blocked app is
+        never silent. A network extension is flagged louder: it may be proxying apps."""
+        if who in self._unleased_reported:
+            return
+        self._unleased_reported.add(who)
+        where = f"{grant.address} port {grant.port}"
+        if exe is not None and ".systemextension/" in exe:
+            message = (
+                f"{who} -> {where} denied: a network extension with no lease. If it proxies "
+                "other apps (an antivirus web shield, VPN split tunneling), their traffic "
+                "is denied too: turn the proxy off while in Paranoia Mode"
+            )
+            self.notify(LockdownNotice(Severity.HIGH, message))
+        else:
+            message = f"{who} -> {where} denied: no lease (frontmost app, sensor, or g)"
+            self.notify(LockdownNotice(Severity.LOW, message))
 
     async def _seed(self) -> None:
         """Grant held leases the destinations their apps already talk to."""
@@ -603,7 +716,8 @@ class LockdownController:
                 self.denied += 1
                 continue
             with contextlib.suppress(ValueError):
-                await self.consider(pid, Grant(packet.protocol, packet.dst, packet.dst_port))
+                grant = Grant(packet.protocol, packet.dst, packet.dst_port)
+                await self.consider(pid, grant, report_unleased=True)
         raise FirewallError("pflog capture ended")
 
     async def _reverify_loop(self, interval_s: float = 10.0) -> None:
@@ -638,11 +752,15 @@ class LockdownController:
             name = seen.hello.server_name
             if seen.hello.outcome is not SniOutcome.FOUND or name is None:
                 continue
-            self.dns_map.record(name, [])
-            if not self.blocklist.blocks(name):
+            # A DoH endpoint reached by a hard-coded address never asked the sinkhole.
+            if DOH_NAMES.blocks(name):
+                what = "a DNS-over-HTTPS/TLS endpoint (bypasses the sinkhole)"
+            elif self.blocklist.blocks(name):
+                what = "a blocklisted name"
+            else:
                 continue
             pkt = seen.packet
-            message = f"{pkt.process_name} ({pkt.pid}) sent SNI {name}, a blocklisted name"
+            message = f"{pkt.process_name} ({pkt.pid}) sent SNI {name}, {what}"
             self.notify(LockdownNotice(Severity.HIGH, message, pkt.pid))
             if self.config.sni_action == "revoke":
                 for lease in self.leases:

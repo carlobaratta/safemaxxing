@@ -11,6 +11,7 @@ import os
 import socket
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -20,7 +21,11 @@ from safemaxxing.firewall import (
     PFCTL,
     TABLE,
     PfFirewall,
+    PfReference,
     meaningful_stderr,
+    parse_pf_runtime,
+    parse_pf_status,
+    parse_pf_token,
     run_command,
     table_missing,
 )
@@ -142,3 +147,43 @@ async def test_reverse_dns_never_exceeds_timeout_on_real_resolver() -> None:
             assert elapsed < 0.15
     finally:
         resolver.close()
+
+
+async def pf_on() -> bool | None:
+    return parse_pf_status((await run_command([PFCTL, "-s", "info"])).stdout)
+
+
+async def test_kernel_reference_tokens_are_counted_and_single_use() -> None:
+    """What the pf reference design relies on, checked against the real kernel.
+
+    pf ends as it started: every token taken here is released again.
+    """
+    before = await pf_on()
+    first = await run_command([PFCTL, "-E"])
+    second = await run_command([PFCTL, "-E"])
+    a = parse_pf_token(first.stdout + first.stderr)
+    b = parse_pf_token(second.stdout + second.stderr)
+    print(first.stderr, second.stderr, (await run_command([PFCTL, "-s", "References"])).stdout)
+    try:
+        assert a is not None and b is not None and a != b
+        assert parse_pf_runtime((await run_command([PFCTL, "-s", "info"])).stdout) is not None
+        assert (await run_command([PFCTL, "-X", a])).returncode == 0
+        assert await pf_on() is True  # b still holds pf
+        assert (await run_command([PFCTL, "-X", a])).returncode != 0  # a is spent
+    finally:
+        if b is not None:
+            await run_command([PFCTL, "-X", b])
+    assert await pf_on() is before
+
+
+async def test_pf_reference_acquire_then_release_restores_pf(tmp_path: Path) -> None:
+    before = await pf_on()
+    reference = PfReference(tmp_path / "pf-reference")
+    async with reference.locked():
+        assert await reference.acquire(run_command) == ""
+    record = reference.load()
+    assert record is not None
+    async with reference.locked():
+        print(await reference.release(run_command))
+    assert reference.load() is None
+    assert await pf_on() is before

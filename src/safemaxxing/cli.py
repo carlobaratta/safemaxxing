@@ -17,15 +17,22 @@ from rich.markup import escape
 from rich.table import Table
 
 from safemaxxing import __version__
-from safemaxxing.boot import LOG, PLIST, BootJob
+from safemaxxing.boot import LOG, PLIST, BootJob, install_holding_reference
 from safemaxxing.correlation import CorrelationConfig
 from safemaxxing.daemon import ERR_LOG as DAEMON_ERR_LOG
 from safemaxxing.daemon import LOG as DAEMON_LOG
 from safemaxxing.daemon import PLIST as DAEMON_PLIST
 from safemaxxing.daemon import WatchDaemon, WatchOptions, recent_alerts, unsafe_reason
 from safemaxxing.diagnostics import Status, collect_log_sample, run_doctor, summarize_sample
-from safemaxxing.firewall import BLOCKLIST, BlockList, PfFirewall, ProcessController, is_root
-from safemaxxing.lockdown.controller import LockdownController
+from safemaxxing.firewall import (
+    BLOCKLIST,
+    BlockList,
+    PfFirewall,
+    PfReference,
+    ProcessController,
+    is_root,
+)
+from safemaxxing.lockdown.controller import PROFILES, LockdownController, ParanoiaProfile
 from safemaxxing.lockdown.dns import BLOCKLIST_CACHE, fetch_blocklist, load_blocklist
 from safemaxxing.lockdown.sni import client_hellos
 from safemaxxing.lockdown.watchdog import PLIST as WATCHDOG_PLIST
@@ -174,8 +181,8 @@ def _warn_if_not_root() -> None:
 
 
 def _firewall() -> PfFirewall:
-    """A firewall that also saves each change to BLOCKLIST for the boot job."""
-    return PfFirewall(store=BlockList())
+    """A firewall that saves each change to BLOCKLIST and holds a releasable pf reference."""
+    return PfFirewall(store=BlockList(), reference=PfReference())
 
 
 def _print_result(result: ActionResult) -> None:
@@ -205,6 +212,15 @@ def tui(
     udp_flows: UdpFlows = False,
     tcp_flows: TcpFlows = False,
     throughput: ThroughputOpt = False,
+    paranoia_profile: Annotated[
+        ParanoiaProfile,
+        typer.Option(
+            "--paranoia-profile",
+            help="What Paranoia Mode (P) refuses. max: STRICT code verification (breaks "
+            "Brave's calls), no network for the frontmost app without a manual lease, a "
+            "blocked SNI revokes its grant, TCP 443 only to addresses DNS named.",
+        ),
+    ] = ParanoiaProfile.STANDARD,
 ) -> None:
     """Interactive dashboard: alert feed, pf/pktap status, inspector and sensor events.
 
@@ -217,7 +233,11 @@ def tui(
     _warn_if_not_root()
     # Paranoia Mode (P) needs root; without it the button only says so.
     lockdown = (
-        LockdownController(blocklist=load_blocklist(), hellos=client_hellos) if is_root() else None
+        LockdownController(
+            PROFILES[paranoia_profile], blocklist=load_blocklist(), hellos=client_hellos
+        )
+        if is_root()
+        else None
     )
     supervisor = _supervisor(
         window_ms,
@@ -390,7 +410,8 @@ def blocked() -> None:
 
 @app.command()
 def flush() -> None:
-    """Remove every IP from the block table and the saved list (rule stays loaded, pf on)."""
+    """Remove every IP from the block table and the saved list, then release safemaxxing's
+    pf reference (pfctl -X, never pfctl -d) unless Paranoia Mode is on."""
     _print_result(asyncio.run(_firewall().flush()))
 
 
@@ -405,13 +426,15 @@ def boot_install() -> None:
     """Save the current blocks and load a launchd job that reapplies them at every boot."""
     _require_root()
 
-    async def run() -> str:
+    async def run() -> tuple[str, str]:
         store = BlockList()
         for ip in await PfFirewall().blocked():
             store.add(ip)
-        return await BootJob().install()
+        return await install_holding_reference(BootJob(), PfReference(), bool(store.load()))
 
-    problem = asyncio.run(run())
+    problem, note = asyncio.run(run())
+    if note:
+        console.print(f"[yellow]{escape(note)}[/]")
     if problem:
         console.print(f"[bold red]launchctl bootstrap failed:[/] {escape(problem)}")
         raise typer.Exit(1)

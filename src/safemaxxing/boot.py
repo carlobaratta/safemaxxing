@@ -1,7 +1,8 @@
 """launchd job that reapplies saved blocks at boot, since pf forgets its tables on reboot.
 
-The job runs `/bin/sh` and `/sbin/pfctl` only, never this package: a root job pointing into a
-user-writable virtualenv would let anything running as that user execute code as root.
+The job runs `/bin/sh`, `/sbin/pfctl` and base system tools only, never this package: a root
+job pointing into a user-writable virtualenv would let anything running as that user execute
+code as root.
 """
 
 from __future__ import annotations
@@ -17,8 +18,11 @@ from safemaxxing.firewall import (
     ANCHOR,
     BLOCKLIST,
     PARENT_ANCHOR_RULE,
+    PF_REFERENCE,
     PFCTL,
     TABLE,
+    FirewallError,
+    PfReference,
     Runner,
     anchor_rules,
     run_command,
@@ -28,6 +32,8 @@ LABEL = "io.github.carlobaratta.safemaxxing.restore"
 PLIST = Path("/Library/LaunchDaemons") / f"{LABEL}.plist"
 LOG = Path("/var/log/safemaxxing-boot.log")
 LAUNCHCTL = "/bin/launchctl"
+SYSCTL = "/usr/sbin/sysctl"
+STAT = "/usr/bin/stat"
 # com.apple.pfctl loads /etc/pf.conf at boot in no fixed order with us; wait for it this long.
 PARENT_WAIT_S = 60
 
@@ -38,16 +44,24 @@ def boot_script(
     table: str = TABLE,
     pfctl: str = PFCTL,
     wait_s: int = PARENT_WAIT_S,
+    reference: Path = PF_REFERENCE,
+    sysctl: str = SYSCTL,
+    stat: str = STAT,
 ) -> str:
     """Return the POSIX sh script the job runs: wait for pf.conf, load the anchor, add, enable.
 
     Exits 0 without touching pf when the list is empty or missing, so an unused install never
-    enables pf. Uses `-T add`, not `replace`, so running it on a live system only adds.
+    enables pf. Uses `-T add`, not `replace`, so running it on a live system only adds. The
+    `pfctl -E` token is saved in PfReference's format (root-only, 0600), so a later `flush`
+    can release it. A record written since this boot, while pf is on, is kept and no new
+    reference is taken: that is `boot install` loading the job on a live system, and taking a
+    second reference there would leak the first. A record from before the reboot is deleted.
     """
     q = shlex.quote
     table_cmd = f'{q(pfctl)} -a {q(anchor)} -t {q(table)} -T add -f "$list"'
     has_parent = f"/usr/bin/grep -qF {q(PARENT_ANCHOR_RULE)}"
     missing = q(f"main pf ruleset still lacks {PARENT_ANCHOR_RULE} after {wait_s} s")
+    pf_on = f"{q(pfctl)} -s info 2>/dev/null | /usr/bin/grep -q '^Status: Enabled'"
     return "\n".join(
         (
             f"list={q(str(blocklist))}",
@@ -59,7 +73,32 @@ def boot_script(
             "done",
             f"printf %s {q(anchor_rules(table))} | {q(pfctl)} -a {q(anchor)} -f - || exit 1",
             f"{table_cmd} || exit 1",
-            f"exec {q(pfctl)} -E",
+            f"ref={q(str(reference))}",
+            f'if [ -f "$ref" ] && {pf_on}; then',
+            # kern.boottime: "{ sec = 1762678800, usec = 0 } Sun Nov  9 ..."
+            f"  boot=$({q(sysctl)} -n kern.boottime 2>/dev/null)",
+            '  boot=${boot#*"sec = "}; boot=${boot%%,*}',
+            f'  mtime=$({q(stat)} -f %m "$ref" 2>/dev/null)',
+            '  case "$boot:$mtime" in *[!0-9:]*|:*|*:) ;; *)',
+            '    if [ "$mtime" -ge "$boot" ]; then',
+            "      echo 'pf reference kept: recorded since this boot'; exit 0",
+            "    fi ;;",
+            "  esac",
+            "fi",
+            '/bin/rm -f "$ref"',
+            f"out=$({q(pfctl)} -E 2>&1) || exit 1",
+            "token=",
+            "while IFS= read -r line; do",
+            '  case $line in "Token : "*) token=${line#"Token : "} ;; esac',
+            "done <<EOF",
+            "$out",
+            "EOF",
+            "case $token in ''|*[!0-9]*) exit 0 ;; esac",
+            f"status=$({q(pfctl)} -s info 2>/dev/null |",
+            "  /usr/bin/grep '^Status: Enabled') || exit 0",
+            "umask 077",
+            'printf \'token=%s\\nstatus=%s\\n\' "$token" "$status" > "$ref.tmp" &&',
+            '  /bin/mv -f "$ref.tmp" "$ref"',
             "",
         )
     )
@@ -142,3 +181,24 @@ class BootJob(LaunchdJob):
         Loading runs the script once, which only adds the saved addresses to the live table.
         """
         return await self.load(launchd_plist(script or boot_script()))
+
+
+async def install_holding_reference(
+    job: BootJob, reference: PfReference, saved: bool, run: Runner = run_command
+) -> tuple[str, str]:
+    """Take safemaxxing's pf reference, then load `job`; return (launchctl problem, note).
+
+    The script runs at load and keeps a record written since this boot, so taking the
+    reference first (when the list is not empty, as the script would) means the script finds a
+    live record and takes no second one. Both happen under the reference's lock, so a `flush`
+    cannot release in between. A pf that stays off is reported in the note; the job is still
+    loaded, since it is what reapplies the list at the next boot.
+    """
+    async with reference.locked():
+        note = ""
+        if saved:
+            try:
+                note = await reference.acquire(run)
+            except FirewallError as exc:
+                note = str(exc)
+        return await job.install(), note

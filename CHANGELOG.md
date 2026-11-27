@@ -6,13 +6,79 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `safemaxxing tui --paranoia-profile max`: Paranoia Mode with every refusal on. STRICT code
+  verification (Brave's calls stop working), no foreground leases, a blocked SNI revokes its
+  grant, and TCP 443 only to addresses a DNS answer named. `ParanoiaConfig` gains
+  `strictness`, which the default `CodeVerifier` now follows. The default stays `standard`.
+- Paranoia Mode no longer denies in silence. The first time an app without a lease is denied,
+  the TUI says so once (LOW). A network extension without a lease is flagged HIGH: a
+  transparent proxy (Avast's Web Shield, Proton VPN split tunneling) opens every connection
+  itself, so the apps behind it are denied too. Entering lists the active network extensions
+  (`systemextensionsctl list`).
+
 ### Changed
 
+- `flush` now gives back safemaxxing's pf reference (`pfctl -X <token>`, never `pfctl -d`)
+  once the table is empty and Paranoia Mode is off, so pf stops only if no other program holds
+  it. The token is saved in `/Library/Application Support/safemaxxing/pf-reference` by the
+  CLI, the TUI, the daemon and the boot job, with the start of pf's run, so a token from before
+  a reboot or a `pfctl -d` is forgotten instead of released. A block and a flush in two
+  processes are serialised with a lock. `boot install` takes the reference before loading the
+  job, and the boot script keeps a record written since this boot while pf is on, so loading
+  the job on a live system no longer takes a second reference that `flush` could not release.
+- The first block takes its own pf reference even when pf is already on, so another program
+  releasing its reference no longer turns pf off under the block table.
 - Every release before 1.0 publishes as a pre-release titled `safemaxxing X.Y.Z (alpha)` and
   never as the latest, like 0.1.x and 0.2.x were by hand. From 1.0 only a suffixed tag
   (`v1.0.0-rc1`) is a pre-release.
+- The TUI no longer blinks in Paranoia Mode: the dashboard still turns red, but the borders
+  stay a steady `#ff2e4d` instead of switching to dark red every 0.5 s.
+
+### Fixed
+
+- Paranoia Mode loaded its default-deny ruleset without checking that pf was on: with pf
+  disabled (a fresh boot with no saved blocks) it reported ON and enforced nothing. Entering
+  now takes a pf reference first and fails if pf stays off.
+- A long-running TUI or daemon checked pf only once: after pf was turned off elsewhere, its
+  blocks went into a table pf was not enforcing. Every block now checks pf again.
+
+### Security
+
+- Paranoia Mode let a leased browser use DNS-over-HTTPS around the sinkhole. The DoH check
+  knew only resolver addresses (1.1.1.1, 8.8.8.8, ...), and browsers reach Cloudflare by name
+  on others: Firefox `mozilla.cloudflare-dns.com`, Chrome `chrome.cloudflare-dns.com`. The
+  sinkhole now answers NXDOMAIN for the public DoH endpoints of Cloudflare, Google and Quad9,
+  and for the other resolvers the browsers offer in their DoH settings (NextDNS, OpenDNS,
+  CleanBrowsing, AdGuard, Mullvad, ...), whatever the blocklist allows, and for Firefox's canary `use-application-dns.net`, so the
+  browser falls back to the system resolver. Cloudflare for Families (1.1.1.2, 1.1.1.3 and
+  their IPv6) joins the addresses never granted, and the SNI audit flags a DoH endpoint
+  reached by a hard-coded address (HIGH, revoked with `sni_action="revoke"`). Quad9's
+  `dns9`, `dns10` and `dns11` addresses (IPv4 and IPv6) join them too.
+- `paranoia blocklist` refused an `http://` URL but followed a redirect to one: urllib goes
+  from HTTPS to plain HTTP on its own, and anyone on that path could rewrite the list (unblock
+  trackers with `@@||` rules, or block Apple's domains). A redirect off HTTPS now fails.
 
 ## [0.2.1] - 2026-11-03
+
+### Added
+
+- Paranoia Mode (`P` in the TUI, root): default-deny egress in the `com.apple/safemaxxing`
+  anchor, designed in [RFC 0001](docs/rfc/0001-paranoia-mode.md). Apps in use (camera,
+  microphone or screen capture per Control Center, frontmost, or granted with `g`) learn their
+  destinations from what pf drops on `pflog0`; grants are per (protocol, IP, port) and are
+  revoked after a grace period (30 s sensor, 15 s foreground, none for a manual lease). A
+  process that is not the lease owner but reaches a granted destination is stopped. (1d64d6a)
+  - Code verification before every grant: kernel code-signing status and entitlements via
+    `csops`, `codesign` on the running pid, Team ID pinned on first use.
+  - `safemaxxing paranoia install|uninstall`: a dead-man watchdog, a root LaunchDaemon running
+    only `/bin/sh` and `pfctl`, restores the v0.2 rules if safemaxxing stops beating for 5 s.
+    Paranoia Mode refuses to start without it.
+  - A DNS sinkhole: every :53 query is redirected to a local forwarder that answers NXDOMAIN
+    for a hosts/Adblock Plus blocklist (`safemaxxing paranoia blocklist`), CNAME cloaking
+    included. Public DoH/DoT resolvers are never granted.
+  - An SNI audit of TLS ClientHellos on granted flows.
 
 ### Security
 
@@ -148,6 +214,19 @@ release build is not signed or notarized yet.
   `PktapCapture.packets`; `len(HostnameResolver)` for the cache size; `Supervisor.resolver`.
 - `safemaxxing.codesign`: the signing identity of a binary's app from `codesign -dv`
   (`Developer ID Application: …`, `Software Signing`, `ad-hoc`, `unsigned`), with a 3 s cap.
+- `--tcp-flows` for `tui` and `watch` (root): pktap also captures outbound TCP SYNs, so a
+  socket that opens and closes between two polls is seen. A flow seen by both the poller and
+  pktap alerts once. (a82024a)
+- `--throughput` for `tui` and `watch` (root): a pre-established flow whose outbound byte rate
+  spikes above its own baseline (from pktap packet lengths) is surfaced again as a connection
+  and correlated like new egress. It covers TCP only with `--tcp-flows`. (a82024a)
+- Delegated sockets: a socket owned by a helper the app spawned (`curl`, an updater) or by a
+  process that names the app as responsible is linked to the app's sensor events, through
+  `process_tree.ProcessChainResolver` (libproc ancestry and the responsible pid). On by
+  default. (e4a476f, 382038d)
+- `--decay-window-ms` for `tui` and `watch` (default 0, off): a connection trailing the window
+  but within the decay window still correlates, with a fading confidence, one severity step
+  lower unless an in-window sensor also backs it. (e4a476f)
 
 ### Changed
 
