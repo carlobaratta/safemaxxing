@@ -1,4 +1,4 @@
-"""Modal screens: the kill confirmation and the millisecond timeline of an alert."""
+"""Modal screens: the confirmation before an action you cannot take back, and the timeline."""
 
 from __future__ import annotations
 
@@ -14,35 +14,48 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Label, Static
 
 from safemaxxing.models import Alert
-from safemaxxing.tui.badges import MUTED, SENSOR_CODE, SENSOR_PILL, pill, severity_badge
+from safemaxxing.tui.badges import SENSOR_CODE, SENSOR_PILL, pill, severity_badge
+from safemaxxing.tui.palette import BG, CRITICAL, MUTED, STRONG
 from safemaxxing.tui.timeline import TimelineStep
 
-EGRESS_PILL = "bold #0a0e14 on #ff2e88"
+EGRESS_PILL = f"bold {BG} on {CRITICAL}"
 
 
 class ConfirmScreen(ModalScreen[bool]):
-    """Modal yes/no dialog; dismisses with True only when Confirm is pressed."""
+    """Modal yes/no dialog; dismisses with True only when the action is confirmed.
+
+    `detail` says what cannot be undone, and `confirm` names the action on its button, so the
+    choice is read, not guessed: "Kill process", never a bare "OK".
+    """
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "cancel", "Cancel", show=False),
         Binding("y", "confirm", "Confirm", show=False),
     ]
 
-    def __init__(self, prompt: str) -> None:
+    def __init__(self, prompt: str, detail: str = "", confirm: str = "Confirm") -> None:
         super().__init__()
         self._prompt = prompt
+        self._detail = detail
+        self._confirm = confirm
 
     def compose(self) -> ComposeResult:
-        """Lay out the prompt with Cancel and Confirm buttons."""
+        """Lay out the question, what it changes, and the two buttons."""
         with Vertical(id="dialog"):
-            yield Label(self._prompt)
-            yield Label("y confirms · esc cancels", classes="hint")
+            yield Label(self._prompt, classes="question")
+            if self._detail:
+                yield Label(self._detail, classes="detail")
             with Horizontal(id="buttons"):
+                yield Label("y confirms · esc cancels", classes="hint")
                 yield Button("Cancel", id="no")
-                yield Button("Confirm", id="yes", variant="error")
+                yield Button(self._confirm, id="yes", variant="error")
+
+    def on_mount(self) -> None:
+        """Start on Cancel: Enter alone never runs the action."""
+        self.query_one("#no", Button).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Dismiss with True for Confirm, False for Cancel."""
+        """Dismiss with True for the action, False for Cancel."""
         self.dismiss(event.button.id == "yes")
 
     def action_confirm(self) -> None:
@@ -57,7 +70,7 @@ class ConfirmScreen(ModalScreen[bool]):
 def render_timeline(steps: tuple[TimelineStep, ...]) -> RenderableType:
     """Steps as rows: offset from the first step, gap from the previous one, source, actor."""
     table = Table.grid(padding=(0, 2))
-    table.add_column(justify="right", style="bold", no_wrap=True)
+    table.add_column(justify="right", style=f"bold {STRONG}", no_wrap=True)
     table.add_column(justify="right", style=MUTED, no_wrap=True)
     table.add_column(no_wrap=True)
     table.add_column(no_wrap=True)
@@ -75,8 +88,10 @@ def render_timeline(steps: tuple[TimelineStep, ...]) -> RenderableType:
             f"{offset:+.0f} ms",
             f"Δ{gap:.0f}" if step is not steps[0] else "",
             tag,
-            Text(step.source.upper(), style="bold" if step.egress else MUTED),
-            Text.assemble((step.actor, "bold" if step.egress else ""), "  ", (step.detail, MUTED)),
+            Text(step.source.upper(), style=f"bold {STRONG}" if step.egress else MUTED),
+            Text.assemble(
+                (step.actor, f"bold {STRONG}" if step.egress else ""), "  ", (step.detail, MUTED)
+            ),
         )
         previous = step.timestamp
     return table
@@ -103,10 +118,11 @@ class TimelineScreen(ModalScreen[None]):
         header: list[RenderableType] = []
         if self._alert is not None:
             header.append(
-                Text.assemble(severity_badge(self._alert.severity), " ", self._alert.summary)
+                Text.assemble(severity_badge(self._alert.severity), "  ", self._alert.summary)
             )
         sensors = sum(1 for s in self._steps if not s.egress)
-        header.append(Text(f"{sensors} sensor events, then the egress", style=MUTED))
+        noun = "sensor event" if sensors == 1 else "sensor events"
+        header.append(Text(f"{sensors} {noun}, then the connection out", style=MUTED))
         with VerticalScroll(id="timeline"):
             yield Static(Group(*header, Text(""), render_timeline(self._steps)))
 

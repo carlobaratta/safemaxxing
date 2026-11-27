@@ -116,13 +116,21 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
 - **Enforcement**: tabella pf `safemaxxing_block` dentro l'anchor `com.apple/safemaxxing`.
   L'anchor è già valutato dal `/etc/pf.conf` di sistema, quindi non serve modificare la
   configurazione. Controllo dei processi con `SIGSTOP` / `SIGCONT` / `SIGKILL`.
-- **TUI Textual**: una dashboard scura a pannelli.
-  - **Live feed** degli alert, con badge di severità (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`),
-    pill dei sensori (`CAM`, `MIC`, `LOC`, `SCR`, `TCC`) e badge di mitigazione (`BLK`,
-    `STOP`). Si filtra con `/`.
-  - **Firewall**: stato di pf e dell'anchor, IP nella tabella di blocco, latenza del polling
-    dei socket, cattura pktap e cache DNS. Rilegge pf ogni 5 s.
-  - **Inspector**: pid, bundle id, percorso, firma del codice (`codesign`), destinazione,
+- **TUI Textual**: una dashboard scura a pannelli, con un solo colore d'accento (il teal) e i
+  colori di severità usati solo sugli alert. Niente lampeggia, nemmeno in Paranoia Mode.
+  - **Riga di stato** in alto: dice a parole se serve il tuo intervento. `● Watching` quando
+    non c'è niente di aperto, `▲ N alerts to review` quando ci sono alert `high` o `critical`
+    non ancora bloccati né sospesi, `■ Paranoia Mode` o `■ Stopped`. Non dice mai "sei al
+    sicuro": safemaxxing osserva e può bloccare, non garantisce.
+  - **Alerts**: il feed, con badge di severità (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`), chip
+    dei sensori (`CAM`, `MIC`, `LOC`, `SCR`, `TCC`) e badge di mitigazione (`BLK`, `STOP`).
+    Si filtra con `/`. Vuoto, spiega cosa farebbe comparire un alert.
+  - **Paranoia Mode**: stato della modalità, lease, concessioni e connessioni negate, e il
+    pulsante per entrare o uscire.
+  - **Protection**: stato di pf e dell'anchor, indirizzi bloccati, latenza del polling dei
+    socket, cattura pktap e cache DNS. Rilegge pf ogni 5 s. pf spento senza blocchi è lo
+    stato normale; diventa rosso solo se ci sono blocchi che non vengono applicati.
+  - **Details**: pid, bundle id, percorso, firma del codice (`codesign`), destinazione,
     sensori ed eventi recenti della selezione.
   - **Timeline** al millisecondo di un alert (`Invio` o `spazio`): ogni evento sensore
     dell'app, poi l'egress.
@@ -246,10 +254,10 @@ Solo per `watch`:
 
 | Tasto | Azione |
 |-------|--------|
-| `↑` / `↓` | Seleziona un alert nel feed, o una connessione nella scheda Active egress; l'inspector mostra la selezione |
+| `↑` / `↓` | Seleziona un alert nel feed, o una connessione nella scheda Connections; il pannello Details mostra la selezione |
 | `b` / `u` | Blocca / sblocca l'IP di destinazione della selezione |
-| `s` / `r` | `SIGSTOP` / `SIGCONT` sul processo |
-| `k` | `SIGKILL` (con conferma: `y` o Confirm) |
+| `s` / `r` | Sospende / riprende il processo (`SIGSTOP` / `SIGCONT`) |
+| `k` | `SIGKILL`, con conferma: `y` o il pulsante Kill process. Il focus parte su Cancel, quindi `Invio` da solo non uccide niente |
 | `Invio` / `spazio` | Timeline al millisecondo della selezione |
 | `/` | Filtra feed e connessioni per nome processo, bundle id, pid, IP o hostname; `Invio` tiene il filtro, `esc` lo toglie |
 | `c` | Svuota il feed (il log eventi e pf non cambiano) |
@@ -258,9 +266,9 @@ Solo per `watch`:
 | `tab` / `shift+tab` | Cambia pannello |
 | `q` | Esci |
 
-Le azioni agiscono sempre su quello che mostra l'inspector. `k` resta `SIGKILL`, quindi la
-navigazione usa le frecce e non `j`/`k`. Il feed tiene gli ultimi 1000 alert, la scheda
-Active egress le 300 connessioni più recenti. Il layout è pensato per un terminale di almeno
+Le azioni agiscono sempre su quello che mostra il pannello Details. `k` resta `SIGKILL`,
+quindi la navigazione usa le frecce e non `j`/`k`. Il feed tiene gli ultimi 1000 alert, la
+scheda Connections le 300 connessioni più recenti. Il layout è pensato per un terminale di almeno
 170 colonne circa: più stretto, il feed scorre in orizzontale.
 
 ### Menu bar
@@ -519,12 +527,13 @@ src/safemaxxing/
 │   ├── sni.py           SNI dei ClientHello via pktap (audit)
 │   └── watchdog.py      dead-man switch launchd (/bin/sh e pfctl)
 ├── tui/
-│   ├── app.py           SafemaxxingApp: feed, tab eventi/egress, timer, azioni
-│   ├── panels.py        pannelli Firewall e Inspector, barra di stato (snapshot → Rich)
-│   ├── screens.py       modali: conferma del kill, timeline
+│   ├── app.py           SafemaxxingApp: feed, tab eventi/connessioni, tema, timer, azioni
+│   ├── panels.py        riga di stato, pannelli Paranoia Mode, Protection e Details (snapshot → Rich)
+│   ├── screens.py       modali: conferma delle azioni irreversibili, timeline
 │   ├── timeline.py      eventi dell'alert e passi della timeline (puro, senza Textual)
 │   ├── badges.py        badge Rich per severità, sensori e mitigazioni
-│   └── safemaxxing.tcss palette scura e layout
+│   ├── palette.py       i colori della dashboard, in un posto solo
+│   └── safemaxxing.tcss layout e variabili colore (allineate a palette.py)
 └── cli.py           entry point Typer
 packaging/           build PyInstaller, firma, .pkg (vedi packaging/README.md)
 Formula/             formula Homebrew per il tap
