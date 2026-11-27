@@ -6,19 +6,6 @@ All notable changes are listed here. The format follows
 
 ## [Unreleased]
 
-### Changed
-
-- The TUI is redesigned. A one-line posture bar replaces the header and says in words
-  whether anything needs you (`● Watching`, `▲ N alerts to review`, `■ Paranoia Mode`,
-  `■ Stopped`). Paranoia Mode has its own card with its leases, grants and denials instead of
-  a red PANIC button. An empty feed explains what would raise an alert. One accent colour (the
-  project's teal) marks focus and working state; severity colours appear only on alerts;
-  sensors share one neutral chip and a blocked address reads as protection, not alarm. pf off
-  with nothing blocked is shown as normal, and red only when blocks are not enforced. The
-  kill and leave confirmations say what cannot be undone, name the action on the button and
-  start on Cancel. Panels are renamed Alerts, Protection, Details and Connections; the
-  footer says Pause app / Resume app instead of SIGSTOP / SIGCONT.
-
 ### Added
 
 - `safemaxxing tui --paranoia-profile max`: Paranoia Mode with every refusal on. STRICT code
@@ -48,6 +35,16 @@ All notable changes are listed here. The format follows
   (`v1.0.0-rc1`) is a pre-release.
 - The TUI no longer blinks in Paranoia Mode: the dashboard still turns red, but the borders
   stay a steady `#ff2e4d` instead of switching to dark red every 0.5 s.
+- The TUI is redesigned. A one-line posture bar replaces the header and says in words
+  whether anything needs you (`● Watching`, `▲ N alerts to review`, `■ Paranoia Mode`,
+  `■ Stopped`). Paranoia Mode has its own card with its leases, grants and denials instead of
+  a red PANIC button. An empty feed explains what would raise an alert. One accent colour (the
+  project's teal) marks focus and working state; severity colours appear only on alerts;
+  sensors share one neutral chip and a blocked address reads as protection, not alarm. pf off
+  with nothing blocked is shown as normal, and red only when blocks are not enforced. The
+  kill and leave confirmations say what cannot be undone, name the action on the button and
+  start on Cancel. Panels are renamed Alerts, Protection, Details and Connections; the
+  footer says Pause app / Resume app instead of SIGSTOP / SIGCONT.
 
 ### Fixed
 
