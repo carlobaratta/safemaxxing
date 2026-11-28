@@ -14,16 +14,15 @@ trip it, and during system sleep neither side runs, so waking up is not a missed
 from __future__ import annotations
 
 import asyncio
-import os
 import plistlib
 import shlex
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-from safemaxxing.boot import LaunchdJob
+from safemaxxing.boot import JOB_UMASK, LaunchdJob
 from safemaxxing.firewall import ANCHOR, PFCTL, Runner, anchor_rules, run_command
 from safemaxxing.lockdown.rules import GRANTS_ANCHOR
+from safemaxxing.secure_fs import write_atomic
 
 LABEL = "io.github.carlobaratta.safemaxxing.watchdog"
 PLIST = Path("/Library/LaunchDaemons") / f"{LABEL}.plist"
@@ -91,6 +90,7 @@ def watchdog_plist(script: str) -> bytes:
             "ProgramArguments": ["/bin/sh", "-c", script],
             "RunAtLoad": True,
             "KeepAlive": True,
+            "Umask": JOB_UMASK,
             "StandardOutPath": str(LOG),
             "StandardErrorPath": str(LOG),
         }
@@ -129,17 +129,10 @@ class Heartbeat:
         self.count = 0
 
     def _write(self, path: Path, text: str) -> None:
-        self.run_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=self.run_dir, prefix=f".{path.name}-")
-        try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write(text)
-            os.chmod(tmp, 0o644)
-            # Atomic, so the shell's `read` never sees half a line.
-            os.replace(tmp, path)
-        except BaseException:
-            os.unlink(tmp)
-            raise
+        # Atomic, so the shell's `read` never sees half a line, and in a directory only root
+        # can write, so nobody else can fake a beat. No fsync: a beat a second does not need
+        # to survive a power cut, and /var/run is emptied at boot anyway.
+        write_atomic(path, text, mode=0o644, durable=False)
 
     def beat(self) -> None:
         """Write the next counter value."""

@@ -23,11 +23,9 @@ import contextlib
 import fcntl
 import ipaddress
 import json
-import os
 import re
 import resource
 import socket
-import tempfile
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, field
@@ -89,6 +87,7 @@ from safemaxxing.models import (
     is_system_path,
 )
 from safemaxxing.network import bundle_id_for_exe, enclosing_apps
+from safemaxxing.secure_fs import read_trusted_text, write_atomic
 
 PINS = STATE_DIR / "pins.json"
 LOCK = RUN_DIR / "owner.lock"
@@ -246,9 +245,14 @@ class PinStore:
 
     def __init__(self, path: Path = PINS) -> None:
         self.path = path
+        # A pins file another user owns or can write is ignored, never trusted: pinning starts
+        # over (trust on first use again), which is safer than taking someone's Team IDs.
         try:
-            data = json.loads(path.read_text())
-        except (FileNotFoundError, ValueError):
+            text = read_trusted_text(path)
+            data = json.loads(text) if text is not None else {}
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
             data = {}
         self._pins: dict[str, str] = {
             k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str)
@@ -270,16 +274,7 @@ class PinStore:
 
     def _save(self) -> None:
         """Replace the file atomically (root-owned, 0644)."""
-        self.path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".pins-")
-        try:
-            with os.fdopen(fd, "w") as fh:
-                json.dump(self._pins, fh, indent=1, sort_keys=True)
-            os.chmod(tmp, 0o644)
-            os.replace(tmp, self.path)
-        except BaseException:
-            os.unlink(tmp)
-            raise
+        write_atomic(self.path, json.dumps(self._pins, indent=1, sort_keys=True), mode=0o644)
 
 
 async def frontmost_bundle(runner: Runner = run_command) -> str | None:

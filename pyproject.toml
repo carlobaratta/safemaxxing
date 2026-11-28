@@ -22,11 +22,13 @@ classifiers = [
     "Topic :: System :: Networking :: Firewalls",
     "Typing :: Typed",
 ]
+# Floors are the versions the test suite runs on: the dashboard needs Textual 8's themes and
+# breakpoints. All four are MIT/BSD (docs/THIRD_PARTY_LICENSES.md; tests/test_licenses.py).
 dependencies = [
-    "textual>=0.58.0",
-    "rich>=13.7.0",
-    "typer>=0.12.0",
-    "psutil>=6.0.0",
+    "textual>=8.2.8",
+    "rich>=15.0.0",
+    "typer>=0.27.3",
+    "psutil>=7.2.2",
 ]
 
 [project.optional-dependencies]
@@ -50,6 +52,10 @@ build-backend = "hatchling.build"
 [tool.uv]
 # The version lives in __init__.py: reinstall the editable package when it changes.
 cache-keys = [{ file = "pyproject.toml" }, { file = "src/safemaxxing/__init__.py" }]
+# typer 0.29 requires pydantic and its compiled core for nothing the CLI uses; the lock (and
+# so the .pkg build, which runs as root) stays on 0.28 until that changes. Package metadata
+# keeps the open range.
+constraint-dependencies = ["typer<0.29"]
 
 [tool.hatch.version]
 path = "src/safemaxxing/__init__.py"
@@ -93,6 +99,8 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Each test gets its own event loop (pytest-asyncio warns when this is left unset).
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 markers = ["live: needs a real Mac, root and SAFEMAXXING_LIVE=1"]
 # Fail a hung test in seconds instead of letting it burn the whole CI job to its 15-minute

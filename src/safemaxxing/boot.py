@@ -7,10 +7,11 @@ code as root.
 
 from __future__ import annotations
 
+import errno
 import os
 import plistlib
 import shlex
-import tempfile
+import stat as stat_mod
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from safemaxxing.firewall import (
     anchor_rules,
     run_command,
 )
+from safemaxxing.secure_fs import UntrustedPathError, write_atomic
 
 LABEL = "io.github.carlobaratta.safemaxxing.restore"
 PLIST = Path("/Library/LaunchDaemons") / f"{LABEL}.plist"
@@ -36,6 +38,9 @@ SYSCTL = "/usr/sbin/sysctl"
 STAT = "/usr/bin/stat"
 # com.apple.pfctl loads /etc/pf.conf at boot in no fixed order with us; wait for it this long.
 PARENT_WAIT_S = 60
+# Files launchd creates for a job (its logs) are private to root: the watch daemon's log is a
+# record of which app used which sensor and where it connected.
+JOB_UMASK = 0o077
 
 
 def boot_script(
@@ -47,11 +52,16 @@ def boot_script(
     reference: Path = PF_REFERENCE,
     sysctl: str = SYSCTL,
     stat: str = STAT,
+    owner_uid: int = 0,
 ) -> str:
     """Return the POSIX sh script the job runs: wait for pf.conf, load the anchor, add, enable.
 
     Exits 0 without touching pf when the list is empty or missing, so an unused install never
-    enables pf. Uses `-T add`, not `replace`, so running it on a live system only adds. The
+    enables pf. A list that `owner_uid` (root) does not own, that its group or others can
+    write, or that holds anything but addresses and `#` comments is refused before pf is
+    touched: pfctl's table files also take host names, networks and `!` negations, and the
+    list is the only input the job reads. Uses `-T add`, not `replace`, so running it on a
+    live system only adds. The
     `pfctl -E` token is saved in PfReference's format (root-only, 0600), so a later `flush`
     can release it. A record written since this boot, while pf is on, is kept and no new
     reference is taken: that is `boot install` loading the job on a live system, and taking a
@@ -62,10 +72,20 @@ def boot_script(
     has_parent = f"/usr/bin/grep -qF {q(PARENT_ANCHOR_RULE)}"
     missing = q(f"main pf ruleset still lacks {PARENT_ANCHOR_RULE} after {wait_s} s")
     pf_on = f"{q(pfctl)} -s info 2>/dev/null | /usr/bin/grep -q '^Status: Enabled'"
+    not_private = q("refusing the block list: not root-owned, or writable by others")
+    not_addresses = q("refusing the block list: a line is not an IP address")
     return "\n".join(
         (
             f"list={q(str(blocklist))}",
             '[ -s "$list" ] || exit 0',
+            # Owner uid, then the permission bits: no write bit (2) for the group or others.
+            f'case $({q(stat)} -f "%u %Lp" "$list" 2>/dev/null) in',
+            f'  "{owner_uid} "?[0145][0145]) ;;',
+            f"  *) echo {not_private} >&2; exit 1 ;;",
+            "esac",
+            "if /usr/bin/grep -qvE '^([0-9A-Fa-f:.]*|#.*)$' \"$list\"; then",
+            f"  echo {not_addresses} >&2; exit 1",
+            "fi",
             "i=0",
             f"until {q(pfctl)} -s rules 2>/dev/null | {has_parent}; do",
             f'  i=$((i + 1)); [ "$i" -ge {wait_s} ] && echo {missing} >&2 && exit 1',
@@ -105,12 +125,13 @@ def boot_script(
 
 
 def launchd_plist(script: str) -> bytes:
-    """Return the job's property list: run `script` once at load, log to LOG."""
+    """Return the job's property list: run `script` once at load, log to LOG (root only)."""
     return plistlib.dumps(
         {
             "Label": LABEL,
             "ProgramArguments": ["/bin/sh", "-c", script],
             "RunAtLoad": True,
+            "Umask": JOB_UMASK,
             "StandardOutPath": str(LOG),
             "StandardErrorPath": str(LOG),
         }
@@ -127,15 +148,36 @@ class BootStatus:
 
 def write_root_file(path: Path, data: bytes) -> None:
     """Atomically write `path` with mode 0644 (launchd ignores a group/world-writable plist)."""
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}-")
+    write_atomic(path, data, mode=0o644)
+
+
+def prepare_private_log(path: Path) -> None:
+    """Create `path` empty with mode 0600, or make an existing log 0600; never via a symlink.
+
+    launchd opens a job's log files itself and keeps the mode of one that exists, so a log an
+    older install left readable by everyone stays that way unless it is tightened here.
+    """
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
     try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, path)
-    except BaseException:
-        os.unlink(tmp)
+        fd = os.open(path, flags, 0o600)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise UntrustedPathError(f"{path}: a symlink, refusing to follow it") from None
         raise
+    try:
+        st = os.fstat(fd)
+        if not stat_mod.S_ISREG(st.st_mode) or st.st_nlink > 1:
+            raise UntrustedPathError(f"{path}: not a plain file, refusing to use it as a log")
+        os.fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
+
+
+def plist_logs(plist: bytes) -> list[Path]:
+    """The distinct StandardOutPath / StandardErrorPath of a job's property list."""
+    job = plistlib.loads(plist)
+    paths = (job.get("StandardOutPath"), job.get("StandardErrorPath"))
+    return [Path(p) for p in dict.fromkeys(paths) if isinstance(p, str)]
 
 
 class LaunchdJob:
@@ -147,7 +189,17 @@ class LaunchdJob:
         self._run = runner
 
     async def load(self, plist: bytes) -> str:
-        """Write `plist` and (re)load it into the system domain; return a problem or ''."""
+        """Write `plist` and (re)load it into the system domain; return a problem or ''.
+
+        As root, the job's log files are made private (0600) first, so what it writes is
+        readable by root only, whatever an older install left behind.
+        """
+        if os.geteuid() == 0:
+            for log in plist_logs(plist):
+                try:
+                    prepare_private_log(log)
+                except OSError as exc:
+                    return f"log {log}: {exc}"
         write_root_file(self.plist, plist)
         # bootstrap refuses a label that is already loaded, so drop any older copy first.
         await self._run([LAUNCHCTL, "bootout", f"system/{self.label}"])

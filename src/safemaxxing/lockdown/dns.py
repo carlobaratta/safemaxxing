@@ -16,12 +16,10 @@ import contextlib
 import email.message
 import errno
 import ipaddress
-import os
 import random
 import re
 import socket
 import struct
-import tempfile
 import time
 import urllib.request
 from collections import OrderedDict
@@ -32,6 +30,7 @@ from typing import IO
 
 from safemaxxing.firewall import STATE_DIR
 from safemaxxing.lockdown.rules import SINKHOLE_PORT, SINKHOLE_UPSTREAM_PORTS
+from safemaxxing.secure_fs import read_trusted_text, write_atomic
 
 TYPE_A = 1
 TYPE_CNAME = 5
@@ -295,25 +294,21 @@ async def fetch_blocklist(
     data = await asyncio.to_thread(_download, url, limit, timeout_s)
     text = data.decode("utf-8", "replace")
     blocklist = DomainBlocklist.from_text(text)
-    cache.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=cache.parent, prefix=f".{cache.name}-")
-    try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write(text)
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, cache)
-    except BaseException:
-        os.unlink(tmp)
-        raise
+    write_atomic(cache, text, mode=0o644)
     return blocklist
 
 
 def load_blocklist(cache: Path = BLOCKLIST_CACHE) -> DomainBlocklist:
-    """The cached list, or an empty one when none was fetched yet."""
+    """The cached list, or an empty one when none was fetched yet.
+
+    A cache another user owns or can write, or one past MAX_BLOCKLIST_BYTES, is ignored: the
+    sinkhole runs as root and answers every lookup from this list.
+    """
     try:
-        return DomainBlocklist.from_text(cache.read_text(errors="replace"))
-    except FileNotFoundError:
+        text = read_trusted_text(cache, MAX_BLOCKLIST_BYTES)
+    except (OSError, ValueError):
         return DomainBlocklist()
+    return DomainBlocklist.from_text(text) if text is not None else DomainBlocklist()
 
 
 class DnsMap:

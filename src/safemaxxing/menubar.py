@@ -347,7 +347,9 @@ def tui_command(executable: str, euid: int) -> str:
     """
     argv = [executable, "tui"]
     if euid == 0:
-        argv.insert(0, "sudo")
+        # By absolute path: the new shell's PATH is the user's, and a `sudo` earlier on it
+        # would be handed the password.
+        argv.insert(0, "/usr/bin/sudo")
     return shlex.join(argv)
 
 
@@ -421,7 +423,7 @@ def run_menubar(
             model.record_action(await firewall.block(conn.remote_address))
             model.set_blocked(await firewall.blocked())
         if model.auto_suspend:
-            model.record_action(processes.suspend(conn.pid))
+            model.record_action(processes.auto_suspend(conn.pid, conn.exe_path))
 
     def run_loop() -> None:
         asyncio.set_event_loop(loop)

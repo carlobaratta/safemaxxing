@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from safemaxxing.boot import (
+    JOB_UMASK,
     LABEL,
     LAUNCHCTL,
     LOG,
@@ -18,6 +19,8 @@ from safemaxxing.boot import (
     boot_script,
     install_holding_reference,
     launchd_plist,
+    plist_logs,
+    prepare_private_log,
 )
 from safemaxxing.firewall import ANCHOR, TABLE, CommandResult, PfReference, anchor_rules
 
@@ -40,7 +43,10 @@ echo "$*" >> "$CALLS"
 printf '%s\\n' "${BOOT_OUT-{ sec = 4000000000, usec = 0 \\} Sun Nov  9 10:00:00 2096}"
 """
 FAKE_STAT = """#!/bin/sh
-echo "${MTIME-1000}"
+case "$2" in
+  %m) echo "${MTIME-1000}" ;;
+  *) echo "${LIST_STAT-$(/usr/bin/id -u) 644}" ;;
+esac
 """
 
 
@@ -75,7 +81,12 @@ def run_script(
         env["RULES"] = str(tmp_path / "rules")
     reference = blocklist.parent / "pf-reference"
     script = boot_script(
-        blocklist=blocklist, pfctl=str(pfctl), wait_s=1, reference=reference, **tools
+        blocklist=blocklist,
+        pfctl=str(pfctl),
+        wait_s=1,
+        reference=reference,
+        owner_uid=os.getuid(),
+        **tools,
     )
     proc = subprocess.run(["/bin/sh", "-c", script], env=env, capture_output=True, timeout=10)
     calls = tmp_path / "calls"
@@ -276,3 +287,59 @@ async def test_uninstall_unloads_and_deletes(tmp_path: Path) -> None:
     status = await job.status()
     assert not status.installed and not status.loaded
     await job.uninstall()  # twice is fine
+
+
+def test_boot_script_refuses_a_list_that_holds_more_than_addresses(tmp_path: Path) -> None:
+    # pfctl's table files also take host names, networks and `!` negations: none may pass.
+    for i, bad in enumerate(("0.0.0.0/0\n", "example.com\n", "!198.51.100.1\n")):
+        case = tmp_path / str(i)
+        case.mkdir()
+        code, calls = run_script(case, f"203.0.113.9\n{bad}", 'anchor "com.apple/*" all\n')
+        assert code == 1, bad
+        assert calls == [], bad  # pf untouched
+    case = tmp_path / "comments"
+    case.mkdir()
+    code, calls = run_script(case, "# by hand\n\n203.0.113.9\n", 'anchor "com.apple/*" all\n')
+    assert code == 0 and any("-T add" in c for c in calls)
+
+
+def test_boot_script_refuses_a_list_others_own_or_can_write(tmp_path: Path) -> None:
+    for i, listing in enumerate(
+        (f"{os.getuid()} 664", f"{os.getuid()} 646", f"{os.getuid() + 1} 644")
+    ):
+        case = tmp_path / str(i)
+        case.mkdir()
+        code, calls = run_script(
+            case, "203.0.113.9\n", 'anchor "com.apple/*" all\n', extra_env={"LIST_STAT": listing}
+        )
+        assert code == 1 and calls == [], listing
+
+
+def test_every_job_keeps_its_logs_private() -> None:
+    from safemaxxing.daemon import WatchOptions, daemon_plist
+    from safemaxxing.lockdown.watchdog import watchdog_plist
+
+    for plist in (
+        launchd_plist("true"),
+        watchdog_plist("true"),
+        daemon_plist("/usr/local/libexec/safemaxxing/safemaxxing", WatchOptions()),
+    ):
+        assert plistlib.loads(plist)["Umask"] == JOB_UMASK == 0o077
+    assert plist_logs(launchd_plist("true")) == [LOG]
+
+
+def test_prepare_private_log_tightens_an_old_log_and_never_follows_a_link(tmp_path: Path) -> None:
+    fresh = tmp_path / "fresh.log"
+    prepare_private_log(fresh)
+    assert fresh.read_text() == "" and stat.S_IMODE(fresh.stat().st_mode) == 0o600
+    old = tmp_path / "watch.log"
+    old.write_text('{"severity": "high"}\n')
+    old.chmod(0o644)
+    prepare_private_log(old)
+    assert old.read_text() == '{"severity": "high"}\n'  # kept, only made private
+    assert stat.S_IMODE(old.stat().st_mode) == 0o600
+    target = tmp_path / "elsewhere"
+    target.write_text("")
+    (tmp_path / "link.log").symlink_to(target)
+    with pytest.raises(PermissionError, match="symlink"):
+        prepare_private_log(tmp_path / "link.log")

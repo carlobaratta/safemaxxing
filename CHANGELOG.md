@@ -17,6 +17,35 @@ All notable changes are listed here. The format follows
   transparent proxy (Avast's Web Shield, Proton VPN split tunneling) opens every connection
   itself, so the apps behind it are denied too. Entering lists the active network extensions
   (`systemextensionsctl list`).
+- `sudo safemaxxing purge` removes everything safemaxxing left on the Mac: it unloads and
+  deletes the three launchd jobs, empties its pf tables and anchor, releases its pf reference
+  (never `pfctl -d`), and deletes its state, run and log files. It lists what it will remove
+  and asks once (`--yes` skips the question, `--dry-run` only lists), keeps files it did not
+  create, and refuses while Paranoia Mode is on or another `tui`, `watch` or `menubar` runs.
+- `safemaxxing report` exports the protection state (version, pf and the anchor's rules, live
+  and saved blocks, launchd jobs, Paranoia Mode, the `doctor` checks and, as root, the
+  daemon's recent alerts) as `--format markdown`, `json` or `text`. `--out FILE` writes it
+  mode 0600 and never through a symlink; `--redact` replaces IP addresses, home paths, the
+  login and the host name, for a public bug report. The bug-report form asks for it.
+- TUI themes: dark (the default), high contrast and light, chosen with `tui --theme` or cycled
+  with `T`. Every text and background pair meets WCAG AA (4.5:1), the high-contrast theme AAA
+  (7:1), and `tests/test_palette.py` checks it; `NO_COLOR=1` makes any theme monochrome. The
+  stylesheet takes every colour from the theme, so badges, the feed and the log recolour
+  without a restart.
+- TUI: a header with the profile (Normal, Paranoia), the number of blocked addresses, the
+  `watch` daemon's state, and the time of the last event and of the last refresh; a Blocked
+  tab listing pf's table (`u` unblocks the selected row); `?` for help, with every key, an
+  FAQ and the issue tracker; `y` to copy the selection's pid, path, bundle id, IP, host name,
+  pf rule or `pfctl` command (OSC 52 and `pbcopy`); `t` to jump to the top of the focused
+  table or the sensor log. The `/` filter also covers the sensor log and the Blocked tab, and
+  matches severities and sensor codes.
+- TUI: toasts confirm every block, unblock, pause and resume, and say why one failed. A stop
+  says what to fix (root, Full Disk Access, `tcpdump`, `doctor`). The `max` Paranoia profile
+  asks before it cuts the network, and pausing a macOS system process asks first.
+- `PRIVACY.md`: what safemaxxing reads, stores (with paths and modes) and sends, that nothing
+  leaves the Mac and there is no telemetry, how to remove it all, and what pf and Paranoia
+  Mode can break. `docs/THIRD_PARTY_LICENSES.md` lists every dependency's license, and
+  `tests/test_licenses.py` fails on a copyleft or unlicensed one.
 
 ### Changed
 
@@ -34,7 +63,7 @@ All notable changes are listed here. The format follows
   never as the latest, like 0.1.x and 0.2.x were by hand. From 1.0 only a suffixed tag
   (`v1.0.0-rc1`) is a pre-release.
 - The TUI no longer blinks in Paranoia Mode: the dashboard still turns red, but the borders
-  stay a steady `#ff2e4d` instead of switching to dark red every 0.5 s.
+  stay a steady red instead of switching to dark red every 0.5 s.
 - The TUI is redesigned. A one-line posture bar replaces the header and says in words
   whether anything needs you (`● Watching`, `▲ N alerts to review`, `■ Paranoia Mode`,
   `■ Stopped`). Paranoia Mode has its own card with its leases, grants and denials instead of
@@ -45,6 +74,18 @@ All notable changes are listed here. The format follows
   kill and leave confirmations say what cannot be undone, name the action on the button and
   start on Cancel. Panels are renamed Alerts, Protection, Details and Connections; the
   footer says Pause app / Resume app instead of SIGSTOP / SIGCONT.
+- The TUI footer shows only the keys that act on the current selection and state (Unblock
+  only for a blocked address, Resume only for a paused process, Grant app only in Paranoia
+  Mode). The layout follows the terminal's width: below 110 columns the side panels move
+  under the feed, and the header shortens below 130. Focus is always visible: buttons are
+  drawn in reverse, panels and the sensor log by their border.
+- `freeze` and `kill` ask before stopping a macOS system process (WindowServer, loginwindow,
+  anything under a SIP-protected path); `--yes` skips the question. `watch --auto-suspend`
+  and the menu bar's Auto-Suspend Mode never stop one, and say so in the action's result.
+- `doctor` and `report` show which check is running.
+- Dependency floors raised to the versions tested (Textual 8.2, Rich 15, Typer 0.28,
+  psutil 7.2, rumps 0.4). Typer stays below 0.29, which would add pydantic and its compiled
+  core to a tool that runs as root.
 
 ### Fixed
 
@@ -56,6 +97,23 @@ All notable changes are listed here. The format follows
 
 ### Security
 
+- Every `pfctl` call goes through one guard that refuses `pfctl -d` and anything that would
+  load, flush or edit rules or tables outside `com.apple/safemaxxing`; the addresses in the
+  allowed unscoped calls (`-k`) are validated first. A bug elsewhere can no longer touch the
+  system's own ruleset.
+- An address to block must be a plain IPv4 or IPv6 address (at most 45 characters, IPv4-mapped
+  IPv6 normalised); loopback, unspecified, multicast, link-local and reserved addresses are
+  refused. The saved block list is validated line by line, and the boot script refuses a list
+  that is not root-owned, is writable by others, or holds anything but addresses and comments.
+- State files (the block list, the pf reference, the Team ID pins, the DNS blocklist, Paranoia
+  Mode's heartbeat) are written atomically, with a fixed mode, never through a symlink, and
+  read back only when root (or the caller) owns them and no one else can write them. A pins
+  file someone else can write is ignored, so pinning starts over instead of trusting it.
+- The launchd jobs run with `Umask 077`, and their logs (the `watch` daemon's records which app
+  used which sensor and where it connected) are created mode 0600 and never through a symlink.
+  `sample --out` is created mode 0600, owned by the invoking user under `sudo`.
+- The menu bar's "Open TUI Dashboard" calls `/usr/bin/sudo` by absolute path, so a `sudo`
+  earlier on the user's `PATH` cannot capture the password.
 - Paranoia Mode let a leased browser use DNS-over-HTTPS around the sinkhole. The DoH check
   knew only resolver addresses (1.1.1.1, 8.8.8.8, ...), and browsers reach Cloudflare by name
   on others: Firefox `mozilla.cloudflare-dns.com`, Chrome `chrome.cloudflare-dns.com`. The

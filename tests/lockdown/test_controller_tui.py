@@ -56,8 +56,10 @@ from safemaxxing.models import (
     SensorType,
     Severity,
 )
+from safemaxxing.tui import palette
 from safemaxxing.tui.app import SafemaxxingApp
 from safemaxxing.tui.panels import PostureBar
+from safemaxxing.tui.screens import ConfirmScreen
 
 ZOOM, SPY, IMPOSTOR = 4242, 6666, 7777
 # What the kernel holds for each pid: Zoom's team, and an impostor signed by another one.
@@ -415,7 +417,7 @@ async def test_panic_button_turns_the_tui_red_and_leaving_asks_first(tmp_path: P
         # Steady red: the borders keep one colour over time, nothing blinks.
         pane = app.query(".pane").first()
         border = pane.styles.border_top
-        assert border[1] == Color.parse("#ff2e4d")
+        assert border[1] == Color.parse(palette.DARK.danger)
         for _ in range(6):  # sampled more often than any blink would toggle
             await pilot.pause(0.2)
             assert pane.styles.border_top == border
@@ -425,6 +427,26 @@ async def test_panic_button_turns_the_tui_red_and_leaving_asks_first(tmp_path: P
         await pilot.press("y")
         await wait_for(pilot, lambda: controller.state is LockdownState.OFF)
         await wait_for(pilot, lambda: not screen.has_class("-lockdown"))
+
+
+async def test_the_max_profile_asks_before_it_cuts_the_network(tmp_path: Path) -> None:
+    controller, _, _, _, _ = build(tmp_path)
+    app = SafemaxxingApp(
+        supervisor(hold=True), lockdown=controller, root=lambda: True, profile="max"
+    )
+    async with app.run_test() as pilot:
+        await pilot.press("P")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen) and controller.state is LockdownState.OFF
+        await pilot.press("escape")  # cancel: nothing changes
+        await pilot.pause()
+        assert controller.state is LockdownState.OFF
+        await pilot.press("P")
+        await pilot.pause()
+        await pilot.press("y")
+        await wait_for(pilot, lambda: controller.state is LockdownState.ON)
+        assert "Paranoia (max)" in plain(app.query_one(PostureBar).content)
+        await controller.leave()
 
 
 def test_max_profile_turns_every_refusal_on() -> None:
