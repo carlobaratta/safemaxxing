@@ -20,7 +20,7 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
-from safemaxxing.boot import LaunchdJob
+from safemaxxing.boot import JOB_UMASK, LaunchdJob
 from safemaxxing.firewall import Runner, run_command
 
 LABEL = "io.github.carlobaratta.safemaxxing.watch"
@@ -86,6 +86,8 @@ def daemon_plist(executable: str, options: WatchOptions) -> bytes:
             "RunAtLoad": True,
             "KeepAlive": True,
             "ThrottleInterval": THROTTLE_S,
+            # The log is a record of sensor use and destinations: readable by root only.
+            "Umask": JOB_UMASK,
             "StandardOutPath": str(LOG),
             "StandardErrorPath": str(ERR_LOG),
         }

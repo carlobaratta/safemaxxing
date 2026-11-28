@@ -297,13 +297,14 @@ def test_an_unexpected_status_item_shape_is_undecided() -> None:
 
 def test_tui_command_uses_an_absolute_path_that_survives_the_shell() -> None:
     # The source checkout lives under a path with a space and an apostrophe.
-    exe = "/Users/carlo/oak's projects/safemaxxing/.venv/bin/safemaxxing"
+    exe = "/Users/alice/oak's projects/safemaxxing/.venv/bin/safemaxxing"
     assert shlex.split(tui_command(exe, euid=501)) == [exe, "tui"]
 
 
 def test_tui_command_keeps_root_through_sudo() -> None:
+    # sudo by its absolute path: a `sudo` earlier on the user's PATH never sees the password.
     assert shlex.split(tui_command("/usr/local/bin/safemaxxing", euid=0)) == [
-        "sudo",
+        "/usr/bin/sudo",
         "/usr/local/bin/safemaxxing",
         "tui",
     ]

@@ -6,8 +6,10 @@ import asyncio
 import contextlib
 import dataclasses
 import json
+import os
 import sys
 from collections.abc import Callable
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -39,6 +41,12 @@ from safemaxxing.lockdown.watchdog import PLIST as WATCHDOG_PLIST
 from safemaxxing.lockdown.watchdog import WatchdogJob
 from safemaxxing.models import ActionResult, Alert, Event, IndicatorState, Severity
 from safemaxxing.pktap import pktap_unavailable
+from safemaxxing.purge import blocker as purge_blocker
+from safemaxxing.purge import default_targets as purge_targets
+from safemaxxing.purge import planned as purge_plan
+from safemaxxing.purge import purge as run_purge
+from safemaxxing.report import RENDERERS, ReportFormat, collect_report, redact
+from safemaxxing.secure_fs import open_private_output
 from safemaxxing.sensors import (
     DISCOVERY_PREDICATE,
     WIDE_DISCOVERY_PREDICATE,
@@ -67,6 +75,17 @@ paranoia_app = typer.Typer(
     help="Paranoia Mode: the dead-man watchdog and the DNS blocklist.", no_args_is_help=True
 )
 app.add_typer(paranoia_app, name="paranoia")
+# Progress and prompts go to stderr, so `report > file` and `watch --json | jq` stay clean.
+err_console = Console(stderr=True)
+
+
+class TuiTheme(StrEnum):
+    """The dashboard's colour themes (NO_COLOR=1 turns any of them monochrome)."""
+
+    DARK = "dark"
+    HIGH_CONTRAST = "high-contrast"
+    LIGHT = "light"
+
 
 WindowMs = Annotated[int, typer.Option("--window-ms", help="Correlation window in ms.", min=1)]
 DecayWindowMs = Annotated[
@@ -133,6 +152,7 @@ Ignore = Annotated[
 ]
 Ip = Annotated[str, typer.Argument(help="IPv4 or IPv6 address.")]
 Pid = Annotated[int, typer.Argument(help="Process id.")]
+Yes = Annotated[bool, typer.Option("--yes", "-y", help="Do not ask for confirmation first.")]
 
 
 def _supervisor(
@@ -221,12 +241,20 @@ def tui(
             "blocked SNI revokes its grant, TCP 443 only to addresses DNS named.",
         ),
     ] = ParanoiaProfile.STANDARD,
+    theme: Annotated[
+        TuiTheme,
+        typer.Option(
+            "--theme",
+            help="Colours: dark, high-contrast (WCAG AAA text on black) or light. T switches "
+            "while it runs; NO_COLOR=1 turns any theme monochrome.",
+        ),
+    ] = TuiTheme.DARK,
 ) -> None:
     """Interactive dashboard: alert feed, pf/pktap status, inspector and sensor events.
 
     Keys: b/u block/unblock the destination IP, s/r SIGSTOP/SIGCONT, k SIGKILL (asks first),
-    Enter/space timeline, / filter (Esc clears), c clear the feed, q quit. Run as root for
-    full visibility.
+    Enter/space timeline, / filter (Esc clears), y copy, t top, T theme, ? help, c clear the
+    feed, q quit. Run as root for full visibility.
     """
     from safemaxxing.tui.app import SafemaxxingApp
 
@@ -253,7 +281,9 @@ def tui(
         decay_window_ms,
         on_indicator=lockdown.observe_indicator if lockdown is not None else None,
     )
-    SafemaxxingApp(supervisor, lockdown=lockdown).run()
+    SafemaxxingApp(
+        supervisor, lockdown=lockdown, theme=theme.value, profile=paranoia_profile.value
+    ).run()
 
 
 @app.command()
@@ -380,10 +410,13 @@ def watch(
             if auto_block:
                 results.append(await firewall.block(conn.remote_address))
             if auto_suspend:
-                results.append(processes.suspend(conn.pid))
+                results.append(processes.auto_suspend(conn.pid, conn.exe_path))
             for result in results:
                 if not as_json:
-                    console.print(f"  -> {result.kind.value} {result.target}: ok={result.ok}")
+                    detail = f" {escape(result.detail)}" if result.detail else ""
+                    console.print(
+                        f"  -> {result.kind.value} {result.target}: ok={result.ok}{detail}"
+                    )
 
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(loop())
@@ -421,10 +454,20 @@ def _require_root() -> None:
         raise typer.Exit(1)
 
 
+def _saved_blocks() -> list[str]:
+    """The saved block list; a list another user could have written stops the command."""
+    try:
+        return BlockList().load()
+    except OSError as exc:
+        console.print(f"[bold red]refusing the saved block list:[/] {escape(str(exc))}")
+        raise typer.Exit(1) from None
+
+
 @boot_app.command("install")
 def boot_install() -> None:
     """Save the current blocks and load a launchd job that reapplies them at every boot."""
     _require_root()
+    _saved_blocks()
 
     async def run() -> tuple[str, str]:
         store = BlockList()
@@ -432,7 +475,11 @@ def boot_install() -> None:
             store.add(ip)
         return await install_holding_reference(BootJob(), PfReference(), bool(store.load()))
 
-    problem, note = asyncio.run(run())
+    try:
+        problem, note = asyncio.run(run())
+    except OSError as exc:
+        console.print(f"[bold red]boot install failed:[/] {escape(str(exc))}")
+        raise typer.Exit(1) from None
     if note:
         console.print(f"[yellow]{escape(note)}[/]")
     if problem:
@@ -454,7 +501,7 @@ def boot_uninstall() -> None:
 def boot_status() -> None:
     """Show whether the job is installed and loaded, and the saved and live block counts."""
     status = asyncio.run(BootJob().status())
-    saved = BlockList().load()
+    saved = _saved_blocks()
     console.print(f"job {PLIST}: installed={status.installed} loaded={status.loaded}")
     if not is_root():
         console.print(f"saved {BLOCKLIST}: {len(saved)}  live table: needs root  log: {LOG}")
@@ -541,14 +588,31 @@ def daemon_status() -> None:
     if status.arguments:
         console.print(f"runs: {escape(' '.join(status.arguments))}")
     console.print(f"log: {DAEMON_LOG}  errors: {DAEMON_ERR_LOG}")
+    if DAEMON_LOG.exists() and not os.access(DAEMON_LOG, os.R_OK):
+        console.print("[dim]recent alerts: the log is readable by root only (sudo)[/]")
+        return
     for line in recent_alerts():
         console.print(f"  {escape(line)}")
 
 
+def _confirm_system_process(processes: ProcessController, pid: int, verb: str) -> None:
+    """Ask before stopping a macOS system binary; Exit(1) unless the answer is yes."""
+    exe = processes.system_binary(pid)
+    if exe is None:
+        return
+    err_console.print(f"[yellow]pid {pid} is a macOS system process:[/] {escape(exe)}")
+    err_console.print("Stopping it can freeze the desktop, cut the sound or log you out.")
+    if not typer.confirm(f"{verb} it anyway?", default=False, err=True):
+        raise typer.Exit(1)
+
+
 @app.command()
-def freeze(pid: Pid) -> None:
-    """Suspend a process (SIGSTOP)."""
-    _print_result(ProcessController().suspend(pid))
+def freeze(pid: Pid, yes: Yes = False) -> None:
+    """Suspend a process (SIGSTOP); asks first for a macOS system process unless --yes."""
+    processes = ProcessController()
+    if not yes:
+        _confirm_system_process(processes, pid, "Freeze")
+    _print_result(processes.suspend(pid))
 
 
 @app.command()
@@ -558,9 +622,12 @@ def thaw(pid: Pid) -> None:
 
 
 @app.command()
-def kill(pid: Pid) -> None:
-    """Terminate a process (SIGKILL)."""
-    _print_result(ProcessController().kill(pid))
+def kill(pid: Pid, yes: Yes = False) -> None:
+    """Terminate a process (SIGKILL); asks first for a macOS system process unless --yes."""
+    processes = ProcessController()
+    if not yes:
+        _confirm_system_process(processes, pid, "Kill")
+    _print_result(processes.kill(pid))
 
 
 _STATUS_STYLE = {Status.OK: "[green]✔", Status.WARN: "[yellow]!", Status.FAIL: "[red]✘"}
@@ -569,7 +636,11 @@ _STATUS_STYLE = {Status.OK: "[green]✔", Status.WARN: "[yellow]!", Status.FAIL:
 @app.command()
 def doctor(poll_ms: PollMs = 200) -> None:
     """Check root, pf state/anchor, socket visibility, Full Disk Access and log predicates."""
-    checks = run_doctor(poll_interval_s=poll_ms / 1000)
+    with err_console.status("Running checks…") as activity:
+        checks = run_doctor(
+            poll_interval_s=poll_ms / 1000,
+            progress=lambda name: activity.update(f"Checking {name}…"),
+        )
     for check in checks:
         console.print(
             f"{_STATUS_STYLE[check.status]}[/] {check.name}: [dim]{escape(check.detail)}[/]"
@@ -641,7 +712,12 @@ def sample(
         float, typer.Option("--seconds", min=0.5, help="How long to sample `log stream`.")
     ] = 5.0,
     out: Annotated[
-        Path | None, typer.Option("--out", help="Write raw entries as JSON lines.")
+        Path | None,
+        typer.Option(
+            "--out",
+            help="Write raw entries as JSON lines (mode 0600, owned by you under sudo; raw "
+            "entries name apps and paths: strip them before sharing).",
+        ),
     ] = None,
     debug: Annotated[
         bool, typer.Option("--debug", help="Use `--level debug` (much noisier, finds more).")
@@ -660,9 +736,13 @@ def sample(
         console.print(f"[bold red]log stream failed:[/] {exc}")
         raise typer.Exit(1) from None
     if out is not None:
-        with out.open("w") as fh:
-            for entry in entries:
-                fh.write(json.dumps(entry) + "\n")
+        try:
+            with open_private_output(out) as fh:
+                for entry in entries:
+                    fh.write(json.dumps(entry) + "\n")
+        except OSError as exc:
+            console.print(f"[bold red]cannot write {escape(str(out))}:[/] {escape(str(exc))}")
+            raise typer.Exit(1) from None
     table = Table(title=f"log stream sample: {len(entries)} entries in {seconds:g}s")
     for column in ("subsystem", "entries", "<private> msg", "no image path", "no pid"):
         table.add_column(column)
@@ -689,6 +769,105 @@ def sample(
             console.print(f"[bold]{name}[/]: {escape(sensors)}  levels: {escape(levels)}")
         for example in s.parsed_examples:
             console.print(f"[green]parsed {name}:[/] {escape(example)}")
+
+
+PKG_ID = "com.github.carlobaratta.safemaxxing"
+PKG_BUNDLE = Path("/usr/local/libexec/safemaxxing")
+PKG_LINK = Path("/usr/local/bin/safemaxxing")
+
+
+@app.command()
+def purge(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Only list what would be removed.")
+    ] = False,
+    yes: Yes = False,
+) -> None:
+    """Remove everything safemaxxing put on this Mac: the launchd jobs, its pf tables, rules
+    and reference, the saved block list and pins, its run files and its logs.
+
+    Touches only the `com.apple/safemaxxing` anchor and files safemaxxing created; asks first
+    unless --yes. Refused while Paranoia Mode is on or another tui/watch/menubar runs.
+    """
+    targets = purge_targets()
+    plan = asyncio.run(purge_plan(targets))
+    console.print("[bold]safemaxxing purge would remove:[/]")
+    for line in plan:
+        console.print(f"  - {escape(line)}")
+    if dry_run:
+        return
+    _require_root()
+    if reason := purge_blocker(targets):
+        console.print(f"[bold red]not now:[/] {escape(reason)}")
+        raise typer.Exit(1)
+    if not yes and not typer.confirm(
+        "Remove all of it? This cannot be undone", default=False, err=True
+    ):
+        console.print("nothing removed")
+        raise typer.Exit(1)
+    with err_console.status("Purging…"):
+        steps = asyncio.run(run_purge(targets))
+    for step in steps:
+        mark = "[green]✔[/]" if step.ok else "[red]✘[/]"
+        detail = f" [dim]{escape(step.detail)}[/]" if step.detail else ""
+        console.print(f"{mark} {escape(step.name)}{detail}")
+    if PKG_BUNDLE.exists() or PKG_LINK.is_symlink():
+        console.print(
+            "[dim]The program itself stays. To remove the .pkg install too:[/]\n"
+            f"  sudo rm -rf {PKG_BUNDLE} {PKG_LINK}\n  sudo pkgutil --forget {PKG_ID}"
+        )
+    if not all(step.ok for step in steps):
+        raise typer.Exit(1)
+
+
+@app.command()
+def report(
+    fmt: Annotated[
+        ReportFormat, typer.Option("--format", "-f", help="markdown, json or text.")
+    ] = ReportFormat.MARKDOWN,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", "-o", help="Write to this file (mode 0600) instead of stdout."),
+    ] = None,
+    redacted: Annotated[
+        bool,
+        typer.Option(
+            "--redact",
+            help="Replace IP addresses, home paths, your login and host name: fit for a "
+            "public bug report.",
+        ),
+    ] = False,
+    checks: Annotated[
+        bool,
+        typer.Option("--checks/--no-checks", help="Also run the `doctor` checks (slower)."),
+    ] = True,
+) -> None:
+    """Export what safemaxxing enforces right now (pf, blocks, launchd jobs, Paranoia Mode,
+    checks, recent alerts) as Markdown, JSON or plain text. Nothing leaves this Mac.
+
+    Without root the pf and log sections say "needs root" instead.
+    """
+    with err_console.status("Collecting the report…") as activity:
+
+        def progress(name: str) -> None:
+            activity.update(f"Checking {name}…")
+
+        found = asyncio.run(
+            collect_report(checks=checks, doctor=lambda: run_doctor(progress=progress))
+        )
+    text = RENDERERS[fmt](found)
+    if redacted:
+        text = redact(text)
+    if out is None:
+        sys.stdout.write(text)
+        return
+    try:
+        with open_private_output(out) as fh:
+            fh.write(text)
+    except OSError as exc:
+        console.print(f"[bold red]cannot write {escape(str(out))}:[/] {escape(str(exc))}")
+        raise typer.Exit(1) from None
+    err_console.print(f"[green]report written to {escape(str(out))}[/] (mode 0600)")
 
 
 @paranoia_app.command("install")

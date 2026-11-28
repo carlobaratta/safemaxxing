@@ -11,14 +11,14 @@ import os
 import re
 import signal
 import stat
-import tempfile
 import time
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from safemaxxing.models import ActionKind, ActionResult
+from safemaxxing.models import ActionKind, ActionResult, is_system_path
+from safemaxxing.secure_fs import ensure_private_dir, read_trusted_text, write_atomic
 
 PFCTL = "/sbin/pfctl"
 TABLE = "safemaxxing_block"
@@ -29,6 +29,10 @@ STATE_DIR = Path("/Library/Application Support/safemaxxing")
 BLOCKLIST = STATE_DIR / "blocklist"
 # The `pfctl -E` token safemaxxing holds, written by this module and by the boot job.
 PF_REFERENCE = STATE_DIR / "pf-reference"
+# The longest spelling of an IPv6 address is 45 characters; anything longer is not one.
+MAX_IP_TEXT = 64
+# The block list is a few addresses per alert; a file this large was not written by us.
+MAX_BLOCKLIST_BYTES = 1 << 20
 
 
 def anchor_rules(table: str = TABLE) -> str:
@@ -39,6 +43,46 @@ def anchor_rules(table: str = TABLE) -> str:
 
 class FirewallError(RuntimeError):
     """Raised when pf cannot be prepared: unreachable anchor, rejected rules, or pf stays off."""
+
+
+# pfctl calls that only read, or that take and drop pf's enable reference, may run unscoped.
+# `-k` kills the states to one validated address (`block`). Everything else must name our
+# anchor: that is the whole of what safemaxxing may change in pf.
+_UNSCOPED_PFCTL = frozenset({("-s", "info"), ("-s", "rules"), ("-E",), ("-e",)})
+
+
+def _scoped_anchor(args: Sequence[str]) -> bool:
+    return (
+        len(args) >= 2
+        and args[0] == "-a"
+        and (args[1] == ANCHOR or args[1].startswith(f"{ANCHOR}/"))
+        and "-a" not in args[2:]
+    )
+
+
+def check_pfctl_argv(argv: Sequence[str]) -> None:
+    """Raise FirewallError unless `argv` is a pfctl call safemaxxing is allowed to make.
+
+    Allowed: reads of pf's state and main ruleset, `-E` / `-e` / `-X <token>` (pf's reference
+    count), `-k` between two addresses, and anything scoped to `com.apple/safemaxxing` or one
+    of its sub-anchors. Never `-d`, which turns pf off for every other holder, and never a rule,
+    table or flush outside the anchor, so a bug here cannot rewrite the system's own ruleset.
+    """
+    if not argv or argv[0] != PFCTL:
+        return
+    args = list(argv[1:])
+    if "-d" in args:
+        raise FirewallError("refusing `pfctl -d`: it disables pf for every other holder")
+    if tuple(args) in _UNSCOPED_PFCTL or _scoped_anchor(args):
+        return
+    if len(args) == 2 and args[0] == "-X" and parse_pf_token(f"Token : {args[1]}"):
+        return
+    if len(args) == 4 and args[0] == args[2] == "-k":
+        with contextlib.suppress(ValueError):
+            ipaddress.ip_network(args[1])
+            validate_ip(args[3])
+            return
+    raise FirewallError(f"refusing pfctl call outside {ANCHOR}: {' '.join(args)}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,8 +103,10 @@ class Runner(Protocol):
 async def run_command(argv: Sequence[str], stdin: str | None = None) -> CommandResult:
     """Run `argv` directly (no shell) and capture its output; never raises on a non-zero exit.
 
-    Output is decoded leniently. A missing executable still raises OSError from the spawn.
+    Output is decoded leniently. A missing executable still raises OSError from the spawn, and
+    a pfctl call outside safemaxxing's anchor raises FirewallError before anything runs.
     """
+    check_pfctl_argv(argv)
     proc = await asyncio.create_subprocess_exec(
         *argv,
         stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
@@ -74,10 +120,25 @@ async def run_command(argv: Sequence[str], stdin: str | None = None) -> CommandR
 
 
 def validate_ip(raw: str) -> str:
-    """Normalise an address and refuse ones whose blocking would break the host."""
-    ip = ipaddress.ip_address(raw.strip())
-    if ip.is_loopback or ip.is_unspecified or ip.is_multicast:
+    """Normalise an address and refuse ones whose blocking would break the host.
+
+    Only a plain address is accepted: no scope id (`fe80::1%en0`, where anything but `%` may
+    follow, tabs and `!` included, and the boot job splits pfctl's table file on whitespace),
+    no prefix, nothing longer than an address can be. An IPv4-mapped IPv6 address becomes the
+    IPv4 address, which is what the packets on the wire carry. Loopback, unspecified,
+    multicast, link-local and reserved addresses (the broadcast 255.255.255.255 among them)
+    are refused: blocking them breaks the host or the local network, not an exfiltration.
+    """
+    text = raw.strip()
+    if len(text) > MAX_IP_TEXT or "%" in text:
+        raise ValueError(f"not a plain IP address: {raw[:MAX_IP_TEXT]!r}")
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address = ipaddress.ip_address(text)
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if ip.is_loopback or ip.is_unspecified or ip.is_multicast or ip.is_link_local:
         raise ValueError(f"refusing to block {ip}")
+    if ip.is_reserved:
+        raise ValueError(f"refusing to block {ip}: a reserved address")
     return str(ip)
 
 
@@ -195,7 +256,7 @@ class PfReference:
 
         Not reentrant. Raises FirewallError after LOCK_TIMEOUT_S.
         """
-        self.lock_path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        ensure_private_dir(self.lock_path.parent)
         flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC
         fd = os.open(self.lock_path, flags, 0o600)
         try:
@@ -233,17 +294,7 @@ class PfReference:
 
     def _save(self, token: str, info: str) -> None:
         status = next(line for line in info.splitlines() if line.startswith("Status: Enabled"))
-        self.path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".pf-reference-")
-        try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write(f"token={token}\nstatus={status.strip()}\n")
-            os.chmod(tmp, 0o600)
-            os.replace(tmp, self.path)
-        except BaseException:
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(tmp)
-            raise
+        write_atomic(self.path, f"token={token}\nstatus={status.strip()}\n", mode=0o600)
 
     def forget(self) -> None:
         """Delete the record; a missing one is not an error."""
@@ -330,7 +381,10 @@ class BlockList:
     """Blocked addresses saved on disk, one per line, for the boot job to reapply.
 
     pf forgets its tables at reboot; `safemaxxing boot install` adds a launchd job that feeds
-    this file to `pfctl -T add -f`. The file is replaced atomically and kept mode 0644.
+    this file to `pfctl -T add -f`. The file is replaced atomically and kept mode 0644 in a
+    directory only root can write. Reading it back trusts nothing: a file another user owns or
+    can write raises UntrustedPathError, and a line that is not an address `validate_ip`
+    accepts is skipped, so only addresses ever reach pfctl.
     """
 
     def __init__(self, path: Path = BLOCKLIST) -> None:
@@ -338,24 +392,20 @@ class BlockList:
 
     def load(self) -> list[str]:
         """Return the saved addresses in insertion order; a missing file means none."""
-        try:
-            text = self.path.read_text()
-        except FileNotFoundError:
+        text = read_trusted_text(self.path, MAX_BLOCKLIST_BYTES)
+        if text is None:
             return []
-        return [line.strip() for line in text.splitlines() if line.strip() and line[0] != "#"]
+        ips: dict[str, None] = {}
+        for line in text.splitlines():
+            entry = line.strip()
+            if not entry or entry.startswith("#"):
+                continue
+            with contextlib.suppress(ValueError):
+                ips[validate_ip(entry)] = None
+        return list(ips)
 
     def _save(self, ips: list[str]) -> None:
-        self.path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".blocklist-")
-        try:
-            with os.fdopen(fd, "w") as fh:
-                fh.write("".join(f"{ip}\n" for ip in ips))
-            os.chmod(tmp, 0o644)
-            os.replace(tmp, self.path)
-        except BaseException:
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink(tmp)
-            raise
+        write_atomic(self.path, "".join(f"{ip}\n" for ip in ips), mode=0o644)
 
     def add(self, ip: str) -> None:
         """Save `ip` unless it is already listed."""
@@ -581,12 +631,46 @@ _SIGNALS: dict[ActionKind, signal.Signals] = {
 }
 
 
+def process_exe(pid: int) -> str | None:
+    """Executable path of `pid`, or None when it is gone or unreadable (needs root for others)."""
+    import psutil
+
+    try:
+        return psutil.Process(pid).exe() or None
+    except (psutil.Error, OSError):
+        return None
+
+
 class ProcessController:
     """Suspends, resumes or kills processes by pid with SIGSTOP, SIGCONT and SIGKILL."""
 
-    def __init__(self, kill: Callable[[int, int], None] = os.kill) -> None:
+    def __init__(
+        self,
+        kill: Callable[[int, int], None] = os.kill,
+        exe_of: Callable[[int], str | None] = process_exe,
+    ) -> None:
         self._kill = kill
+        self._exe_of = exe_of
         self._protected = {0, 1, os.getpid(), os.getppid()}
+
+    def system_binary(self, pid: int, exe_path: str | None = None) -> str | None:
+        """The executable of `pid` (`exe_path` when the caller knows it) if it is a macOS
+        system binary in a SIP-protected location, else None.
+
+        Stopping one of those (WindowServer, loginwindow, coreaudiod) freezes the desktop or
+        logs the user out, so the CLI and the TUI ask first and automatic responses skip it.
+        """
+        exe = exe_path or self._exe_of(pid)
+        return exe if is_system_path(exe) else None
+
+    def auto_suspend(self, pid: int, exe_path: str | None = None) -> ActionResult:
+        """SIGSTOP for an automatic response (`--auto-suspend`, Auto-Suspend Mode): the same as
+        `suspend`, except that a macOS system binary is never stopped without a person."""
+        if exe := self.system_binary(pid, exe_path):
+            return ActionResult(
+                ActionKind.SUSPEND, str(pid), False, f"skipped: {exe} is a macOS system binary"
+            )
+        return self.suspend(pid)
 
     def signal(self, kind: ActionKind, pid: int) -> ActionResult:
         """Send the signal for `kind` (SUSPEND, RESUME or KILL) to `pid`.

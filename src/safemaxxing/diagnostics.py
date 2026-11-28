@@ -321,15 +321,39 @@ def check_menubar(available: Callable[[], bool] = menubar_available) -> Check:
     return Check(name, Status.WARN, MENUBAR_HINT)
 
 
-def run_doctor(poll_interval_s: float = 0.2) -> list[Check]:
-    """Run every check in order; on a non-macOS host return after the basic checks."""
+type DoctorStep = tuple[str, Callable[[], Check | list[Check]]]
+
+
+def doctor_steps(poll_interval_s: float = 0.2) -> list[DoctorStep]:
+    """The macOS checks after the basic ones, each with a name to show while it runs."""
+    return [
+        ("pf status", check_pf_status),
+        ("pf anchors", check_pf_anchor),
+        ("socket visibility", check_socket_visibility),
+        ("Full Disk Access", check_full_disk_access),
+        ("socket snapshot", lambda: check_snapshot_latency(poll_interval_s)),
+        ("log predicate", check_log_predicate),
+        ("pktap", check_pktap),
+        ("TCC permissions", check_tcc_permissions),
+        ("menu bar", check_menubar),
+    ]
+
+
+def run_doctor(
+    poll_interval_s: float = 0.2, progress: Callable[[str], None] | None = None
+) -> list[Check]:
+    """Run every check in order; on a non-macOS host return after the basic checks.
+
+    `progress` is called with each step's name before it runs (the CLI's activity line).
+    """
     checks = [check_platform(), check_root(), *check_binaries()]
     if checks[0].status is Status.FAIL:
         return checks
-    checks += [check_pf_status(), *check_pf_anchor(), check_socket_visibility()]
-    checks += [check_full_disk_access(), check_snapshot_latency(poll_interval_s)]
-    checks += [check_log_predicate(), check_pktap(), check_tcc_permissions()]
-    checks.append(check_menubar())
+    for name, step in doctor_steps(poll_interval_s):
+        if progress is not None:
+            progress(name)
+        result = step()
+        checks += result if isinstance(result, list) else [result]
     return checks
 
 

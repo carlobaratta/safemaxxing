@@ -25,7 +25,7 @@ runners (arm64 and Intel).
 | `supervisor.py` | `Supervisor`: merges the sources into one `stream()` of events, connections and alerts. |
 | `firewall.py` | `PfFirewall` (pf block table), `BlockList` (the list saved for the boot job), `PfReference` (the saved `pfctl -E` token that `flush` releases) and `ProcessController` (SIGSTOP / SIGCONT / SIGKILL). |
 | `models.py` | The immutable `Event`, `NetworkConnection`, `Finding`, `Alert` and the `Severity` scale. |
-| `tui/` | The Textual dashboard. |
+| `tui/` | The Textual dashboard: `app.py` (layout, bindings, workers), `panels.py` (header, posture and side panels), `screens.py` (confirm, timeline, help and copy modals), `palette.py` (the dark, high-contrast and light palettes, contrast-checked, turned into Textual themes), `badges.py` (severity and sensor pills from the active palette). |
 | `menubar.py` | `MenuModel` (pure, clock-injected) and `run_menubar`, the rumps status-bar view over the same `stream()`. |
 | `tcc_inspector.py` | Read-only audit of the TCC databases: who already holds a sensitive grant, and which holders look risky. |
 | `diagnostics.py` | `doctor`'s checks and `sample`'s summary of a raw log capture. |
@@ -33,6 +33,9 @@ runners (arm64 and Intel).
 | `daemon.py` | `WatchDaemon`: a root LaunchDaemon running `watch --json`, installed only from a root-owned frozen bundle (`unsafe_reason`). |
 | `codesign.py` | Signing identity of a binary's app (`codesign -dv`), for the inspector and the TCC audit; for Paranoia Mode and `--ignore`, a running process's code status read from the kernel (`csops`) and `CodeVerifier`'s grant policy (`Strictness`). |
 | `lockdown/` | Paranoia Mode: `controller.py` (`LockdownController`), `rules.py` (pure pf rule text), `pf.py` (loads it), `leases.py`, `pflog.py` (what the default-deny dropped), `dns.py` (sinkhole and blocklist), `sni.py` (ClientHello audit), `watchdog.py` (dead-man switch). See below. |
+| `secure_fs.py` | File I/O for anything run as root: `write_atomic` (temp file, fixed mode, rename, never through a symlink), `read_trusted_text` (only a file root or the caller owns and no one else can write), `open_private_output` (exports created 0600 and owned by the invoking user). |
+| `purge.py` | `purge`: unloads the jobs, empties the anchor, releases the pf reference and deletes safemaxxing's files; `blocker` refuses while Paranoia Mode or another instance runs. |
+| `report.py` | `collect_report` (a read-only snapshot of pf, blocks, jobs and `doctor`), the Markdown / JSON / text renderers and `redact`. |
 | `cli.py` | The Typer entry point. |
 
 ## A Meet call in Brave, intercepted via pktap

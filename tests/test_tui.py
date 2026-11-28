@@ -4,6 +4,8 @@ import asyncio
 import dataclasses
 import io
 from collections.abc import Callable, Sequence
+from pathlib import Path
+from typing import Any
 
 import pytest
 from conftest import T0, make_conn, make_event
@@ -12,16 +14,20 @@ from rich.text import Text
 from test_firewall import FakePf
 from test_supervisor_tui import supervisor
 from textual.pilot import Pilot
-from textual.widgets import DataTable, Static
+from textual.widgets import DataTable, RichLog, Static, TabbedContent
 
+from safemaxxing.boot import BootStatus, LaunchdJob
 from safemaxxing.codesign import parse_codesign, signing_identity, signing_target
 from safemaxxing.correlation import CorrelationConfig
 from safemaxxing.firewall import CommandResult, PfFirewall, ProcessController
 from safemaxxing.lockdown.controller import LockdownState
 from safemaxxing.models import PKTAP_STATUS, Alert, Finding, SensorType, Severity
-from safemaxxing.tui.app import SafemaxxingApp
-from safemaxxing.tui.badges import SEVERITY_INK, mitigation_badges, sensor_pills, severity_badge
+from safemaxxing.report import ISSUES_URL
+from safemaxxing.tui import palette
+from safemaxxing.tui.app import SafemaxxingApp, _normal_ip
+from safemaxxing.tui.badges import mitigation_badges, sensor_pills, severity_badge, severity_ink
 from safemaxxing.tui.panels import (
+    DaemonState,
     InspectorPanel,
     ModeStatus,
     PfStatus,
@@ -34,9 +40,11 @@ from safemaxxing.tui.panels import (
     render_mode,
     render_posture,
     render_status,
+    status_line,
+    stop_hint,
     verdict,
 )
-from safemaxxing.tui.screens import TimelineScreen
+from safemaxxing.tui.screens import ConfirmScreen, CopyScreen, HelpScreen, TimelineScreen
 from safemaxxing.tui.timeline import MAX_EVENTS, merge_events, related_events, timeline_steps
 
 BRAVE_CODESIGN = """\
@@ -172,7 +180,7 @@ def test_posture_says_what_needs_you_most_urgent_first() -> None:
     assert detail == "nothing high-risk open · 3 in the feed · 1 contained · read-only without sudo"
     style, head, detail = verdict(Posture(alerts=2, review=2, worst=Severity.CRITICAL))
     assert head == "▲ 2 alerts to review" and "b blocks" in detail
-    assert style == SEVERITY_INK[Severity.CRITICAL]
+    assert style == severity_ink(Severity.CRITICAL)
     assert "needs sudo" in verdict(Posture(alerts=1, review=1, enforce=False))[2]
     # Paranoia Mode outranks an alert, and a dead supervisor outranks everything.
     on = Posture(lockdown=LockdownState.ON, alerts=1, review=1, worst=Severity.HIGH)
@@ -236,22 +244,44 @@ async def wait_for(pilot: Pilot[None], condition: Callable[[], bool]) -> None:
     raise AssertionError("condition not met")
 
 
+class FakeDaemon(LaunchdJob):
+    """A launchd job whose status is whatever the test says; never runs launchctl."""
+
+    def __init__(self, installed: bool = False, loaded: bool = False) -> None:
+        super().__init__("com.example.fake", Path("/nonexistent/fake.plist"))
+        self.state = BootStatus(installed, loaded)
+
+    async def status(self) -> BootStatus:
+        return self.state
+
+
 def make_app(
     pf: FakePf | None = None,
     signals: list[tuple[int, int]] | None = None,
     root: bool = False,
+    exe_of: Callable[[int], str | None] = lambda pid: None,
+    copied: list[str] | None = None,
+    **kwargs: Any,
 ) -> SafemaxxingApp:
     sent = signals if signals is not None else []
+    clipboard = copied if copied is not None else []
 
     async def signer(path: str) -> str:
         return "Developer ID Application: Example (TEAM)"
 
+    async def copy(text: str) -> bool:
+        clipboard.append(text)
+        return True
+
     return SafemaxxingApp(
         supervisor(hold=True),
         firewall=PfFirewall(runner=pf or FakePf(enabled=True)),
-        processes=ProcessController(kill=lambda pid, sig: sent.append((pid, sig))),
+        processes=ProcessController(kill=lambda pid, sig: sent.append((pid, sig)), exe_of=exe_of),
         signer=signer,
         root=lambda: root,
+        clipboard=copy,
+        daemon=kwargs.pop("daemon", FakeDaemon()),
+        **kwargs,
     )
 
 
@@ -439,3 +469,199 @@ async def test_timers_firing_during_shutdown_do_not_crash(monkeypatch: pytest.Mo
     async with app.run_test() as pilot:
         await wait_for(pilot, lambda: bool(app.alerts))
         monkeypatch.setattr(app, "_close_all", close_then_tick)
+
+
+# --- header, help, copy, themes, layout -----------------------------------------------------
+
+
+def test_posture_states_starting_and_an_actionable_stop() -> None:
+    assert verdict(Posture(starting=True))[1] == "◌ Starting"
+    # A stopped supervisor says why and what to do; an alert does not outrank it.
+    stopped = Posture(live=False, error="permission denied: quit (q), run sudo", review=1)
+    assert verdict(stopped)[1:] == ("■ Stopped", "permission denied: quit (q), run sudo")
+
+
+def test_stop_hints_name_the_fix() -> None:
+    assert "sudo safemaxxing tui" in stop_hint(PermissionError("Operation not permitted"))
+    assert "Full Disk Access" in stop_hint(OSError("log: Operation not permitted"))
+    assert "--udp-flows" in stop_hint(RuntimeError("tcpdump exited 1"))
+    assert "safemaxxing doctor" in stop_hint(FileNotFoundError("/usr/bin/log"))
+    assert "safemaxxing doctor" in stop_hint(RuntimeError("boom"))
+
+
+def test_header_shows_profile_blocks_daemon_and_last_event() -> None:
+    posture = Posture(blocks=3, daemon=DaemonState.RUNNING, last_event=T0)
+    line = status_line(posture, "10:57:46").plain
+    assert line.startswith("Normal · 3 blocked · daemon ● on · last event ")
+    assert line.endswith(" · 10:57:46")
+    on = Posture(lockdown=LockdownState.ON, profile="max", blocks=None)
+    assert status_line(on, "10:57:46", compact=True).plain == "Paranoia (max) · ? blk · 10:57:46"
+    assert "no events yet" in status_line(Posture(), "x").plain
+    assert "daemon ○ off" in status_line(Posture(daemon=DaemonState.ABSENT), "x").plain
+
+
+def test_ipv4_mapped_addresses_compare_with_pf_entries() -> None:
+    assert _normal_ip("::ffff:203.0.113.9") == "203.0.113.9"
+    assert _normal_ip("2001:DB8::1") == "2001:db8::1"
+    assert _normal_ip("not an ip") == "not an ip"
+
+
+async def test_header_reads_the_watch_daemon_state() -> None:
+    app = make_app(daemon=FakeDaemon(installed=True, loaded=True))
+    async with app.run_test(size=(180, 50)) as pilot:
+        await wait_for(pilot, lambda: app.daemon_state is DaemonState.RUNNING)
+        app.tick()
+        assert "daemon ● on" in plain(app.query_one(PostureBar).content)
+
+
+async def test_footer_lists_only_the_keys_that_apply() -> None:
+    pf = FakePf(enabled=True)
+    app = make_app(pf)
+    async with app.run_test() as pilot:
+        assert app.check_action("block", ()) is False  # nothing selected yet
+        assert app.check_action("help", ()) is True
+        await wait_for(pilot, lambda: app.selection is not None)
+        assert app.check_action("block", ()) and not app.check_action("unblock", ())
+        assert app.check_action("suspend", ()) and not app.check_action("resume", ())
+        assert app.check_action("lease", ()) is False  # no Paranoia Mode without root
+        await pilot.press("b")
+        await wait_for(pilot, lambda: pf.table == {"203.0.113.9"})
+        assert not app.check_action("block", ()) and app.check_action("unblock", ())
+
+
+async def test_help_lists_keys_faq_and_the_redacted_report() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await pilot.press("question_mark")
+        await pilot.pause()
+        assert isinstance(app.screen, HelpScreen)
+        text = plain(app.screen.query_one("#help Static", Static).content)
+        for expected in ("Block IP", "Theme", "Does anything leave this Mac?", "--redact"):
+            assert expected in text
+        assert ISSUES_URL in text
+        await pilot.press("escape")
+        assert not isinstance(app.screen, HelpScreen)
+
+
+async def test_copy_menu_copies_the_pid_path_ip_and_pf_rule() -> None:
+    copied: list[str] = []
+    app = make_app(copied=copied)
+    async with app.run_test() as pilot:
+        await wait_for(pilot, lambda: app.selection is not None)
+        await pilot.press("y")
+        await pilot.pause()
+        assert isinstance(app.screen, CopyScreen)
+        await pilot.press("1")  # the PID
+        await wait_for(pilot, lambda: copied == ["4242"])
+        await pilot.press("y", "down", "down", "enter")  # the third entry: the IP
+        await wait_for(pilot, lambda: len(copied) == 2)
+        assert copied[1] == "203.0.113.9"
+        items = app._copy_items()
+        assert items is not None
+        values = dict(items[1])
+        assert values["pf rule"] == "block drop out quick from any to 203.0.113.9"
+        assert values["pf command"].endswith("-t safemaxxing_block -T add 203.0.113.9")
+        await pilot.press("y", "escape")
+        await pilot.pause()
+        assert len(copied) == 2 and not isinstance(app.screen, CopyScreen)
+
+
+async def test_blocked_tab_lists_addresses_and_unblocks_the_highlighted_one() -> None:
+    pf = FakePf(enabled=True)
+    app = make_app(pf)
+    async with app.run_test() as pilot:
+        await wait_for(pilot, lambda: app.selection is not None)
+        await pilot.press("b")
+        await wait_for(pilot, lambda: pf.table == {"203.0.113.9"})
+        blocked = app.query_one("#blocked-table", DataTable)
+        assert blocked.row_count == 1 and cell(blocked, "203.0.113.9", "alerts") == "1"
+        app.query_one("#detail-tabs", TabbedContent).active = "tab-blocked"
+        blocked.focus()
+        await pilot.pause()
+        assert app.check_action("unblock", ()) and not app.check_action("suspend", ())
+        await pilot.press("u")
+        await wait_for(pilot, lambda: pf.table == set())
+        assert blocked.row_count == 0
+
+
+async def test_pausing_a_macos_system_process_asks_first() -> None:
+    signals: list[tuple[int, int]] = []
+    loginwindow = "/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow"
+    app = make_app(signals=signals, exe_of=lambda pid: loginwindow)
+    async with app.run_test() as pilot:
+        await wait_for(pilot, lambda: app.selection is not None)
+        await pilot.press("s")
+        await pilot.pause()
+        assert isinstance(app.screen, ConfirmScreen) and signals == []
+        await pilot.press("escape")
+        await pilot.pause()
+        assert signals == [] and app.suspended == set()
+        await pilot.press("s", "y")
+        await wait_for(pilot, lambda: app.suspended == {4242})
+
+
+async def test_t_jumps_to_the_first_row() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await wait_for(pilot, lambda: bool(app.alerts))
+        alert = app.alerts["1"]
+        app.add_alert(dataclasses.replace(alert, id=2))
+        table = app.query_one("#feed", DataTable)
+        assert table.cursor_row == 1  # the feed follows the newest alert
+        await pilot.press("t")
+        assert table.cursor_row == 0
+
+
+async def test_t_cycles_theme_and_recolours_the_feed() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await wait_for(pilot, lambda: bool(app.alerts))
+        assert app.theme == "safemaxxing-dark" and palette.current() is palette.DARK
+        await pilot.press("T")
+        await pilot.pause()
+        assert app.theme == "safemaxxing-high-contrast"
+        assert palette.current() is palette.HIGH_CONTRAST
+        sev = app.query_one("#feed", DataTable).get_cell("1", "sev")
+        assert isinstance(sev, Text) and palette.HIGH_CONTRAST.high in str(sev.style)
+        await pilot.press("T", "T")
+        await pilot.pause()
+        assert app.theme == "safemaxxing-dark"
+
+
+async def test_theme_option_starts_in_that_palette() -> None:
+    app = make_app(theme="light")
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app.theme == "safemaxxing-light" and not app.current_theme.dark
+    finally:
+        palette.use(palette.DARK.name)
+
+
+async def test_filter_narrows_the_sensor_log_too() -> None:
+    app = make_app()
+    async with app.run_test() as pilot:
+        await wait_for(pilot, lambda: bool(app.alerts))
+        app.flush_log()
+        log = app.query_one("#events", RichLog)
+        assert len(log.lines) > 0
+        await pilot.press("slash", *"nothing-like-this")
+        await pilot.pause()
+        app.flush_log()
+        assert len(log.lines) == 0
+        await pilot.press("escape")
+        app.flush_log()
+        assert len(log.lines) > 0
+
+
+async def test_narrow_terminal_moves_the_side_panels_under_the_feed() -> None:
+    app = make_app()
+    async with app.run_test(size=(90, 40)) as pilot:
+        await pilot.pause()
+        assert app.screen.has_class("-narrow")
+        feed, side = app.query_one("#feed-pane"), app.query_one("#side")
+        assert side.region.y > feed.region.y and side.region.width == app.size.width
+    app = make_app()
+    async with app.run_test(size=(180, 50)) as pilot:
+        await pilot.pause()
+        assert app.screen.has_class("-wide")

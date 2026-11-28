@@ -233,7 +233,7 @@ def test_doctor_cli_renders_every_status(monkeypatch: pytest.MonkeyPatch) -> Non
         Check("b", Status.WARN, "[2001:db8::1] looks like markup"),
         Check("c", Status.FAIL, "broken"),
     ]
-    monkeypatch.setattr(cli, "run_doctor", lambda poll_interval_s: checks)
+    monkeypatch.setattr(cli, "run_doctor", lambda poll_interval_s, progress=None: checks)
     result = CliRunner().invoke(cli.app, ["doctor"])
     assert result.exit_code == 1
     assert "[2001:db8::1] looks like markup" in result.output

@@ -41,6 +41,7 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
   - [Diagnostica](#diagnostica)
   - [Demone `watch`](#demone-watch)
   - [Paranoia Mode](#paranoia-mode)
+- [Privacy e dati](#privacy-e-dati)
 - [Architettura](#architettura)
 - [Limiti noti](#limiti-noti)
 - [Sviluppo](#sviluppo)
@@ -116,8 +117,13 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
 - **Enforcement**: tabella pf `safemaxxing_block` dentro l'anchor `com.apple/safemaxxing`.
   L'anchor è già valutato dal `/etc/pf.conf` di sistema, quindi non serve modificare la
   configurazione. Controllo dei processi con `SIGSTOP` / `SIGCONT` / `SIGKILL`.
-- **TUI Textual**: una dashboard scura a pannelli, con un solo colore d'accento (il teal) e i
-  colori di severità usati solo sugli alert. Niente lampeggia, nemmeno in Paranoia Mode.
+- **TUI Textual**: una dashboard a pannelli, con un solo colore d'accento e i colori di
+  severità usati solo sugli alert. Niente lampeggia, nemmeno in Paranoia Mode.
+  - **Temi**: scuro (default), alto contrasto e chiaro, con `--theme` o `T` mentre gira. Ogni
+    coppia testo/sfondo rispetta il contrasto WCAG AA (4,5:1), il tema ad alto contrasto AAA
+    (7:1); `NO_COLOR=1` rende monocromatico qualunque tema.
+  - **Intestazione fissa**: profilo (Normal, Paranoia), numero di indirizzi bloccati, stato del
+    demone `watch`, ora dell'ultimo evento e dell'ultimo controllo.
   - **Riga di stato** in alto: dice a parole se serve il tuo intervento. `● Watching` quando
     non c'è niente di aperto, `▲ N alerts to review` quando ci sono alert `high` o `critical`
     non ancora bloccati né sospesi, `■ Paranoia Mode` o `■ Stopped`. Non dice mai "sei al
@@ -128,15 +134,18 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
   - **Paranoia Mode**: stato della modalità, lease, concessioni e connessioni negate, e il
     pulsante per entrare o uscire.
   - **Protection**: stato di pf e dell'anchor, indirizzi bloccati, latenza del polling dei
-    socket, cattura pktap e cache DNS. Rilegge pf ogni 5 s. pf spento senza blocchi è lo
+    socket, cattura pktap e cache DNS. Rilegge pf ogni 5 s e dice a che ora l'ha fatto. pf spento senza blocchi è lo
     stato normale; diventa rosso solo se ci sono blocchi che non vengono applicati.
   - **Details**: pid, bundle id, percorso, firma del codice (`codesign`), destinazione,
     sensori ed eventi recenti della selezione.
   - **Timeline** al millisecondo di un alert (`Invio` o `spazio`): ogni evento sensore
     dell'app, poi l'egress.
-  - Sotto il feed, a schede, lo stream degli eventi sensore e le connessioni attive. In
+  - Sotto il feed, a schede, lo stream degli eventi sensore, le connessioni attive e gli
+    indirizzi bloccati in pf (scheda Blocked, da cui `u` sblocca). In
     fondo, una barra di stato con CPU del processo, pacchetti e flussi UDP al secondo, cache
     DNS ed eventi al secondo.
+  - Se il monitoraggio si ferma (manca root, il Full Disk Access o `tcpdump`), la riga di
+    stato dice perché e come rimediare; un toast conferma ogni blocco, sblocco o sospensione.
 - **Headless**: `safemaxxing watch` con output JSON lines e azioni automatiche opzionali.
 - **Menu bar** (`safemaxxing menubar`, extra `menubar`): icona di stato, ultimi alert con
   blocco e freeze a un clic, modalità Auto-Block / Auto-Suspend, lista degli IP bloccati.
@@ -148,6 +157,9 @@ Rileva la catena causa → effetto tipica dell'esfiltrazione:
 - **Paranoia Mode** (tasto `P` nella TUI, serve root): default-deny in uscita, con eccezioni
   solo per le app in uso in quel momento, verificate dalla firma del codice. Vedi
   [Paranoia Mode](#paranoia-mode).
+- **Report e pulizia**: `safemaxxing report` esporta lo stato della protezione in Markdown,
+  JSON o testo (`--redact` per una issue pubblica); `sudo safemaxxing purge` toglie tutto
+  quello che safemaxxing ha lasciato sul Mac. Vedi [Privacy e dati](#privacy-e-dati).
 
 ## Installazione
 
@@ -183,6 +195,7 @@ x86_64, un `.pkg` firmato e notarizzato e un tarball.
 sudo uv run safemaxxing tui                       # dashboard interattiva
 sudo uv run safemaxxing tui --window-ms 800 --ignore com.apple.FaceTime
 sudo uv run safemaxxing tui --paranoia-profile max  # Paranoia Mode (P) col profilo più restrittivo
+sudo uv run safemaxxing tui --theme high-contrast   # temi: dark, high-contrast, light
 
 sudo uv run safemaxxing watch --json              # headless, JSON lines su stdout
 sudo uv run safemaxxing watch --auto-block --min-severity high
@@ -204,12 +217,16 @@ sudo uv run safemaxxing paranoia install          # watchdog della Paranoia Mode
 sudo uv run safemaxxing paranoia blocklist        # scarica la blocklist DNS del sinkhole
 sudo uv run safemaxxing paranoia uninstall
 
-sudo uv run safemaxxing freeze 4242               # SIGSTOP
+sudo uv run safemaxxing freeze 4242               # SIGSTOP (chiede conferma per i processi di sistema)
 sudo uv run safemaxxing thaw 4242                 # SIGCONT
-sudo uv run safemaxxing kill 4242                 # SIGKILL
+sudo uv run safemaxxing kill 4242                 # SIGKILL (idem; --yes salta la domanda)
 
 sudo uv run safemaxxing menubar                   # icona nella barra dei menu (extra menubar)
 sudo uv run safemaxxing permissions               # chi ha già i permessi TCC sensibili
+
+uv run safemaxxing report --redact               # stato della protezione, da allegare a una issue
+sudo uv run safemaxxing purge --dry-run           # cosa toglierebbe purge, senza toccare niente
+sudo uv run safemaxxing purge                     # toglie job, regole pf, stato e log (chiede conferma)
 
 uv run safemaxxing version
 ```
@@ -238,7 +255,8 @@ Solo per `tui`:
 
 | Opzione | Default | Effetto |
 |---------|---------|---------|
-| `--paranoia-profile P` | `standard` | Cosa rifiuta la Paranoia Mode (tasto `P`). `max` attiva ogni rifiuto: verifica del codice `STRICT` (rifiuta `disable-library-validation`, quindi le chiamate da Brave non partono), nessuna rete all'app in primo piano senza un lease manuale, revoca della concessione quando lo SNI è in blocklist, TCP 443 solo verso IP nominati da una risposta DNS. Resta fail-open (il watchdog ripristina v0.2) e non protegge da codice con root o da un kernel compromesso |
+| `--theme T` | `dark` | Tema dei colori: `dark`, `high-contrast` o `light` (`T` li alterna mentre gira). `NO_COLOR=1` li rende monocromatici |
+| `--paranoia-profile P` | `standard` | Cosa rifiuta la Paranoia Mode (tasto `P`). `max` chiede conferma prima di partire e attiva ogni rifiuto: verifica del codice `STRICT` (rifiuta `disable-library-validation`, quindi le chiamate da Brave non partono), nessuna rete all'app in primo piano senza un lease manuale, revoca della concessione quando lo SNI è in blocklist, TCP 443 solo verso IP nominati da una risposta DNS. Resta fail-open (il watchdog ripristina v0.2) e non protegge da codice con root o da un kernel compromesso |
 
 Solo per `watch`:
 
@@ -254,22 +272,36 @@ Solo per `watch`:
 
 | Tasto | Azione |
 |-------|--------|
-| `↑` / `↓` | Seleziona un alert nel feed, o una connessione nella scheda Connections; il pannello Details mostra la selezione |
-| `b` / `u` | Blocca / sblocca l'IP di destinazione della selezione |
-| `s` / `r` | Sospende / riprende il processo (`SIGSTOP` / `SIGCONT`) |
+| `↑` / `↓` | Seleziona un alert nel feed, o una riga nelle schede Connections e Blocked; il pannello Details mostra la selezione |
+| `b` / `u` | Blocca / sblocca l'IP di destinazione della selezione (nella scheda Blocked, `u` sblocca la riga). Un toast conferma l'esito |
+| `s` / `r` | Sospende / riprende il processo (`SIGSTOP` / `SIGCONT`). Per un processo di sistema macOS (WindowServer, loginwindow, …) chiede prima conferma |
 | `k` | `SIGKILL`, con conferma: `y` o il pulsante Kill process. Il focus parte su Cancel, quindi `Invio` da solo non uccide niente |
 | `Invio` / `spazio` | Timeline al millisecondo della selezione |
-| `/` | Filtra feed e connessioni per nome processo, bundle id, pid, IP o hostname; `Invio` tiene il filtro, `esc` lo toglie |
+| `y` | Copia un valore della selezione: PID, nome, percorso, bundle id, IP, hostname, la regola pf o il comando `pfctl` (con `1`-`9` o le frecce) |
+| `/` | Filtra feed, connessioni, eventi sensore e indirizzi bloccati per nome processo, bundle id, pid, IP, hostname, severità o sensore; `Invio` tiene il filtro, `esc` lo toglie |
+| `t` | Torna alla prima riga della tabella col focus, o all'inizio del log eventi |
 | `c` | Svuota il feed (il log eventi e pf non cambiano) |
-| `P` | Entra in [Paranoia Mode](#paranoia-mode); premuto di nuovo, chiede conferma ed esce |
+| `P` | Entra in [Paranoia Mode](#paranoia-mode) (col profilo `max` chiede conferma); premuto di nuovo, chiede conferma ed esce |
 | `g` | Dà (o toglie) un lease manuale all'app della connessione selezionata (Paranoia Mode) |
-| `tab` / `shift+tab` | Cambia pannello |
+| `T` | Cambia tema: scuro → alto contrasto → chiaro |
+| `?` | Aiuto: tutti i tasti, le domande frequenti e come segnalare un bug |
+| `tab` / `shift+tab` | Cambia pannello; il pannello col focus ha il bordo evidenziato |
 | `q` | Esci |
 
 Le azioni agiscono sempre su quello che mostra il pannello Details. `k` resta `SIGKILL`,
 quindi la navigazione usa le frecce e non `j`/`k`. Il feed tiene gli ultimi 1000 alert, la
-scheda Connections le 300 connessioni più recenti. Il layout è pensato per un terminale di almeno
-170 colonne circa: più stretto, il feed scorre in orizzontale.
+scheda Connections le 300 connessioni più recenti, il log eventi le ultime 2000 righe.
+
+Tutto si usa da tastiera, anche le finestre di conferma, l'aiuto e la copia: `tab` sposta il
+focus tra i pulsanti, `esc` chiude. Il footer mostra solo i tasti che hanno effetto sulla
+selezione e sullo stato del momento (`u` solo se l'IP è bloccato, `r` solo se il processo è
+sospeso, `g` solo in Paranoia Mode). Il layout si adatta alla larghezza del terminale: da 150
+colonne in su i pannelli laterali hanno la larghezza piena, tra 110 e 150 si restringono, sotto
+le 110 passano sotto il feed; l'intestazione si accorcia sotto le 130 colonne.
+
+La copia usa la sequenza OSC 52 del terminale e, in più, `/usr/bin/pbcopy`: con `sudo`
+`pbcopy` può non raggiungere gli appunti della tua sessione, quindi in Terminal.app o iTerm2
+conviene abilitare l'accesso agli appunti da parte delle applicazioni nel terminale.
 
 ### Menu bar
 
@@ -356,7 +388,16 @@ sottosistema mostra:
 
 `--wide` cerca per parole chiave in tutti i sottosistemi e `--debug` usa `--level debug`.
 Allegare l'output testuale a una issue è il modo più rapido per migliorare le euristiche. Il
-file `--out` contiene invece il log di sistema grezzo: non pubblicarlo.
+file `--out` contiene invece il log di sistema grezzo: viene creato con permessi 0600, di tua
+proprietà anche sotto `sudo`, e non va pubblicato.
+
+`safemaxxing report` riassume lo stato della protezione: versione e macOS, pf e regole
+dell'anchor, indirizzi bloccati (in pf e salvati), job launchd, Paranoia Mode, i controlli di
+`doctor` e, da root, gli ultimi alert del demone. Formati `--format markdown` (default),
+`json` o `text`; `--out FILE` lo scrive con permessi 0600; `--no-checks` salta `doctor`.
+Per una issue pubblica usa `--redact`, che sostituisce gli indirizzi IP (lo stesso indirizzo
+con lo stesso segnaposto), i percorsi della home, il tuo nome utente e il nome del Mac. Il
+report non viene inviato da nessuna parte.
 
 Se i campi sono oscurati, macOS consente di mostrarli installando un profilo di configurazione
 con il payload `com.apple.system.logging` e `Enable-Private-Data = true`. Fallo solo su
@@ -496,6 +537,35 @@ sudo uv run safemaxxing tui                   # poi P per entrare, P e conferma 
 Design, misure e piano di validazione: [RFC 0001](docs/rfc/0001-paranoia-mode.md). La
 Paranoia Mode non ha ancora una sessione di validazione come root in [TESTLOG.md](TESTLOG.md)
 (spike S1-S6 del §10.2 dell'RFC): provala prima su una macchina di test.
+
+## Privacy e dati
+
+safemaxxing elabora tutto **in locale**: eventi dei sensori, connessioni, metadati dei
+pacchetti e alert non lasciano il Mac. Non c'è telemetria, né analytics, crash reporting o
+controllo degli aggiornamenti, né account, server o SDK di terze parti. L'unico traffico che
+genera è il reverse DNS verso il resolver di sistema (`--no-dns` lo spegne), l'inoltro del
+sinkhole DNS della Paranoia Mode ai resolver già configurati e il download della blocklist con
+`paranoia blocklist`, solo quando lo lanci.
+
+La TUI, la menu bar e `watch` tengono tutto in memoria. Scrivono su disco solo le funzioni che
+attivi (blocchi persistenti, demone, Paranoia Mode) e gli export che chiedi; i log sono
+leggibili solo da root (0600) e i job launchd girano con `Umask 077`.
+
+`sudo safemaxxing purge` chiede conferma e poi toglie i job launchd, svuota e scarica tabelle e
+regole dell'anchor pf, rilascia il riferimento a pf (mai `pfctl -d`) ed elimina stato e log
+creati da safemaxxing. `--dry-run` mostra l'elenco senza toccare niente; si rifiuta mentre la
+Paranoia Mode è attiva o gira un'altra istanza.
+
+> **Attenzione.** safemaxxing gira come root e modifica pf, solo dentro il proprio anchor. Un
+> blocco interrompe ogni connessione verso quell'indirizzo, per tutte le app. La Paranoia Mode
+> è default-deny: chiamate, sincronizzazione, aggiornamenti e VPN possono smettere di
+> funzionare finché è attiva. Usalo su Mac tuoi o che amministri: registrare quali app usa
+> un'altra persona e dove si connettono può richiedere il suo consenso (nell'UE, GDPR e
+> ePrivacy).
+
+I dettagli (cosa legge, dove salva, con quali permessi) sono in [PRIVACY.md](PRIVACY.md);
+le licenze delle dipendenze e dei font in
+[docs/THIRD_PARTY_LICENSES.md](docs/THIRD_PARTY_LICENSES.md).
 
 ## Architettura
 
@@ -673,7 +743,9 @@ Per una validazione completa con raccolta delle evidenze in `testlogs/` c'è
 | [testlogs/](testlogs/) | Log grezzi di `scripts/macos_validate.sh` dal Mac |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Ciclo di sviluppo, test live, convenzioni |
 | [packaging/README.md](packaging/README.md) | Build standalone, firma, notarizzazione, release e Homebrew |
-| [SECURITY.md](SECURITY.md) | Threat model, segnalazione vulnerabilità, pf/token, cosa modifica sul sistema |
+| [SECURITY.md](SECURITY.md) | Threat model, segnalazione vulnerabilità, pf/token, cosa modifica sul sistema, hardening |
+| [PRIVACY.md](PRIVACY.md) | Cosa legge, salva e invia (niente telemetria), come togliere tutto, cosa può rompere |
+| [docs/THIRD_PARTY_LICENSES.md](docs/THIRD_PARTY_LICENSES.md) | Licenze di dipendenze e font |
 | [docs/rfc/0001-paranoia-mode.md](docs/rfc/0001-paranoia-mode.md) | Design della Paranoia Mode, misure e piano di validazione |
 
 ## Licenza

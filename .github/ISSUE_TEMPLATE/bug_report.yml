@@ -45,15 +45,28 @@ body:
         - permissions / doctor
         - block / unblock / flush / boot
         - freeze / thaw / kill
+        - purge / report
         - packaging / release
         - other
     validations:
       required: true
   - type: textarea
+    id: report
+    attributes:
+      label: Redacted report
+      description: >-
+        Output of `sudo safemaxxing report --redact --format text` (or `uv run safemaxxing
+        report --redact --format text` without root). It includes the `doctor` checks and
+        replaces IP addresses, home paths, your login and the host name. Read it before you
+        paste it.
+      render: text
+  - type: textarea
     id: doctor
     attributes:
       label: doctor output
-      description: Output of `sudo uv run safemaxxing doctor`.
+      description: >-
+        Only if you cannot run `report`: output of `sudo uv run safemaxxing doctor`. It is not
+        redacted, so remove anything personal.
       render: text
   - type: checkboxes
     id: root

@@ -1,21 +1,12 @@
 /* safemaxxing dashboard.
 
-   One accent, the project's teal, marks what works and what you can act on. Severity colours
-   live only in the badges (badges.py), so a calm screen means nothing needs you. Paranoia Mode
-   turns the frame red, steadily: nothing on this screen blinks.
+   One accent marks what works and what you can act on. Severity colours live only in the
+   badges (badges.py), so a calm screen means nothing needs you. Paranoia Mode turns the frame
+   red, steadily: nothing on this screen blinks.
 
-   palette.py holds the same values for the Rich renderables; keep the two in step. The
-   built-in widgets (footer, tabs, toasts, cursor) take theirs from the theme in app.py. */
-
-$sm-bg: #0a0e14;
-$sm-surface: #0e131b;
-$sm-raised: #161d28;
-$sm-line: #222b38;
-$sm-text: #cfd7e2;
-$sm-strong: #eef2f6;
-$sm-muted: #7a8595;
-$sm-accent: #56b6c2;
-$sm-danger: #ff2e4d;
+   Every $sm-* variable comes from the Textual theme app.py builds from palette.py (dark, high
+   contrast, light), so this file holds no colour of its own and T recolours all of it. The
+   built-in widgets (footer, tabs, toasts, cursor) take their colours from the same theme. */
 
 Screen {
     background: $sm-bg;
@@ -131,7 +122,7 @@ DataTable > .datatable--header {
 }
 
 DataTable > .datatable--hover {
-    background: #131a24;
+    background: $sm-hover;
 }
 
 RichLog {
@@ -171,9 +162,19 @@ Tabs {
     text-style: bold;
 }
 
-#panic:hover, #panic:focus {
-    background: #2a0d14;
+#panic:hover {
+    background: $sm-panic-hover;
     text-style: bold;
+}
+
+/* Focus is always visible: the focused control is drawn in reverse, not only tinted. */
+Button:focus, #panic:focus {
+    text-style: bold reverse;
+}
+
+/* Scrollable text (the sensor log, the help) shows its focus by its frame. */
+RichLog:focus {
+    background-tint: $sm-accent 4%;
 }
 
 #panic:disabled {
@@ -183,7 +184,7 @@ Tabs {
 
 /* Modal screens */
 
-ConfirmScreen, TimelineScreen {
+ConfirmScreen, TimelineScreen, HelpScreen, CopyScreen {
     align: center middle;
     background: $sm-bg 75%;
 }
@@ -241,11 +242,11 @@ ConfirmScreen, TimelineScreen {
 /* Paranoia Mode on: the frame turns red and stays red. No timer, no blinking. */
 
 Screen.-lockdown {
-    background: #10070a;
+    background: $sm-lockdown-bg;
 }
 
 Screen.-lockdown #posture {
-    background: #5c0012;
+    background: $sm-lockdown-bar;
 }
 
 Screen.-lockdown .pane,
@@ -255,10 +256,76 @@ Screen.-lockdown #detail-tabs {
 }
 
 Screen.-lockdown #panic {
-    background: $sm-danger;
-    color: #ffffff;
+    background: $sm-panic-fill;
+    color: $sm-panic-ink;
 }
 
 Screen.-lockdown #panic:hover, Screen.-lockdown #panic:focus {
-    background: #d81e3c;
+    background: $sm-panic-fill-hover;
+}
+
+/* Help and copy dialogs: framed in the accent, like the timeline. */
+
+#help {
+    width: 90%;
+    max-width: 110;
+    height: 85%;
+    padding: 1 2;
+    background: $sm-surface;
+    border: round $sm-accent;
+    border-title-color: $sm-accent;
+    border-title-style: bold;
+    border-subtitle-color: $sm-muted;
+}
+
+#copy {
+    width: 80%;
+    max-width: 100;
+    height: auto;
+    padding: 1 2;
+    background: $sm-surface;
+    border: round $sm-accent;
+    border-title-color: $sm-accent;
+    border-title-style: bold;
+    border-subtitle-color: $sm-muted;
+}
+
+#copy-options {
+    height: auto;
+    max-height: 16;
+    background: $sm-surface;
+    border: none;
+}
+
+/* Narrower terminals (app.py HORIZONTAL_BREAKPOINTS): -wide from 150 columns, -medium from
+   110, -narrow below. Medium narrows the side column; narrow puts the three side panels in a
+   row under the feed, so the alert table keeps the full width. */
+
+Screen.-medium #side {
+    width: 40;
+}
+
+Screen.-narrow #body {
+    layout: vertical;
+}
+
+Screen.-narrow #main {
+    height: 2fr;
+}
+
+Screen.-narrow #side {
+    width: 100%;
+    height: 1fr;
+    min-height: 10;
+    layout: horizontal;
+}
+
+Screen.-narrow #side > .pane {
+    width: 1fr;
+    height: 100%;
+}
+
+Screen.-narrow #panic {
+    height: 1;
+    margin: 0;
 }

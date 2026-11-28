@@ -16,10 +16,12 @@ from safemaxxing.firewall import (
     TABLE,
     BlockList,
     CommandResult,
+    FirewallError,
     PfFirewall,
     PfReference,
     ProcessController,
     anchor_missing,
+    check_pfctl_argv,
     meaningful_stderr,
     parse_pf_runtime,
     parse_pf_status,
@@ -240,6 +242,95 @@ def test_validate_ip_normalises() -> None:
     assert validate_ip(" 2001:DB8::0001 ") == "2001:db8::1"
     with pytest.raises(ValueError):
         validate_ip("0.0.0.0")
+    # A dual-stack socket's peer: pf sees IPv4 packets, so the IPv4 address is what blocks it.
+    assert validate_ip("::ffff:203.0.113.9") == "203.0.113.9"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # A scope id may hold anything but `%`: the boot job splits pfctl's table file on
+        # whitespace, so this would have added a negation (or a host name) at boot.
+        "fe80::1%x\t!198.51.100.1",
+        "fe80::1%en0",
+        "fe80::1",
+        "169.254.10.1",
+        "255.255.255.255",
+        "240.0.0.1",
+        "::ffff:127.0.0.1",
+        "::ffff:0.0.0.0",
+        "203.0.113.0/24",
+        "example.com",
+        "1" * 100,
+    ],
+)
+def test_validate_ip_refuses_what_is_not_one_blockable_address(raw: str) -> None:
+    with pytest.raises(ValueError):
+        validate_ip(raw)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-s", "info"],
+        ["-s", "rules"],
+        ["-E"],
+        ["-e"],
+        ["-X", "18446742974214806528"],
+        ["-k", "0.0.0.0/0", "-k", "203.0.113.9"],
+        ["-k", "::/0", "-k", "2001:db8::1"],
+        ["-a", ANCHOR, "-s", "rules"],
+        ["-a", ANCHOR, "-n", "-f", "-"],
+        ["-a", ANCHOR, "-t", TABLE, "-T", "add", "203.0.113.9"],
+        ["-a", f"{ANCHOR}/grants", "-F", "rules"],
+    ],
+)
+def test_pfctl_guard_allows_what_safemaxxing_runs(args: list[str]) -> None:
+    check_pfctl_argv([PFCTL, *args])
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-d"],
+        ["-a", ANCHOR, "-d"],
+        ["-f", "/etc/pf.conf"],
+        ["-F", "all"],
+        ["-F", "states"],
+        ["-t", TABLE, "-T", "add", "203.0.113.9"],
+        ["-a", "com.apple/other", "-F", "rules"],
+        ["-a", f"{ANCHOR}-evil", "-f", "-"],
+        ["-a", ANCHOR, "-a", "com.apple/other", "-f", "-"],
+        ["-X", "12; rm -rf /"],
+        ["-k", "0.0.0.0/0", "-k", "127.0.0.1"],
+        ["-K", "0.0.0.0/0"],
+    ],
+)
+def test_pfctl_guard_refuses_anything_outside_the_anchor(args: list[str]) -> None:
+    with pytest.raises(FirewallError):
+        check_pfctl_argv([PFCTL, *args])
+
+
+async def test_run_command_refuses_an_unscoped_pfctl_call_before_spawning() -> None:
+    with pytest.raises(FirewallError, match="pfctl -d"):
+        await run_command([PFCTL, "-d"])
+
+
+async def test_every_pfctl_call_of_block_unblock_and_flush_passes_the_guard(
+    tmp_path: Path,
+) -> None:
+    pf = FakePf(enabled=False)
+
+    async def guarded(argv: Sequence[str], stdin: str | None = None) -> CommandResult:
+        check_pfctl_argv(argv)
+        return await pf(argv, stdin)
+
+    fw = PfFirewall(runner=guarded, reference=own_reference(tmp_path))
+    for ip in ("203.0.113.9", "2001:db8::1"):
+        assert (await fw.block(ip)).ok
+    assert (await fw.unblock("203.0.113.9")).ok
+    assert (await fw.flush()).ok
+    assert len(pf.calls) > 10
 
 
 def test_process_controller_signals() -> None:
@@ -317,6 +408,19 @@ def test_blocklist_keeps_order_skips_duplicates_and_comments(tmp_path: Path) -> 
     assert stat.S_IMODE(store.path.stat().st_mode) == 0o644
     store.path.write_text("# kept by hand\n\n198.51.100.1\n")
     assert store.load() == ["198.51.100.1"]
+
+
+def test_blocklist_reads_back_only_addresses_from_a_file_only_we_can_write(
+    tmp_path: Path,
+) -> None:
+    store = BlockList(tmp_path / "blocklist")
+    store.path.write_text(
+        "198.51.100.1\n0.0.0.0/0\nexample.com\n!192.0.2.7\nfe80::1%en0\n198.51.100.1\n"
+    )
+    assert store.load() == ["198.51.100.1"]
+    store.path.chmod(0o666)
+    with pytest.raises(PermissionError, match="writable"):
+        store.load()
 
 
 def test_blocklist_remove_and_clear(tmp_path: Path) -> None:
